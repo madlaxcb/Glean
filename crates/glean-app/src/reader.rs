@@ -182,11 +182,11 @@ mod win {
                 return TRUE;
             }
             // Skip owned windows (tooltips, etc.)
-            if GetWindow(hwnd, GW_OWNER).is_ok_and(|o| {
-                let HWND(p) = o;
-                !p.is_null()
-            }) {
-                return TRUE;
+            if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
+                let HWND(p) = owner;
+                if !p.is_null() {
+                    return TRUE;
+                }
             }
             // Prefer first visible unowned top-level — eframe main window.
             state.found = hwnd;

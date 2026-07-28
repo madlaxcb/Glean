@@ -17,7 +17,6 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([900.0, 600.0])
-            // Title must match FindWindowW in reader.rs (Windows host attach).
             .with_title("Glean / 拾光 — M0 UI Spike"),
         ..Default::default()
     };
