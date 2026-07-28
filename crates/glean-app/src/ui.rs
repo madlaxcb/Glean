@@ -142,7 +142,6 @@ impl eframe::App for SpikeApp {
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(nav_w, h));
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
-                    ui.exhaust_columns_margin();
                     column_contents(ui, "导航", |ui| {
                         ui.label("全部未读");
                         ui.label("星标");
@@ -271,7 +270,7 @@ fn paint_column_bg(ui: &Ui, rect: egui::Rect, fill: Color32, stroke: Color32) {
     painter.rect_filled(rect, 0.0, fill);
     painter.line_segment(
         [rect.right_top(), rect.right_bottom()],
-        Stroke::new(1.0, stroke),
+        Stroke::new(1.0_f32, stroke),
     );
 }
 
@@ -295,7 +294,7 @@ fn splitter(
     full: egui::Rect,
     id: &'static str,
 ) -> f32 {
-    let hit = 6.0;
+    let hit = 6.0_f32;
     let rect = egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(hit, full.height()));
     let resp = ui.interact(rect, ui.id().with(id), Sense::drag());
     if resp.hovered() || resp.dragged() {
