@@ -378,12 +378,7 @@ fn splitter_list(
     hit
 }
 
-fn paint_split_handle(
-    ui: &mut Ui,
-    ctx: &egui::Context,
-    resp: &egui::Response,
-    rect: egui::Rect,
-) {
+fn paint_split_handle(ui: &mut Ui, ctx: &egui::Context, resp: &egui::Response, rect: egui::Rect) {
     if resp.hovered() || resp.dragged() {
         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         ui.painter().rect_filled(
