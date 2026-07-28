@@ -28,14 +28,13 @@ jobs:
       - name: Test (core)
         run: cargo test -p glean-core
 
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
       - name: Release build
         run: cargo build -p glean-app --release
 
-      # Format/clippy are non-blocking during M0 spike; tighten after first green Windows build.
-      - name: Format (report only)
-        continue-on-error: true
-        run: cargo fmt --all -- --check
-
+      # Clippy remains advisory during M0; promote to hard gate after spike stabilizes.
       - name: Clippy (report only)
         continue-on-error: true
         run: cargo clippy -p glean-core -p glean-app -- -W clippy::all
