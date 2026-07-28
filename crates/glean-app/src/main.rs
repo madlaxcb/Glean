@@ -10,8 +10,8 @@ mod ui;
 
 use eframe::egui;
 use glean_core::{
-    AppCommand, AppEvent, EntryDetail, EntryFilter, EntrySummary, Feed, Folder, GleanService,
-    ReaderHostMode,
+    default_db_path, AppCommand, AppEvent, EntryDetail, EntryFilter, EntrySummary, Feed, Folder,
+    GleanService, ReaderHostMode,
 };
 use reader::ReaderHost;
 use ui::SpikeApp;
@@ -57,7 +57,11 @@ pub struct SpikeState {
 
 impl SpikeState {
     pub fn new() -> Self {
-        let service = GleanService::open_in_memory().expect("open in-memory store");
+        let db = default_db_path();
+        let service = GleanService::open_path(&db).unwrap_or_else(|e| {
+            eprintln!("glean: open db {:?}: {e}; falling back to memory", db);
+            GleanService::open_in_memory().expect("memory store")
+        });
         let mut s = Self {
             service,
             folders: Vec::new(),
@@ -71,7 +75,7 @@ impl SpikeState {
             host_mode: ReaderHostMode::ChildEmbed,
             nav_width: 200.0,
             list_width: 320.0,
-            status: "M1 — 粘贴 RSS URL 添加 · 刷新订阅".into(),
+            status: format!("库: {} · 添加 URL 订阅", db.display()),
             open_count: 0,
             search: String::new(),
             reader_rect: egui::Rect::NOTHING,
@@ -121,6 +125,8 @@ impl SpikeState {
                 }
                 let html = glean_core::reader_document(
                     &entry.summary.title,
+                    entry.summary.url.as_deref(),
+                    entry.author.as_deref(),
                     &entry.content_html,
                     self.dark,
                 );
@@ -212,8 +218,13 @@ impl SpikeState {
         }));
         self.reader.set_titlebar_dark(self.dark);
         if let Some(entry) = self.open_detail.clone() {
-            let html =
-                glean_core::reader_document(&entry.summary.title, &entry.content_html, self.dark);
+            let html = glean_core::reader_document(
+                &entry.summary.title,
+                entry.summary.url.as_deref(),
+                entry.author.as_deref(),
+                &entry.content_html,
+                self.dark,
+            );
             self.reader.show_html(&html);
         }
         self.status = format!("Theme: {}", if self.dark { "dark" } else { "light" });

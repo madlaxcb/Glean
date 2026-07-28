@@ -6,6 +6,7 @@ mod error;
 mod event;
 pub mod feed;
 mod model;
+mod paths;
 mod reader_html;
 mod sanitize;
 mod service;
@@ -18,6 +19,7 @@ pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, F
 pub use reader_html::reader_document;
 pub use sanitize::sanitize_html;
 pub use service::GleanService;
+pub use paths::default_db_path;
 pub use store::Store;
 
 /// Host mode for the WebView reader (spike / hybrid path).
@@ -94,7 +96,7 @@ mod tests {
 
     #[test]
     fn document_has_no_script_tags() {
-        let doc = reader_document("t", "<p>hi</p>", false);
+        let doc = reader_document("t", None, None, "<p>hi</p>", false);
         assert!(!doc.to_lowercase().contains("<script"));
     }
 

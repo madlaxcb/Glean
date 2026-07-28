@@ -151,7 +151,7 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "M1: 添加 URL → HTTP+feed-rs 入库 | 刷新 | j/k | 远程图默认剥离 | 关 JS 阅读",
+                        "M1: 本地库持久化 · 添加 URL · 刷新 · 阅读页含标题/原文链接 · 远程图剥离",
                     )
                     .small()
                     .weak(),
