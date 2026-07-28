@@ -39,7 +39,7 @@ impl eframe::App for SpikeApp {
                 Frame::new()
                     .fill(panel_fill)
                     .inner_margin(Margin::symmetric(8, 6))
-                    .stroke(Stroke::new(1.0, stroke_color)),
+                    .stroke(Stroke::new(1.0_f32, stroke_color)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
