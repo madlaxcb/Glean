@@ -93,8 +93,14 @@ impl SpikeState {
         self.push_current_to_reader();
     }
 
-    pub fn toggle_theme(&mut self) {
+    pub fn toggle_theme(&mut self, ctx: &egui::Context) {
         self.dark = !self.dark;
+        // OS chrome theme (winit); plus DWM immersive dark as fallback.
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.dark {
+            egui::viewport::SystemTheme::Dark
+        } else {
+            egui::viewport::SystemTheme::Light
+        }));
         self.reader.set_titlebar_dark(self.dark);
         self.push_current_to_reader();
         self.status = format!("Theme: {}", if self.dark { "dark" } else { "light" });

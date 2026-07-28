@@ -20,8 +20,8 @@ mod win {
     use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
+        EnumWindows, GetClientRect, GetFocus, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, SetFocus, GW_OWNER, SW_SHOWNORMAL,
     };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
@@ -97,6 +97,22 @@ mod win {
             self.dark_title = dark;
             if let Some(hwnd) = self.parent {
                 apply_titlebar_dark(hwnd, dark);
+            }
+        }
+
+        /// Pull Win32 keyboard focus from WebView2 child back to the main window.
+        pub fn reclaim_shell_focus(&mut self) {
+            let Some(parent) = self.parent else {
+                return;
+            };
+            unsafe {
+                let focus = GetFocus().unwrap_or_default();
+                let HWND(fp) = focus;
+                if !fp.is_null() && focus == parent {
+                    return;
+                }
+                // Focus is elsewhere (typically a WebView2 child) — reclaim.
+                let _ = SetFocus(Some(parent));
             }
         }
 
@@ -347,6 +363,10 @@ impl ReaderHost {
         self.inner.set_titlebar_dark(dark);
     }
 
+    pub fn reclaim_shell_focus(&mut self) {
+        self.inner.reclaim_shell_focus();
+    }
+
     pub fn ensure_attached(
         &mut self,
         mode: ReaderHostMode,
@@ -374,4 +394,5 @@ impl ReaderHost {
     pub fn shutdown(&mut self) {}
     pub fn show_html(&mut self, _html: &str) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
+    pub fn reclaim_shell_focus(&mut self) {}
 }

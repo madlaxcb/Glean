@@ -79,7 +79,7 @@ impl eframe::App for SpikeApp {
                         self.state.next();
                     }
                     if ui.button("Theme").clicked() {
-                        self.state.toggle_theme();
+                        self.state.toggle_theme(ctx);
                     }
                     if ui.button("Re-open x1").clicked() {
                         self.state.push_current_to_reader();
@@ -97,7 +97,9 @@ impl eframe::App for SpikeApp {
                         .desired_width(180.0)
                         .hint_text("中文 IME…");
                     let search_resp = ui.add(te);
-                    if search_resp.gained_focus() || search_resp.clicked() {
+                    if search_resp.clicked() || search_resp.gained_focus() {
+                        // WebView keeps Win32 focus; reclaim before TextEdit/IME.
+                        self.state.reader.reclaim_shell_focus();
                         search_resp.request_focus();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -131,7 +133,7 @@ impl eframe::App for SpikeApp {
                 self.state.prev();
             }
             if ctx.input(|i| i.key_pressed(egui::Key::T)) {
-                self.state.toggle_theme();
+                self.state.toggle_theme(ctx);
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Num1))
                 && self.state.host_mode != ReaderHostMode::ChildEmbed
@@ -150,6 +152,17 @@ impl eframe::App for SpikeApp {
         }
 
         self.state.splitting = false;
+
+        // Click outside reader → pull keyboard focus off WebView2 back to main HWND.
+        if ctx.input(|i| i.pointer.any_click()) {
+            if let Some(pos) = ctx.pointer_latest_pos() {
+                let in_reader =
+                    self.state.reader_rect.is_positive() && self.state.reader_rect.contains(pos);
+                if !in_reader {
+                    self.state.reader.reclaim_shell_focus();
+                }
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(Frame::new().fill(extreme).inner_margin(Margin::ZERO))
