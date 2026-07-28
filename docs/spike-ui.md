@@ -1,30 +1,43 @@
 # M0 UI Spike 记录
 
-> 状态：**进行中**  
-> 路径：**A — egui + WebView2**
+> 状态：**进行中（壳层交互基本可用）**  
+> 路径：**A — egui + WebView2**  
+> 最近确认构建：`448c479` 及之后 artifact
 
 ## 用户实测摘要
 
 | 项 | 结果 | 备注 |
 |----|------|------|
-| 内容区显示 | Pass | |
-| 外链系统浏览器 | Pass | |
-| 最大化/还原 | Pass | |
-| Stress 内存 | 观察 Pass | |
-| 双击弹 CMD | Fail→修 | `#![windows_subsystem="windows"]` + CI PE Subsystem=2；**禁止**全局 rustflags（会弄坏 proc-macro DLL） |
-| 搜索无法输入 | Fail→修 | 顶栏 + 取消每帧 repaint |
-| 点内容区后再点搜索失效 | Fail→修 | 壳层点击 `SetFocus` 回主窗（WebView 抢焦点） |
-| 双击无 CMD | Pass | windows_subsystem |
-| 左分隔带动右 | Fail→修 | 禁止把 clamp 后的宽度写回 state |
-| 标题栏不暗 | Partial | DWM 19/20 + ViewportCommand::SetTheme；winit 未必改标题栏 |
+| 内容区显示 | **Pass** | WebView2 正文 |
+| 外链系统浏览器 | **Pass** | ShellExecuteW |
+| 最大化/还原 | **Pass** | |
+| Stress 内存 | **观察 Pass** | 单实例 WebView，未线性暴涨 |
+| 双击无 CMD | **Pass** | `windows_subsystem`；禁全局 SUBSYSTEM rustflags |
+| 搜索可输入 | **Pass** | 顶栏 + 取消每帧 repaint |
+| 点内容区后再点搜索 | **Pass** | 壳层点击 `SetFocus` 回主窗 |
+| 左右分隔独立 | **Pass** | 不把 clamp 宽度写回 state |
+| 标题栏随主题变暗 | **Partial** | DWM + SetTheme；部分 Win 仍白，不单独挡 M0 |
 | 主题切换正文略慢 | 已知 | `load_html` 整页重载，Spike 可接受 |
-| IME 候选框 | 风险 | 顶栏搜索再测 |
+| 中文 IME 候选框 | **待确认** | 顶栏搜索输入拼音时是否出现候选 |
 
-## 再测清单（新 artifact）
+## §9.0.2 门禁对照（摘要）
 
-1. 双击 **无黑 CMD**  
-2. 顶栏「搜索」可点入、可输入  
-3. 只拖左分隔：右分隔位置可变（阅读区变），但列表**目标宽度**不被动永久缩小  
-4. 只拖右分隔：导航宽度不变  
-5. Theme：正文变暗；标题栏尽量变暗  
-6. 点 Article 1 外链：浏览器打开且尽量不闪 CMD  
+| 门禁方向 | 状态 |
+|----------|------|
+| 三栏 + 单实例换文 | Pass |
+| Resize / 分隔条 | Pass |
+| 最大化最小化 | Pass |
+| 焦点：壳 ↔ WebView | Pass（搜索） |
+| 外链 | Pass |
+| 内存 Stress | 观察 Pass |
+| IME | 待你确认候选框 |
+| 标题栏暗色 | Partial（可接受） |
+| H1 vs H2 真差异 | 仍弱（同源 child bounds） |
+
+## 下一步（二选一）
+
+1. **补测 IME**：顶栏搜索输入中文，看候选框是否出现 → 回填本表  
+2. 若 IME 可接受（或可记风险继续）：**M0 记为有条件通过** → 开始 **M0b**（workspace 业务骨架，仍无完整订阅）  
+3. 若 IME 硬 Fail 且不可接受 → 讨论是否切路径 B（Tauri）
+
+> CI 绿 / 有 artifact **≠** 正式 M0 Pass；以本表为准。
