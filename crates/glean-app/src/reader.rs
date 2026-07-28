@@ -317,8 +317,7 @@ mod win {
             .spawn()?;
         Ok(())
     }
-
-    }
+}
 
 #[cfg(windows)]
 pub struct ReaderHost {
