@@ -80,9 +80,9 @@ impl eframe::App for SpikeApp {
                     }
                     if ui.button("Re-open x1").clicked() {
                         if let Some(i) = self.state.selected {
-                            self.state.select_index(i);
+                            self.state.select_index_with(i, true);
                         } else if !self.state.entries.is_empty() {
-                            self.state.select_index(0);
+                            self.state.select_index_with(0, true);
                         }
                     }
                     if ui.button("Stress x50").clicked() {
@@ -185,16 +185,27 @@ impl eframe::App for SpikeApp {
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
                     column_contents(ui, "导航", |ui| {
-                        let unread_label = format!("全部未读 ({})", self.state.unread_total);
+                        ui.label(
+                            RichText::new(format!("未读合计：{}", self.state.unread_total))
+                                .strong(),
+                        );
                         if ui
                             .selectable_label(
-                                matches!(self.state.filter, EntryFilter::Unread)
-                                    || matches!(self.state.filter, EntryFilter::All),
-                                &unread_label,
+                                matches!(self.state.filter, EntryFilter::All),
+                                "全部文章",
                             )
                             .clicked()
                         {
                             self.state.set_filter(EntryFilter::All);
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(self.state.filter, EntryFilter::Unread),
+                                "仅未读",
+                            )
+                            .clicked()
+                        {
+                            self.state.set_filter(EntryFilter::Unread);
                         }
                         if ui
                             .selectable_label(
@@ -248,11 +259,20 @@ impl eframe::App for SpikeApp {
                                 let current = self.state.selected;
                                 let mut clicked = None;
                                 for (i, entry) in self.state.entries.iter().enumerate() {
-                                    let mark = if entry.is_read { " " } else { "•" };
-                                    let star = if entry.is_starred { "★" } else { " " };
-                                    let label =
-                                        format!("{mark}{star} {}  {}", entry.id.0, entry.title);
-                                    if ui.selectable_label(Some(i) == current, label).clicked() {
+                                    let state = if entry.is_read { "已读" } else { "未读" };
+                                    let star = if entry.is_starred { "★" } else { "" };
+                                    let label = format!(
+                                        "[{state}]{star} {title}",
+                                        state = state,
+                                        star = star,
+                                        title = entry.title
+                                    );
+                                    let rich = if entry.is_read {
+                                        RichText::new(label).weak()
+                                    } else {
+                                        RichText::new(label).strong()
+                                    };
+                                    if ui.selectable_label(Some(i) == current, rich).clicked() {
                                         clicked = Some(i);
                                     }
                                 }

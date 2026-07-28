@@ -109,21 +109,27 @@ impl SpikeState {
                 }
             }
             AppEvent::EntryOpened { entry } => {
-                self.open_count += 1;
+                let same = self
+                    .open_detail
+                    .as_ref()
+                    .map(|d| d.summary.id == entry.summary.id)
+                    .unwrap_or(false);
+                if !same {
+                    self.open_count += 1;
+                }
                 let html = glean_core::reader_document(
                     &entry.summary.title,
                     &entry.content_html,
                     self.dark,
                 );
-                self.status = format!(
-                    "OpenEntry id={} ({}) opens={} unread={}",
-                    entry.summary.id.0, entry.summary.title, self.open_count, self.unread_total
-                );
                 self.open_detail = Some(entry);
                 self.reader.show_html(&html);
+                // Status refreshed again after UnreadChanged in the same batch.
+                self.refresh_status();
             }
             AppEvent::UnreadChanged { total } => {
                 self.unread_total = total;
+                self.refresh_status();
             }
             AppEvent::Status { message } => {
                 self.status = message;
@@ -135,10 +141,43 @@ impl SpikeState {
     }
 
     pub fn select_index(&mut self, index: usize) {
-        if index < self.entries.len() {
-            self.selected = Some(index);
-            let id = self.entries[index].id;
-            self.dispatch(AppCommand::OpenEntry { id });
+        self.select_index_with(index, false);
+    }
+
+    /// `force`: reload reader even if the same entry is already open (Re-open / Stress).
+    pub fn select_index_with(&mut self, index: usize, force: bool) {
+        if index >= self.entries.len() {
+            return;
+        }
+        let id = self.entries[index].id;
+        let already = self
+            .open_detail
+            .as_ref()
+            .map(|d| d.summary.id == id)
+            .unwrap_or(false);
+        self.selected = Some(index);
+        if already && !force {
+            // Same row again: do not re-dispatch OpenEntry (avoids opens++ / HTML thrash).
+            self.refresh_status();
+            return;
+        }
+        self.dispatch(AppCommand::OpenEntry { id });
+    }
+
+    fn refresh_status(&mut self) {
+        let unread = self.unread_total;
+        if let Some(e) = &self.open_detail {
+            let read_label = if e.summary.is_read {
+                "已读"
+            } else {
+                "未读"
+            };
+            self.status = format!(
+                "「{}」{} · 未读 {} 篇 · 换文计数 {}",
+                e.summary.title, read_label, unread, self.open_count
+            );
+        } else {
+            self.status = format!("未读 {} 篇 · 未打开文章", unread);
         }
     }
 
