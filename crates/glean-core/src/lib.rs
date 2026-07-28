@@ -16,10 +16,10 @@ pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
 pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId};
+pub use paths::default_db_path;
 pub use reader_html::reader_document;
 pub use sanitize::sanitize_html;
 pub use service::GleanService;
-pub use paths::default_db_path;
 pub use store::Store;
 
 /// Host mode for the WebView reader (spike / hybrid path).
