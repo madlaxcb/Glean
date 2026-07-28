@@ -18,10 +18,11 @@ mod win {
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT, TRUE};
     use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetFocus, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, SetFocus, GW_OWNER, SW_SHOWNORMAL,
+        EnumWindows, GetClientRect, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
     };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
@@ -106,13 +107,13 @@ mod win {
                 return;
             };
             unsafe {
-                let focus = GetFocus().unwrap_or_default();
-                let HWND(fp) = focus;
-                if !fp.is_null() && focus == parent {
+                // windows 0.58: GetFocus() -> HWND (not Result).
+                let focus = GetFocus();
+                if focus == parent {
                     return;
                 }
                 // Focus is elsewhere (typically a WebView2 child) — reclaim.
-                let _ = SetFocus(Some(parent));
+                let _ = SetFocus(parent);
             }
         }
 
