@@ -11,7 +11,7 @@
 | 外链系统浏览器 | Pass | |
 | 最大化/还原 | Pass | |
 | Stress 内存 | 观察 Pass | |
-| 双击弹 CMD | Fail→修 | 曾丢失 `windows_subsystem`；现 attribute + link rustflags + CI PE 检查 |
+| 双击弹 CMD | Fail→修 | `#![windows_subsystem="windows"]` + CI PE Subsystem=2；**禁止**全局 rustflags（会弄坏 proc-macro DLL） |
 | 搜索无法输入 | Fail→修 | 移到顶栏；取消每帧 `request_repaint` |
 | 左分隔带动右 | Fail→修 | 禁止把 clamp 后的宽度写回 state |
 | 标题栏不暗 | Partial | DWM attr 19/20；部分主题/Win 版本仍可能无效 |
