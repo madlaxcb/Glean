@@ -1,8 +1,8 @@
 //! WebView2 reader host for M0 spike (Windows).
 //!
 //! Single-instance webview; bounds track the egui reader rect.
-//! Parent HWND is resolved via the main window title (eframe 0.31 does not
-//! expose a stable window handle on `Frame` — acceptable for spike only).
+//! Parent HWND is resolved by enumerating top-level windows of this process
+//! (not FindWindow by title — title matching is brittle).
 
 use glean_core::ReaderHostMode;
 
@@ -15,9 +15,10 @@ mod win {
         RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
     };
     use std::num::NonZeroIsize;
-    use windows::core::w;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+    };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
         Rect as WryRect, WebView, WebViewBuilder,
@@ -31,7 +32,6 @@ mod win {
 
     impl HasWindowHandle for ParentHwnd {
         fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-            // Split field access so rustfmt does not thrash on `self.0 .0`.
             let HWND(ptr) = self.0;
             let hwnd = ptr as isize;
             let nz = NonZeroIsize::new(hwnd).ok_or(HandleError::NotSupported)?;
@@ -53,6 +53,8 @@ mod win {
         webview: Option<WebView>,
         last_html: String,
         mode: ReaderHostMode,
+        /// Cached main window once discovered.
+        parent: Option<HWND>,
     }
 
     impl ReaderHostInner {
@@ -61,6 +63,7 @@ mod win {
                 webview: None,
                 last_html: String::new(),
                 mode: ReaderHostMode::ChildEmbed,
+                parent: None,
             }
         }
 
@@ -74,6 +77,7 @@ mod win {
 
         pub fn shutdown(&mut self) {
             self.webview = None;
+            self.parent = None;
         }
 
         pub fn show_html(&mut self, html: &str) {
@@ -96,9 +100,20 @@ mod win {
                 return Ok(());
             }
 
-            let parent = find_main_hwnd().ok_or_else(|| {
-                "FindWindow failed — is the title still \"Glean / 拾光 — M0 UI Spike\"?".to_string()
-            })?;
+            if reader_rect.width() < 2.0 || reader_rect.height() < 2.0 {
+                return Err("reader rect not ready".into());
+            }
+
+            let parent = match self.parent {
+                Some(h) => h,
+                None => {
+                    let h = find_main_hwnd_for_process().ok_or_else(|| {
+                        "no top-level HWND for this process yet (retry next frame)".to_string()
+                    })?;
+                    self.parent = Some(h);
+                    h
+                }
+            };
 
             let html = if self.last_html.is_empty() {
                 "<!DOCTYPE html><html><body style=\"font-family:sans-serif\">Glean reader</body></html>"
@@ -110,9 +125,8 @@ mod win {
             let bounds = rect_to_wry(reader_rect);
             let parent_wrap = ParentHwnd(parent);
 
-            // Both H1 and H2 start as child webviews with tracked bounds.
-            // H2 "true top-level popup" can be iterated after first Windows run
-            // if child mode fails IME/focus checks — record in docs/spike-ui.md.
+            // H1 and H2 both use child webview + tracked bounds in this spike.
+            // True top-level H2 overlay is deferred; document outcome in docs/spike-ui.md.
             let webview = WebViewBuilder::new()
                 .with_html(html)
                 .with_bounds(bounds)
@@ -133,7 +147,7 @@ mod win {
                 .map_err(|e| format!("WebView build_as_child: {e}"))?;
 
             self.webview = Some(webview);
-            let _ = mode; // documented: same attach path for H1/H2 in v0 spike
+            let _ = mode;
             Ok(())
         }
 
@@ -141,15 +155,57 @@ mod win {
             let Some(wv) = self.webview.as_ref() else {
                 return;
             };
+            if reader_rect.width() < 2.0 || reader_rect.height() < 2.0 {
+                return;
+            }
             if let Err(e) = wv.set_bounds(rect_to_wry(reader_rect)) {
                 eprintln!("set_bounds failed: {e}");
             }
         }
     }
 
-    fn find_main_hwnd() -> Option<HWND> {
-        // Must match ViewportBuilder title in main.rs
-        unsafe { FindWindowW(None, w!("Glean / 拾光 — M0 UI Spike")).ok() }
+    /// Find an unowned, visible top-level window belonging to this process.
+    fn find_main_hwnd_for_process() -> Option<HWND> {
+        struct State {
+            pid: u32,
+            found: HWND,
+        }
+
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = &mut *(lparam.0 as *mut State);
+            let mut wnd_pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut wnd_pid));
+            if wnd_pid != state.pid {
+                return TRUE;
+            }
+            if IsWindowVisible(hwnd).as_bool() == false {
+                return TRUE;
+            }
+            // Skip owned windows (tooltips, etc.)
+            if GetWindow(hwnd, GW_OWNER).is_ok_and(|o| {
+                let HWND(p) = o;
+                !p.is_null()
+            }) {
+                return TRUE;
+            }
+            // Prefer first visible unowned top-level — eframe main window.
+            state.found = hwnd;
+            BOOL(0) // stop enum
+        }
+
+        let mut state = State {
+            pid: std::process::id(),
+            found: HWND::default(),
+        };
+        unsafe {
+            let _ = EnumWindows(Some(enum_proc), LPARAM(&mut state as *mut State as isize));
+        }
+        let HWND(ptr) = state.found;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(state.found)
+        }
     }
 
     fn rect_to_wry(rect: Rect) -> WryRect {
