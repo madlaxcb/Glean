@@ -14,10 +14,7 @@ pub fn install(ctx: &egui::Context) {
             .insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
 
         // Prepend so CJK glyphs resolve; Latin still falls through family list as needed.
-        for family in [
-            egui::FontFamily::Proportional,
-            egui::FontFamily::Monospace,
-        ] {
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             if let Some(list) = fonts.families.get_mut(&family) {
                 list.insert(0, name.clone());
             }
@@ -40,7 +37,10 @@ fn load_cjk_font() -> Option<(String, Vec<u8>)> {
         ("Microsoft YaHei", r"C:\Windows\Fonts\msyh.ttf"),
         ("Microsoft YaHei", r"C:\Windows\Fonts\msyh.ttc"),
         ("SimSun", r"C:\Windows\Fonts\simsun.ttc"),
-        ("Noto Sans CJK SC", r"C:\Windows\Fonts\NotoSansCJKsc-Regular.otf"),
+        (
+            "Noto Sans CJK SC",
+            r"C:\Windows\Fonts\NotoSansCJKsc-Regular.otf",
+        ),
         ("Segoe UI", r"C:\Windows\Fonts\segoeui.ttf"),
     ];
 
