@@ -98,8 +98,8 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "Shortcuts: j/k next/prev | t theme | 1/2 host mode | Esc clear search  |  \
-                         Fill docs/spike-ui.md on Windows — CI artifact is not a Pass.",
+                        "j/k 换文 | t 主题 | 1/2 宿主 | Esc 清搜索  |  \
+                         从资源管理器双击运行更稳（避免挂到 CMD 控制台）。CI 产物 ≠ Pass。",
                     )
                     .small()
                     .weak(),
@@ -129,15 +129,34 @@ impl eframe::App for SpikeApp {
             self.state.search.clear();
         }
 
-        // Fill central area so no black "holes" under short column content.
+        const SPLIT_HIT: f32 = 6.0;
+        const NAV_MIN: f32 = 120.0;
+        const NAV_MAX: f32 = 360.0;
+        const LIST_MIN: f32 = 180.0;
+        const LIST_MAX: f32 = 520.0;
+        const READER_MIN: f32 = 240.0;
+
         egui::CentralPanel::default()
             .frame(Frame::new().fill(extreme).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
                 let h = full.height();
+                let total_w = full.width();
+
+                // Independent column widths; reserve READER_MIN so dragging left
+                // never steals the reader pane, and right drag never moves nav.
+                let max_nav = (total_w - LIST_MIN - READER_MIN - 2.0 * SPLIT_HIT)
+                    .clamp(NAV_MIN, NAV_MAX);
+                let nav_w = self.state.nav_width.clamp(NAV_MIN, max_nav);
+                self.state.nav_width = nav_w;
+
+                let after_nav = total_w - nav_w - SPLIT_HIT;
+                let max_list = (after_nav - READER_MIN - SPLIT_HIT).clamp(LIST_MIN, LIST_MAX);
+                let list_w = self.state.list_width.clamp(LIST_MIN, max_list);
+                self.state.list_width = list_w;
+
                 let mut x = full.min.x;
 
-                let nav_w = self.state.nav_width.clamp(120.0, 360.0);
                 let nav_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(nav_w, h));
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
@@ -153,9 +172,19 @@ impl eframe::App for SpikeApp {
                     });
                 });
                 x += nav_w;
-                x += splitter(ui, ctx, &mut self.state.nav_width, x, full, "split_nav");
 
-                let list_w = self.state.list_width.clamp(180.0, 520.0);
+                // Left splitter: only mutates nav_width (absolute from full.min.x).
+                x += splitter_nav(
+                    ui,
+                    ctx,
+                    &mut self.state.nav_width,
+                    x,
+                    full,
+                    NAV_MIN,
+                    max_nav,
+                    "split_nav",
+                );
+
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
@@ -163,11 +192,10 @@ impl eframe::App for SpikeApp {
                     column_contents(ui, "列表", |ui| {
                         ui.horizontal(|ui| {
                             ui.label("搜索");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.state.search)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("IME test…"),
-                            );
+                            let te = egui::TextEdit::singleline(&mut self.state.search)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("在此测中文 IME…");
+                            ui.add(te);
                         });
                         ui.separator();
                         egui::ScrollArea::vertical()
@@ -193,21 +221,32 @@ impl eframe::App for SpikeApp {
                     });
                 });
                 x += list_w;
-                x += splitter(ui, ctx, &mut self.state.list_width, x, full, "split_list");
 
-                let reader_w = (full.max.x - x).max(200.0);
+                // Right splitter: only mutates list_width.
+                let list_left = nav_w + SPLIT_HIT;
+                x += splitter_list(
+                    ui,
+                    ctx,
+                    &mut self.state.list_width,
+                    x,
+                    full,
+                    list_left,
+                    LIST_MIN,
+                    max_list,
+                    "split_list",
+                );
+
+                let reader_w = (full.max.x - x).max(READER_MIN);
                 let reader_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(reader_w, h));
                 self.state.reader_rect = reader_rect;
 
-                // Under WebView: solid fill so resize flash is not pure black.
                 paint_column_bg(
                     ui,
                     reader_rect,
                     Color32::from_gray(if self.state.dark { 30 } else { 245 }),
                     stroke_color,
                 );
-                // Tiny chrome label only on non-Windows; on Windows WebView covers this rect.
                 #[cfg(not(windows))]
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(reader_rect), |ui| {
                     ui.add_space(8.0);
@@ -241,8 +280,8 @@ impl eframe::App for SpikeApp {
                         self.primed = true;
                     }
                 }
-                // Transient: HWND/rect not ready on first frames — keep retrying silently.
-                Err(e) if e.contains("not ready") || e.contains("retry") => {}
+                Err(e) if e.contains("not ready") || e.contains("retry") || e.contains("not found") => {
+                }
                 Err(e) => {
                     self.state.status = format!("WebView error: {e}");
                 }
@@ -291,17 +330,60 @@ fn column_contents(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn splitter(
+/// Left splitter: set nav width from pointer x relative to panel origin.
+fn splitter_nav(
     ui: &mut Ui,
     ctx: &egui::Context,
-    target_width: &mut f32,
+    nav_width: &mut f32,
     x: f32,
     full: egui::Rect,
+    min_w: f32,
+    max_w: f32,
     id: &'static str,
 ) -> f32 {
     let hit = 6.0_f32;
     let rect = egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(hit, full.height()));
     let resp = ui.interact(rect, ui.id().with(id), Sense::drag());
+    paint_split_handle(ui, ctx, &resp, rect);
+    if resp.dragged() {
+        if let Some(pos) = ctx.pointer_latest_pos() {
+            *nav_width = (pos.x - full.min.x).clamp(min_w, max_w);
+        }
+    }
+    hit
+}
+
+/// Right splitter: set list width from pointer x relative to list's left edge.
+fn splitter_list(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    list_width: &mut f32,
+    x: f32,
+    full: egui::Rect,
+    list_left_from_full: f32,
+    min_w: f32,
+    max_w: f32,
+    id: &'static str,
+) -> f32 {
+    let hit = 6.0_f32;
+    let rect = egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(hit, full.height()));
+    let resp = ui.interact(rect, ui.id().with(id), Sense::drag());
+    paint_split_handle(ui, ctx, &resp, rect);
+    if resp.dragged() {
+        if let Some(pos) = ctx.pointer_latest_pos() {
+            // list_left_from_full is width offset from full.min.x to list start.
+            *list_width = (pos.x - full.min.x - list_left_from_full).clamp(min_w, max_w);
+        }
+    }
+    hit
+}
+
+fn paint_split_handle(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    resp: &egui::Response,
+    rect: egui::Rect,
+) {
     if resp.hovered() || resp.dragged() {
         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         ui.painter().rect_filled(
@@ -316,8 +398,4 @@ fn splitter(
             Color32::from_rgba_unmultiplied(120, 120, 120, 40),
         );
     }
-    if resp.dragged() {
-        *target_width = (*target_width + resp.drag_delta().x).clamp(120.0, 520.0);
-    }
-    hit
 }

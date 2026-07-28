@@ -13,6 +13,17 @@ use reader::ReaderHost;
 use ui::SpikeApp;
 
 fn main() -> eframe::Result<()> {
+    // If launched from cmd.exe, free the console so EnumWindows / WebView parenting
+    // is less likely to confuse the console HWND with the GUI window. Diagnostics
+    // still go to the parent console until FreeConsole succeeds.
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Console::FreeConsole;
+        unsafe {
+            let _ = FreeConsole();
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
@@ -86,6 +97,7 @@ impl SpikeState {
 
     pub fn toggle_theme(&mut self) {
         self.dark = !self.dark;
+        self.reader.set_titlebar_dark(self.dark);
         self.push_current_to_reader();
         self.status = format!("Theme: {}", if self.dark { "dark" } else { "light" });
     }
