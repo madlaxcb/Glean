@@ -282,9 +282,8 @@ impl eframe::App for SpikeApp {
                 }
                 Err(e) => {
                     // Transient: HWND/rect not ready on first frames.
-                    let transient = e.contains("not ready")
-                        || e.contains("retry")
-                        || e.contains("not found");
+                    let transient =
+                        e.contains("not ready") || e.contains("retry") || e.contains("not found");
                     if !transient {
                         self.state.status = format!("WebView error: {e}");
                     }
