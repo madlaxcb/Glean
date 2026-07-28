@@ -3,9 +3,13 @@ name = "glean-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Glean domain types, store, commands and events (no UI deps)"
+description = "Glean domain types, store, feed fetch, commands and events (no UI deps)"
 
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { workspace = true }
+feed-rs = { workspace = true }
+ammonia = { workspace = true }
+url = { workspace = true }

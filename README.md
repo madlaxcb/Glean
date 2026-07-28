@@ -2,18 +2,20 @@
 
 Windows 本地优先的现代化 RSS / 信息流聚合阅读器。
 
-> **当前阶段：M0b 工程底板**（M0 UI Spike 有条件通过，路径 A）  
-> 内存 SQLite + `AppCommand`/`AppEvent` + demo 数据；**尚无网络抓取**（M1）。
+> **当前阶段：M1 订阅垂直切片**  
+> HTTP + feed-rs 入库；阅读区 WebView2；路径 A（egui Hybrid）。
 
 - 开发方案：[`docs/Glean-开发方案.md`](docs/Glean-开发方案.md)
-- Spike 记录：[`docs/spike-ui.md`](docs/spike-ui.md)
+- M0 Spike：[`docs/spike-ui.md`](docs/spike-ui.md)
+- M0b：[`docs/m0b.md`](docs/m0b.md)
+- M1：[`docs/m1.md`](docs/m1.md)
 - 仓库：<https://github.com/madlaxcb/Glean>
 
 ## 用 GitHub Actions 产物
 
 1. [Actions](https://github.com/madlaxcb/Glean/actions) → **windows-spike**
-2. Artifact **glean-spike-windows-x64** → Windows 运行 `glean-spike.exe`
-3. 需 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)
+2. Artifact **glean-spike-windows-x64** → 运行 `glean-spike.exe`（需 WebView2）
+3. 粘贴 RSS URL → **添加订阅** → 阅读
 
 ## 本地
 
@@ -25,8 +27,8 @@ cargo run -p glean-app
 ## 结构
 
 ```
-crates/glean-core/   # 模型、SQLite、Command/Event、GleanService
-crates/glean-app/    # egui 壳 + WebView；投影 Event
+crates/glean-core/   # 模型、SQLite、HTTP/feed、Command/Event
+crates/glean-app/    # egui 壳 + WebView2
 ```
 
 ## 许可

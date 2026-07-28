@@ -46,7 +46,10 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Glean M0b");
+                    ui.heading("Glean M1");
+                    if ui.button("刷新").clicked() {
+                        self.state.refresh_all_feeds();
+                    }
                     ui.separator();
                     if ui
                         .selectable_label(
@@ -108,6 +111,37 @@ impl eframe::App for SpikeApp {
                 });
             });
 
+        egui::TopBottomPanel::top("add_feed")
+            .frame(
+                Frame::new()
+                    .fill(panel_fill)
+                    .inner_margin(Margin::symmetric(8, 4)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("订阅 URL");
+                    let feed_id = egui::Id::new("feed_url_input");
+                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
+                        .id(feed_id)
+                        .desired_width(420.0)
+                        .hint_text("https://…/rss.xml");
+                    let resp = ui.add(te);
+                    if resp.clicked() || resp.gained_focus() {
+                        self.state.reader.reclaim_shell_focus();
+                        resp.request_focus();
+                    }
+                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("添加订阅").clicked() || enter {
+                        self.state.add_feed_from_url();
+                    }
+                    ui.label(
+                        RichText::new("示例: https://www.reddit.com/r/rust/.rss")
+                            .small()
+                            .weak(),
+                    );
+                });
+            });
+
         egui::TopBottomPanel::bottom("hints")
             .frame(
                 Frame::new()
@@ -117,7 +151,7 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "M0b: Command→Event→列表 | j/k 换文 | 数据来自内存 SQLite demo | 无网络抓取",
+                        "M1: 添加 URL → HTTP+feed-rs 入库 | 刷新 | j/k | 远程图默认剥离 | 关 JS 阅读",
                     )
                     .small()
                     .weak(),

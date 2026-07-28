@@ -16,3 +16,7 @@ repository = "https://github.com/madlaxcb/Glean"
 glean-core = { path = "crates/glean-core" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+feed-rs = "2"
+ammonia = "4"
+url = "2"

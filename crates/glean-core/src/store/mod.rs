@@ -1,4 +1,4 @@
-//! SQLite persistence (M0b). FTS5 uses trigram when available.
+//! SQLite persistence. FTS5 uses trigram when available.
 
 use crate::error::{CoreError, Result};
 use crate::model::{
@@ -413,6 +413,108 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![pattern, limit], map_summary_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn find_feed_by_url(&self, feed_url: &str) -> Result<Option<FeedId>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM feeds WHERE feed_url = ?1",
+                params![feed_url],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(id.map(FeedId))
+    }
+
+    pub fn get_feed_fetch_meta(
+        &self,
+        id: FeedId,
+    ) -> Result<(String, Option<String>, Option<String>)> {
+        self.conn
+            .query_row(
+                "SELECT feed_url, etag, last_modified FROM feeds WHERE id = ?1",
+                params![id.0],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| CoreError::NotFound(format!("feed {}", id.0)))
+    }
+
+    pub fn update_feed_after_fetch(
+        &mut self,
+        id: FeedId,
+        title: Option<&str>,
+        site_url: Option<&str>,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let now = now_secs();
+        if let Some(err) = error {
+            self.conn.execute(
+                "UPDATE feeds SET last_error = ?1, last_fetched_at = ?2 WHERE id = ?3",
+                params![err, now, id.0],
+            )?;
+            return Ok(());
+        }
+        self.conn.execute(
+            "UPDATE feeds SET
+                title = COALESCE(?1, title),
+                site_url = COALESCE(?2, site_url),
+                etag = COALESCE(?3, etag),
+                last_modified = COALESCE(?4, last_modified),
+                last_error = NULL,
+                last_fetched_at = ?5
+             WHERE id = ?6",
+            params![title, site_url, etag, last_modified, now, id.0],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or ignore by (feed_id, guid). Returns true if a new row was inserted.
+    pub fn upsert_entry(
+        &mut self,
+        feed_id: FeedId,
+        guid: &str,
+        title: &str,
+        url: Option<&str>,
+        author: Option<&str>,
+        published_at: Option<i64>,
+        summary: Option<&str>,
+        content_html: &str,
+    ) -> Result<bool> {
+        let fetched = now_secs();
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO entries(
+                feed_id, guid, title, url, author, published_at, summary, content_html, fetched_at
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                feed_id.0,
+                guid,
+                title,
+                url,
+                author,
+                published_at,
+                summary,
+                content_html,
+                fetched
+            ],
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        let id = self.conn.last_insert_rowid();
+        let _ = self.conn.execute(
+            "INSERT INTO entries_fts(rowid, title, summary, content_html) VALUES(?1, ?2, ?3, ?4)",
+            params![id, title, summary.unwrap_or(""), content_html],
+        );
+        Ok(true)
+    }
+
+    pub fn list_feed_ids(&self) -> Result<Vec<FeedId>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM feeds ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.filter_map(|r| r.ok()).map(FeedId).collect())
     }
 }
 

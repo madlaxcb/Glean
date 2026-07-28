@@ -1,11 +1,13 @@
-//! Glean domain core: models, SQLite store, AppCommand/AppEvent service.
+//! Glean domain core: models, SQLite store, feed fetch, AppCommand/AppEvent.
 //! This crate must never depend on egui, wry, or tauri.
 
 mod command;
 mod error;
 mod event;
+pub mod feed;
 mod model;
 mod reader_html;
+mod sanitize;
 mod service;
 pub mod store;
 
@@ -14,6 +16,7 @@ pub use error::{CoreError, Result};
 pub use event::AppEvent;
 pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId};
 pub use reader_html::reader_document;
+pub use sanitize::sanitize_html;
 pub use service::GleanService;
 pub use store::Store;
 
@@ -44,6 +47,7 @@ impl ReaderHostMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feed::parse::parse_feed;
 
     #[test]
     fn bootstrap_demo_emits_nav_and_entries() {
@@ -131,5 +135,39 @@ mod tests {
         assert!(ev
             .iter()
             .any(|e| matches!(e, AppEvent::NavUpdated { feeds, .. } if !feeds.is_empty())));
+    }
+
+    #[test]
+    fn parse_and_upsert_without_network() {
+        const SAMPLE: &[u8] = br#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>T</title>
+<item><title>A</title><guid>g1</guid><description>&lt;p&gt;x&lt;/p&gt;</description></item>
+<item><title>A</title><guid>g1</guid><description>dup</description></item>
+</channel></rss>"#;
+        let parsed = parse_feed(SAMPLE).unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let mut n = 0;
+        for e in &parsed.entries {
+            if store
+                .upsert_entry(
+                    fid,
+                    &e.guid,
+                    &e.title,
+                    e.url.as_deref(),
+                    e.author.as_deref(),
+                    e.published_at,
+                    e.summary.as_deref(),
+                    &e.content_html,
+                )
+                .unwrap()
+            {
+                n += 1;
+            }
+        }
+        // two items same guid in sample -> only one insert from loop over unique...
+        // sample has two items same guid - second IGNORE
+        assert_eq!(n, 1);
+        assert_eq!(store.list_entries(EntryFilter::All).unwrap().len(), 1);
     }
 }

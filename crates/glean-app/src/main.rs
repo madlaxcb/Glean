@@ -21,12 +21,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title("Glean / 拾光 — M0b"),
+            .with_title("Glean / 拾光 — M1"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Glean M0b",
+        "Glean M1",
         options,
         Box::new(|cc| Ok(Box::new(SpikeApp::new(cc)))),
     )
@@ -52,6 +52,7 @@ pub struct SpikeState {
     pub reader_rect: egui::Rect,
     pub reader: ReaderHost,
     pub splitting: bool,
+    pub feed_url_input: String,
 }
 
 impl SpikeState {
@@ -70,12 +71,13 @@ impl SpikeState {
             host_mode: ReaderHostMode::ChildEmbed,
             nav_width: 200.0,
             list_width: 320.0,
-            status: "M0b — local SQLite demo (no network fetch)".into(),
+            status: "M1 — 粘贴 RSS URL 添加 · 刷新订阅".into(),
             open_count: 0,
             search: String::new(),
             reader_rect: egui::Rect::NOTHING,
             reader: ReaderHost::new(),
             splitting: false,
+            feed_url_input: String::new(),
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
@@ -227,5 +229,26 @@ impl SpikeState {
         self.filter = filter;
         self.selected = None;
         self.dispatch(AppCommand::ListEntries { filter });
+    }
+
+    pub fn add_feed_from_url(&mut self) {
+        let url = self.feed_url_input.trim().to_string();
+        if url.is_empty() {
+            self.status = "请输入 RSS/Atom URL".into();
+            return;
+        }
+        self.status = format!("正在抓取 {url} …");
+        self.dispatch(AppCommand::AddFeedFromUrl {
+            feed_url: url,
+            folder_id: None,
+        });
+        if !self.status.starts_with("Error") {
+            self.feed_url_input.clear();
+        }
+    }
+
+    pub fn refresh_all_feeds(&mut self) {
+        self.status = "正在刷新全部订阅…".into();
+        self.dispatch(AppCommand::RefreshFeeds { feed_id: None });
     }
 }
