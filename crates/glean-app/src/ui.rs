@@ -10,6 +10,7 @@ pub struct SpikeApp {
 
 impl SpikeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::fonts::install(&cc.egui_ctx);
         apply_style(&cc.egui_ctx, false);
         Self {
             state: SpikeState::new(),
@@ -29,64 +30,81 @@ impl eframe::App for SpikeApp {
             ctx.set_visuals(egui::Visuals::light());
         }
 
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Glean M0 Spike");
-                ui.separator();
-                if ui
-                    .selectable_label(
-                        self.state.host_mode == ReaderHostMode::ChildEmbed,
-                        "H1 Embed",
-                    )
-                    .clicked()
-                    && self.state.host_mode != ReaderHostMode::ChildEmbed
-                {
-                    self.state.toggle_host_mode();
-                }
-                if ui
-                    .selectable_label(
-                        self.state.host_mode == ReaderHostMode::FollowOverlay,
-                        "H2 Overlay",
-                    )
-                    .clicked()
-                    && self.state.host_mode != ReaderHostMode::FollowOverlay
-                {
-                    self.state.toggle_host_mode();
-                }
-                ui.separator();
-                if ui.button("Prev (k)").clicked() {
-                    self.state.prev();
-                }
-                if ui.button("Next (j)").clicked() {
-                    self.state.next();
-                }
-                if ui.button("Theme").clicked() {
-                    self.state.toggle_theme();
-                }
-                if ui.button("Re-open x1").clicked() {
-                    self.state.push_current_to_reader();
-                }
-                if ui.button("Stress x50").clicked() {
-                    for _ in 0..50 {
+        let panel_fill = ctx.style().visuals.panel_fill;
+        let extreme = ctx.style().visuals.extreme_bg_color;
+        let stroke_color = ctx.style().visuals.window_stroke.color;
+
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                Frame::new()
+                    .fill(panel_fill)
+                    .inner_margin(Margin::symmetric(8, 6))
+                    .stroke(Stroke::new(1.0, stroke_color)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Glean M0 Spike");
+                    ui.separator();
+                    if ui
+                        .selectable_label(
+                            self.state.host_mode == ReaderHostMode::ChildEmbed,
+                            "H1 Embed",
+                        )
+                        .clicked()
+                        && self.state.host_mode != ReaderHostMode::ChildEmbed
+                    {
+                        self.state.toggle_host_mode();
+                    }
+                    if ui
+                        .selectable_label(
+                            self.state.host_mode == ReaderHostMode::FollowOverlay,
+                            "H2 Overlay",
+                        )
+                        .clicked()
+                        && self.state.host_mode != ReaderHostMode::FollowOverlay
+                    {
+                        self.state.toggle_host_mode();
+                    }
+                    ui.separator();
+                    if ui.button("Prev (k)").clicked() {
+                        self.state.prev();
+                    }
+                    if ui.button("Next (j)").clicked() {
                         self.state.next();
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(&self.state.status).small());
+                    if ui.button("Theme").clicked() {
+                        self.state.toggle_theme();
+                    }
+                    if ui.button("Re-open x1").clicked() {
+                        self.state.push_current_to_reader();
+                    }
+                    if ui.button("Stress x50").clicked() {
+                        for _ in 0..50 {
+                            self.state.next();
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(&self.state.status).small());
+                    });
                 });
             });
-        });
 
-        egui::TopBottomPanel::bottom("hints").show(ctx, |ui| {
-            ui.label(
-                RichText::new(
-                    "Shortcuts: j/k next/prev | t theme | 1/2 host mode | Esc clear search  |  \
-                     Fill docs/spike-ui.md on Windows — CI artifact is not a Pass.",
-                )
-                .small()
-                .weak(),
-            );
-        });
+        egui::TopBottomPanel::bottom("hints")
+            .frame(
+                Frame::new()
+                    .fill(panel_fill)
+                    .inner_margin(Margin::symmetric(8, 4)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Shortcuts: j/k next/prev | t theme | 1/2 host mode | Esc clear search  |  \
+                         Fill docs/spike-ui.md on Windows — CI artifact is not a Pass.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            });
 
         if ctx.input(|i| i.key_pressed(egui::Key::J)) {
             self.state.next();
@@ -111,8 +129,9 @@ impl eframe::App for SpikeApp {
             self.state.search.clear();
         }
 
+        // Fill central area so no black "holes" under short column content.
         egui::CentralPanel::default()
-            .frame(Frame::NONE)
+            .frame(Frame::new().fill(extreme).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
                 let h = full.height();
@@ -121,8 +140,10 @@ impl eframe::App for SpikeApp {
                 let nav_w = self.state.nav_width.clamp(120.0, 360.0);
                 let nav_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(nav_w, h));
+                paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
-                    frame_panel(ui, "导航", |ui| {
+                    ui.exhaust_columns_margin();
+                    column_contents(ui, "导航", |ui| {
                         ui.label("全部未读");
                         ui.label("星标");
                         ui.separator();
@@ -138,31 +159,38 @@ impl eframe::App for SpikeApp {
                 let list_w = self.state.list_width.clamp(180.0, 520.0);
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
+                paint_column_bg(ui, list_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
-                    frame_panel(ui, "列表", |ui| {
+                    column_contents(ui, "列表", |ui| {
                         ui.horizontal(|ui| {
                             ui.label("搜索");
-                            ui.text_edit_singleline(&mut self.state.search);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.state.search)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("IME test…"),
+                            );
                         });
                         ui.separator();
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            let current = self.state.index;
-                            let mut clicked = None;
-                            for (i, sample) in self.state.samples.iter().enumerate() {
-                                if ui
-                                    .selectable_label(
-                                        i == current,
-                                        format!("{}  {}", sample.id, sample.title),
-                                    )
-                                    .clicked()
-                                {
-                                    clicked = Some(i);
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let current = self.state.index;
+                                let mut clicked = None;
+                                for (i, sample) in self.state.samples.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(
+                                            i == current,
+                                            format!("{}  {}", sample.id, sample.title),
+                                        )
+                                        .clicked()
+                                    {
+                                        clicked = Some(i);
+                                    }
                                 }
-                            }
-                            if let Some(i) = clicked {
-                                self.state.select(i);
-                            }
-                        });
+                                if let Some(i) = clicked {
+                                    self.state.select(i);
+                                }
+                            });
                     });
                 });
                 x += list_w;
@@ -173,35 +201,29 @@ impl eframe::App for SpikeApp {
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(reader_w, h));
                 self.state.reader_rect = reader_rect;
 
+                // Under WebView: solid fill so resize flash is not pure black.
+                paint_column_bg(
+                    ui,
+                    reader_rect,
+                    Color32::from_gray(if self.state.dark { 30 } else { 245 }),
+                    stroke_color,
+                );
+                // Tiny chrome label only on non-Windows; on Windows WebView covers this rect.
+                #[cfg(not(windows))]
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(reader_rect), |ui| {
-                    Frame::new()
-                        .fill(Color32::from_gray(if self.state.dark { 30 } else { 245 }))
-                        .stroke(Stroke::new(1.0, Color32::from_gray(80)))
-                        .inner_margin(Margin::same(8))
-                        .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
                             ui.label(RichText::new("阅读区 (WebView)").strong());
-                            #[cfg(windows)]
-                            ui.label(
-                                RichText::new(format!(
-                                    "host={} · rect=({:.0},{:.0},{:.0}x{:.0})",
-                                    self.state.host_mode.label(),
-                                    reader_rect.min.x,
-                                    reader_rect.min.y,
-                                    reader_rect.width(),
-                                    reader_rect.height()
-                                ))
-                                .small(),
+                            ui.colored_label(
+                                Color32::from_rgb(200, 80, 40),
+                                "非 Windows：WebView2 未启用。请下载 CI artifact 或在 Win 上运行。",
                             );
-                            #[cfg(not(windows))]
-                            {
-                                ui.colored_label(
-                                    Color32::from_rgb(200, 80, 40),
-                                    "非 Windows：WebView2 未启用。请下载 CI artifact 或在 Win 上运行。",
-                                );
-                                ui.separator();
-                                ui.label(RichText::new(&self.state.current().title).heading());
-                            }
+                            ui.separator();
+                            ui.label(RichText::new(&self.state.current().title).heading());
                         });
+                    });
                 });
             });
 
@@ -244,16 +266,25 @@ fn apply_style(ctx: &egui::Context, dark: bool) {
     }
 }
 
-fn frame_panel(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .fill(ui.visuals().panel_fill)
-        .stroke(Stroke::new(1.0, ui.visuals().window_stroke.color))
-        .inner_margin(Margin::same(8))
-        .show(ui, |ui| {
+fn paint_column_bg(ui: &Ui, rect: egui::Rect, fill: Color32, stroke: Color32) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, fill);
+    painter.line_segment(
+        [rect.right_top(), rect.right_bottom()],
+        Stroke::new(1.0, stroke),
+    );
+}
+
+fn column_contents(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
             ui.label(RichText::new(title).strong());
             ui.separator();
             add(ui);
         });
+    });
 }
 
 fn splitter(
@@ -272,7 +303,13 @@ fn splitter(
         ui.painter().rect_filled(
             rect,
             0.0,
-            Color32::from_rgba_unmultiplied(100, 140, 200, 80),
+            Color32::from_rgba_unmultiplied(100, 140, 200, 120),
+        );
+    } else {
+        ui.painter().rect_filled(
+            rect,
+            0.0,
+            Color32::from_rgba_unmultiplied(120, 120, 120, 40),
         );
     }
     if resp.dragged() {

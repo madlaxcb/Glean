@@ -3,6 +3,7 @@
 //! Goal: validate Hybrid path A before any RSS business code.
 //! See docs/Glean-开发方案.md §9.0 and docs/spike-ui.md.
 
+mod fonts;
 mod reader;
 mod ui;
 
