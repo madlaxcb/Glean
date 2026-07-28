@@ -1,0 +1,25 @@
+[package]
+name = "glean-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Glean M0 UI spike: egui shell + WebView2 reader host"
+default-run = "glean-spike"
+
+[[bin]]
+name = "glean-spike"
+path = "src/main.rs"
+
+[dependencies]
+glean-core = { workspace = true }
+eframe = { version = "0.31", default-features = true }
+egui = "0.31"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+wry = "0.50"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }

@@ -1,0 +1,73 @@
+name: windows-spike
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build M0 spike (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test (core)
+        run: cargo test -p glean-core
+
+      - name: Release build
+        run: cargo build -p glean-app --release
+
+      # Format/clippy are non-blocking during M0 spike; tighten after first green Windows build.
+      - name: Format (report only)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (report only)
+        continue-on-error: true
+        run: cargo clippy -p glean-core -p glean-app -- -W clippy::all
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/glean-spike.exe dist/glean-spike.exe
+          @"
+          Glean M0 UI Spike
+          =================
+          Built by GitHub Actions (windows-latest).
+
+          Requirements:
+          - Windows 10 1809+ / Windows 11
+          - WebView2 Evergreen Runtime (usually preinstalled on Win11)
+            https://developer.microsoft.com/microsoft-edge/webview2/
+
+          Run:
+            .\\glean-spike.exe
+
+          This binary is for Hybrid path validation ONLY.
+          Completing docs/spike-ui.md checklist = M0 Pass/Fail.
+          A green CI build is NOT an M0 Pass.
+          "@ | Set-Content -Encoding utf8 dist/README-SPIKE.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glean-spike-windows-x64
+          path: |
+            dist/glean-spike.exe
+            dist/README-SPIKE.txt
+          if-no-files-found: error

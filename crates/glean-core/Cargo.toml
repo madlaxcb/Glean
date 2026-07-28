@@ -1,0 +1,10 @@
+[package]
+name = "glean-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Glean domain types, commands and events (no UI deps)"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

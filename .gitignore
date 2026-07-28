@@ -1,0 +1,15 @@
+/target/
+**/target/
+Cargo.lock.bak
+*.db
+*.db-wal
+*.db-shm
+.idea/
+.vscode/
+*.pdb
+dist/
+.DS_Store
+*.log
+
+# personal scratch notes (not product docs)
+docs/无标题笔记*.md

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/glean-core",
+    "crates/glean-app",
+]
+default-members = ["crates/glean-app"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/madlaxcb/Glean"
+
+[workspace.dependencies]
+glean-core = { path = "crates/glean-core" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
