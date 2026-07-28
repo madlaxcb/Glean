@@ -1,6 +1,6 @@
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::ReaderHostMode;
+use glean_core::{EntryFilter, ReaderHostMode};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -11,7 +11,6 @@ const READER_MIN: f32 = 240.0;
 
 pub struct SpikeApp {
     state: SpikeState,
-    /// Once true, first article has been pushed to the reader.
     primed: bool,
 }
 
@@ -38,8 +37,6 @@ impl eframe::App for SpikeApp {
         let extreme = ctx.style().visuals.extreme_bg_color;
         let stroke_color = ctx.style().visuals.window_stroke.color;
 
-        // Search lives in the top bar so it is never under the WebView child HWND
-        // and is easier to focus for IME tests.
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 Frame::new()
@@ -49,7 +46,7 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Glean M0 Spike");
+                    ui.heading("Glean M0b");
                     ui.separator();
                     if ui
                         .selectable_label(
@@ -82,7 +79,11 @@ impl eframe::App for SpikeApp {
                         self.state.toggle_theme(ctx);
                     }
                     if ui.button("Re-open x1").clicked() {
-                        self.state.push_current_to_reader();
+                        if let Some(i) = self.state.selected {
+                            self.state.select_index(i);
+                        } else if !self.state.entries.is_empty() {
+                            self.state.select_index(0);
+                        }
                     }
                     if ui.button("Stress x50").clicked() {
                         for _ in 0..50 {
@@ -98,7 +99,6 @@ impl eframe::App for SpikeApp {
                         .hint_text("中文 IME…");
                     let search_resp = ui.add(te);
                     if search_resp.clicked() || search_resp.gained_focus() {
-                        // WebView keeps Win32 focus; reclaim before TextEdit/IME.
                         self.state.reader.reclaim_shell_focus();
                         search_resp.request_focus();
                     }
@@ -117,7 +117,7 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "j/k 换文 | t 主题 | Esc 清搜索 | 顶栏搜索测 IME | CI 产物 ≠ M0 Pass",
+                        "M0b: Command→Event→列表 | j/k 换文 | 数据来自内存 SQLite demo | 无网络抓取",
                     )
                     .small()
                     .weak(),
@@ -153,7 +153,6 @@ impl eframe::App for SpikeApp {
 
         self.state.splitting = false;
 
-        // Click outside reader → pull keyboard focus off WebView2 back to main HWND.
         if ctx.input(|i| i.pointer.any_click()) {
             if let Some(pos) = ctx.pointer_latest_pos() {
                 let in_reader =
@@ -171,10 +170,6 @@ impl eframe::App for SpikeApp {
                 let h = full.height();
                 let total_w = full.width();
 
-                // Layout uses desired widths clamped for *this frame only*.
-                // Never write the clamped value back into state — that permanently
-                // shrinks list_width when nav grows and makes the right splitter
-                // appear to "follow" the left one.
                 let max_nav =
                     (total_w - LIST_MIN - READER_MIN - 2.0 * SPLIT_HIT).clamp(NAV_MIN, NAV_MAX);
                 let nav_w = self.state.nav_width.clamp(NAV_MIN, max_nav);
@@ -190,19 +185,51 @@ impl eframe::App for SpikeApp {
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
                     column_contents(ui, "导航", |ui| {
-                        ui.label("全部未读");
-                        ui.label("星标");
+                        let unread_label = format!("全部未读 ({})", self.state.unread_total);
+                        if ui
+                            .selectable_label(
+                                matches!(self.state.filter, EntryFilter::Unread)
+                                    || matches!(self.state.filter, EntryFilter::All),
+                                &unread_label,
+                            )
+                            .clicked()
+                        {
+                            self.state.set_filter(EntryFilter::All);
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(self.state.filter, EntryFilter::Starred),
+                                "星标",
+                            )
+                            .clicked()
+                        {
+                            self.state.set_filter(EntryFilter::Starred);
+                        }
                         ui.separator();
                         ui.label(RichText::new("文件夹").weak());
-                        ui.label("· 示例");
+                        for f in &self.state.folders {
+                            ui.label(format!("· {}", f.name));
+                        }
                         ui.separator();
-                        ui.label(RichText::new("订阅（业务未做）").weak());
+                        ui.label(RichText::new("订阅").weak());
+                        let mut feed_click = None;
+                        for feed in &self.state.feeds {
+                            let selected = matches!(
+                                self.state.filter,
+                                EntryFilter::Feed(id) if id == feed.id
+                            );
+                            if ui.selectable_label(selected, &feed.title).clicked() {
+                                feed_click = Some(feed.id);
+                            }
+                        }
+                        if let Some(id) = feed_click {
+                            self.state.set_filter(EntryFilter::Feed(id));
+                        }
                     });
                 });
                 x += nav_w;
 
                 let (hit, dragged) = splitter_drag(ui, ctx, x, full, "split_nav", |pos_x| {
-                    // Absolute width from panel left.
                     self.state.nav_width = (pos_x - full.min.x).clamp(NAV_MIN, max_nav);
                 });
                 if dragged {
@@ -218,21 +245,19 @@ impl eframe::App for SpikeApp {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                let current = self.state.index;
+                                let current = self.state.selected;
                                 let mut clicked = None;
-                                for (i, sample) in self.state.samples.iter().enumerate() {
-                                    if ui
-                                        .selectable_label(
-                                            i == current,
-                                            format!("{}  {}", sample.id, sample.title),
-                                        )
-                                        .clicked()
-                                    {
+                                for (i, entry) in self.state.entries.iter().enumerate() {
+                                    let mark = if entry.is_read { " " } else { "•" };
+                                    let star = if entry.is_starred { "★" } else { " " };
+                                    let label =
+                                        format!("{mark}{star} {}  {}", entry.id.0, entry.title);
+                                    if ui.selectable_label(Some(i) == current, label).clicked() {
                                         clicked = Some(i);
                                     }
                                 }
                                 if let Some(i) = clicked {
-                                    self.state.select(i);
+                                    self.state.select_index(i);
                                 }
                             });
                     });
@@ -271,7 +296,13 @@ impl eframe::App for SpikeApp {
                                 "非 Windows：WebView2 未启用。请下载 CI artifact。",
                             );
                             ui.separator();
-                            ui.label(RichText::new(&self.state.current().title).heading());
+                            if let Some(e) = &self.state.open_detail {
+                                ui.label(RichText::new(&e.summary.title).heading());
+                            } else if let Some(i) = self.state.selected {
+                                if let Some(e) = self.state.entries.get(i) {
+                                    ui.label(RichText::new(&e.title).heading());
+                                }
+                            }
                         });
                     });
                 });
@@ -288,7 +319,9 @@ impl eframe::App for SpikeApp {
                 Ok(()) => {
                     self.state.reader.sync_bounds(self.state.reader_rect, ppp);
                     if !self.primed {
-                        self.state.push_current_to_reader();
+                        if !self.state.entries.is_empty() {
+                            self.state.select_index(0);
+                        }
                         self.primed = true;
                     }
                 }
@@ -304,13 +337,13 @@ impl eframe::App for SpikeApp {
 
         #[cfg(not(windows))]
         if !self.primed {
-            self.state.status =
-                "Linux/dev shell only — use Actions artifact glean-spike-windows-x64".into();
+            if !self.state.entries.is_empty() {
+                self.state.select_index(0);
+            }
+            self.state.status = "Linux/dev — core M0b OK; use Actions artifact for WebView".into();
             self.primed = true;
         }
 
-        // Only continuous-repaint while dragging splitters so WebView tracks bounds.
-        // Full-time request_repaint steals focus and breaks TextEdit / IME.
         if self.state.splitting {
             ctx.request_repaint();
         } else {
@@ -352,7 +385,6 @@ fn column_contents(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// Returns (hit_width, is_dragging). `on_drag` receives pointer x in points.
 fn splitter_drag(
     ui: &mut Ui,
     ctx: &egui::Context,

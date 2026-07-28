@@ -1,36 +1,27 @@
-//! Domain types and message bus contracts for Glean.
+//! Glean domain core: models, SQLite store, AppCommand/AppEvent service.
 //! This crate must never depend on egui, wry, or tauri.
 
-use serde::{Deserialize, Serialize};
+mod command;
+mod error;
+mod event;
+mod model;
+mod reader_html;
+mod service;
+pub mod store;
 
-/// UI → core commands (spike subset).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AppCommand {
-    /// Open a sample / cached entry in the reader host.
-    OpenEntry { id: u64 },
-    /// Cycle to next sample article (spike helper).
-    NextSample,
-    /// Cycle to previous sample article.
-    PrevSample,
-    /// Toggle light/dark reader chrome.
-    ToggleTheme,
-}
+pub use command::AppCommand;
+pub use error::{CoreError, Result};
+pub use event::AppEvent;
+pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId};
+pub use reader_html::reader_document;
+pub use service::GleanService;
+pub use store::Store;
 
-/// Core → UI events (spike subset).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AppEvent {
-    EntryOpened { id: u64, title: String },
-    ThemeChanged { dark: bool },
-    Status { message: String },
-}
-
-/// Host mode for the WebView reader during M0 spike.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Host mode for the WebView reader (spike / hybrid path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum ReaderHostMode {
-    /// Child HWND embedded in the main window client area.
     #[default]
     ChildEmbed,
-    /// Borderless top-level window that follows the reader rect.
     FollowOverlay,
 }
 
@@ -50,113 +41,51 @@ impl ReaderHostMode {
     }
 }
 
-/// One sample article used only for spike HTML switching.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SampleEntry {
-    pub id: u64,
-    pub title: String,
-    pub html_body: String,
-}
-
-impl SampleEntry {
-    pub fn catalog() -> Vec<Self> {
-        vec![
-            Self {
-                id: 1,
-                title: "Spike #1 — Hello Glean".into(),
-                html_body: r#"
-                    <h1>Spike Article 1</h1>
-                    <p>This is static sanitized-style HTML. Script should be disabled in WebView.</p>
-                    <p><a href="https://example.com">External link (should open system browser)</a></p>
-                    <p>中文 IME 与焦点请在壳侧搜索框验证，不在此页输入。</p>
-                "#
-                .into(),
-            },
-            Self {
-                id: 2,
-                title: "Spike #2 — Resize / DPI".into(),
-                html_body: r#"
-                    <h1>Spike Article 2</h1>
-                    <p>Drag the splitter and resize the window. Reader rect should stay aligned.</p>
-                    <ul>
-                      <li>Maximize / restore</li>
-                      <li>Minimise then restore</li>
-                      <li>Move across DPI monitors</li>
-                    </ul>
-                "#
-                .into(),
-            },
-            Self {
-                id: 3,
-                title: "Spike #3 — Memory reuse".into(),
-                html_body: r#"
-                    <h1>Spike Article 3</h1>
-                    <p>Switch entries 50 times. Private bytes must not climb linearly (single WebView instance).</p>
-                    <p>Remote images are omitted on purpose (default Block policy later).</p>
-                "#
-                .into(),
-            },
-        ]
-    }
-}
-
-/// Build a full reader document. No inline scripts; safe for IsScriptEnabled=false.
-pub fn reader_document(title: &str, body_html: &str, dark: bool) -> String {
-    let (bg, fg, muted, link) = if dark {
-        ("#1C1C1E", "#F2F2F7", "#8E8E93", "#64D2FF")
-    } else {
-        ("#F7F7F5", "#1C1C1E", "#6C6C70", "#0A84FF")
-    };
-
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none';"/>
-<title>{title}</title>
-<style>
-  html, body {{ margin: 0; padding: 0; background: {bg}; color: {fg};
-    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; line-height: 1.6; }}
-  main {{ max-width: 42rem; margin: 0 auto; padding: 1.25rem 1.5rem 2rem; }}
-  h1 {{ font-size: 1.5rem; font-weight: 600; margin: 0 0 0.75rem; }}
-  p, li {{ font-size: 1rem; }}
-  a {{ color: {link}; }}
-  .meta {{ color: {muted}; font-size: 0.85rem; margin-bottom: 1rem; }}
-</style>
-</head>
-<body>
-<main>
-  <div class="meta">Glean M0 reader · script disabled · static HTML</div>
-  {body}
-</main>
-</body>
-</html>
-"#,
-        title = html_escape(title),
-        bg = bg,
-        fg = fg,
-        muted = muted,
-        link = link,
-        body = body_html,
-    )
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sample_catalog_nonempty() {
-        assert_eq!(SampleEntry::catalog().len(), 3);
+    fn bootstrap_demo_emits_nav_and_entries() {
+        let mut svc = GleanService::open_in_memory().expect("mem db");
+        let ev = svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        assert!(ev.iter().any(|e| matches!(e, AppEvent::Ready)));
+        assert!(ev.iter().any(|e| matches!(e, AppEvent::NavUpdated { .. })));
+        let entries = ev.iter().find_map(|e| match e {
+            AppEvent::EntriesUpdated { entries } => Some(entries.clone()),
+            _ => None,
+        });
+        assert_eq!(entries.expect("entries").len(), 3);
+    }
+
+    #[test]
+    fn open_entry_marks_read_and_returns_html() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let list = svc.handle(AppCommand::ListEntries {
+            filter: EntryFilter::All,
+        });
+        let id = list
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::EntriesUpdated { entries } => entries.first().map(|x| x.id),
+                _ => None,
+            })
+            .expect("id");
+        let ev = svc.handle(AppCommand::OpenEntry { id });
+        let opened = ev
+            .iter()
+            .find_map(|e| match e {
+                AppEvent::EntryOpened { entry } => Some(entry.clone()),
+                _ => None,
+            })
+            .expect("opened");
+        assert!(opened.summary.is_read);
+        assert!(!opened.content_html.is_empty());
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            AppEvent::UnreadChanged { total } if *total == 2
+        )));
     }
 
     #[test]
@@ -171,5 +100,36 @@ mod tests {
             ReaderHostMode::ChildEmbed.toggle(),
             ReaderHostMode::FollowOverlay
         );
+    }
+
+    #[test]
+    fn search_chinese_substring() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.seed_demo_if_empty().unwrap();
+        let feeds = store.list_feeds().unwrap();
+        let fid = feeds[0].id;
+        store
+            .add_entry(fid, "cjk", "你好世界", None, "<p>拾光</p>")
+            .unwrap();
+        let hits = store.search_entries("世界", 10).unwrap();
+        assert!(
+            hits.iter()
+                .any(|e| e.title.contains("你好") || e.title.contains("世界")),
+            "expected substring hit for 世界, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn add_feed_local_via_service() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: false });
+        let ev = svc.handle(AppCommand::AddFeedLocal {
+            title: "Local".into(),
+            feed_url: "https://example.org/rss.xml".into(),
+            folder_id: None,
+        });
+        assert!(ev
+            .iter()
+            .any(|e| matches!(e, AppEvent::NavUpdated { feeds, .. } if !feeds.is_empty())));
     }
 }

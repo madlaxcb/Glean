@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build M0 spike (windows-latest)
+    name: Build Glean Windows (windows-latest)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -62,7 +62,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/glean-spike.exe dist/glean-spike.exe
           @"
-          Glean M0 UI Spike
+          Glean (M0b shell + core demo)
           =================
           Built by GitHub Actions (windows-latest).
 
@@ -77,9 +77,8 @@ jobs:
 
           Search box is in the TOP toolbar (IME test).
 
-          This binary is for Hybrid path validation ONLY.
-          Completing docs/spike-ui.md checklist = M0 Pass/Fail.
-          A green CI build is NOT an M0 Pass.
+          M0 Spike conditional pass; M0b uses in-memory SQLite demo (no network).
+          See docs/m0b.md and docs/spike-ui.md.
           "@ | Set-Content -Encoding utf8 dist/README-SPIKE.txt
 
       - name: Upload artifact

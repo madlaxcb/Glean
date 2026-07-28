@@ -2,8 +2,8 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.2.2 · 日期：2026-07-28  
-> 修订说明：M0 Spike **有条件通过**（用户实测 IME/焦点/WebView）；路径 A 继续；下一里程碑 **M0b**
+> 文档版本：0.2.3 · 日期：2026-07-28  
+> 修订说明：M0 有条件通过；**M0b 工程底板已落地**（SQLite + Command/Event + UI 投影）；下一里程碑 **M1**
 
 ---
 
@@ -645,12 +645,13 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ### M0b — 工程底板（仅 Spike Pass 后）
 
-- [ ] workspace：`glean-core` + `glean-app`  
-- [ ] `AppCommand` / `AppEvent` 枚举与 channel 骨架  
-- [ ] SQLite 迁移空库  
-- [ ] 基础 CI：fmt + test  
+- [x] workspace：`glean-core` + `glean-app`  
+- [x] `AppCommand` / `AppEvent` 与 `GleanService`  
+- [x] SQLite 迁移（folders/feeds/entries + FTS）  
+- [x] 基础 CI：fmt + `cargo test -p glean-core`  
+- [x] 事件投影到 UI 列表/导航（内存 demo）  
 
-**验证：** 事件从 core 假数据打到 UI 列表占位。
+**验证：** 见 `docs/m0b.md`。下一阶段 **M1** 真源抓取。
 
 ---
 
@@ -771,5 +772,5 @@ ammonia = "…"
 
 ---
 
-**M0 结论：** 有条件通过，详见 `docs/spike-ui.md`。路径 A 继续，**不切 Tauri**。  
-**下一步：** **M0b** 工程底板（领域模型 / SQLite 骨架 / Command·Event）；H2 真差异与标题栏暗色记为技术债。
+**M0 结论：** 有条件通过（`docs/spike-ui.md`）。**M0b 已完成**（`docs/m0b.md`）。  
+**下一步：** **M1** 订阅垂直切片（HTTP + feed-rs + 事件驱动未读）。
