@@ -145,8 +145,8 @@ impl eframe::App for SpikeApp {
 
                 // Independent column widths; reserve READER_MIN so dragging left
                 // never steals the reader pane, and right drag never moves nav.
-                let max_nav = (total_w - LIST_MIN - READER_MIN - 2.0 * SPLIT_HIT)
-                    .clamp(NAV_MIN, NAV_MAX);
+                let max_nav =
+                    (total_w - LIST_MIN - READER_MIN - 2.0 * SPLIT_HIT).clamp(NAV_MIN, NAV_MAX);
                 let nav_w = self.state.nav_width.clamp(NAV_MIN, max_nav);
                 self.state.nav_width = nav_w;
 
