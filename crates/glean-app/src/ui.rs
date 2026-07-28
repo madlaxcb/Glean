@@ -2,6 +2,13 @@ use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use glean_core::ReaderHostMode;
 
+const SPLIT_HIT: f32 = 6.0;
+const NAV_MIN: f32 = 120.0;
+const NAV_MAX: f32 = 360.0;
+const LIST_MIN: f32 = 180.0;
+const LIST_MAX: f32 = 520.0;
+const READER_MIN: f32 = 240.0;
+
 pub struct SpikeApp {
     state: SpikeState,
     /// Once true, first article has been pushed to the reader.
@@ -21,9 +28,6 @@ impl SpikeApp {
 
 impl eframe::App for SpikeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Repaint while dragging splitters so the reader host can track bounds.
-        ctx.request_repaint();
-
         if self.state.dark {
             ctx.set_visuals(egui::Visuals::dark());
         } else {
@@ -34,6 +38,8 @@ impl eframe::App for SpikeApp {
         let extreme = ctx.style().visuals.extreme_bg_color;
         let stroke_color = ctx.style().visuals.window_stroke.color;
 
+        // Search lives in the top bar so it is never under the WebView child HWND
+        // and is easier to focus for IME tests.
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 Frame::new()
@@ -83,6 +89,17 @@ impl eframe::App for SpikeApp {
                             self.state.next();
                         }
                     }
+                    ui.separator();
+                    ui.label("搜索");
+                    let search_id = egui::Id::new("spike_search");
+                    let te = egui::TextEdit::singleline(&mut self.state.search)
+                        .id(search_id)
+                        .desired_width(180.0)
+                        .hint_text("中文 IME…");
+                    let search_resp = ui.add(te);
+                    if search_resp.gained_focus() || search_resp.clicked() {
+                        search_resp.request_focus();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(&self.state.status).small());
                     });
@@ -98,43 +115,41 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "j/k 换文 | t 主题 | 1/2 宿主 | Esc 清搜索  |  \
-                         从资源管理器双击运行更稳（避免挂到 CMD 控制台）。CI 产物 ≠ Pass。",
+                        "j/k 换文 | t 主题 | Esc 清搜索 | 顶栏搜索测 IME | CI 产物 ≠ M0 Pass",
                     )
                     .small()
                     .weak(),
                 );
             });
 
-        if ctx.input(|i| i.key_pressed(egui::Key::J)) {
-            self.state.next();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::K)) {
-            self.state.prev();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::T)) {
-            self.state.toggle_theme();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num1))
-            && self.state.host_mode != ReaderHostMode::ChildEmbed
-        {
-            self.state.toggle_host_mode();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num2))
-            && self.state.host_mode != ReaderHostMode::FollowOverlay
-        {
-            self.state.toggle_host_mode();
+        let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
+        if !search_focused {
+            if ctx.input(|i| i.key_pressed(egui::Key::J)) {
+                self.state.next();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::K)) {
+                self.state.prev();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::T)) {
+                self.state.toggle_theme();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Num1))
+                && self.state.host_mode != ReaderHostMode::ChildEmbed
+            {
+                self.state.toggle_host_mode();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Num2))
+                && self.state.host_mode != ReaderHostMode::FollowOverlay
+            {
+                self.state.toggle_host_mode();
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.state.search.clear();
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("spike_search")));
         }
 
-        const SPLIT_HIT: f32 = 6.0;
-        const NAV_MIN: f32 = 120.0;
-        const NAV_MAX: f32 = 360.0;
-        const LIST_MIN: f32 = 180.0;
-        const LIST_MAX: f32 = 520.0;
-        const READER_MIN: f32 = 240.0;
+        self.state.splitting = false;
 
         egui::CentralPanel::default()
             .frame(Frame::new().fill(extreme).inner_margin(Margin::ZERO))
@@ -143,17 +158,17 @@ impl eframe::App for SpikeApp {
                 let h = full.height();
                 let total_w = full.width();
 
-                // Independent column widths; reserve READER_MIN so dragging left
-                // never steals the reader pane, and right drag never moves nav.
+                // Layout uses desired widths clamped for *this frame only*.
+                // Never write the clamped value back into state — that permanently
+                // shrinks list_width when nav grows and makes the right splitter
+                // appear to "follow" the left one.
                 let max_nav =
                     (total_w - LIST_MIN - READER_MIN - 2.0 * SPLIT_HIT).clamp(NAV_MIN, NAV_MAX);
                 let nav_w = self.state.nav_width.clamp(NAV_MIN, max_nav);
-                self.state.nav_width = nav_w;
 
-                let after_nav = total_w - nav_w - SPLIT_HIT;
+                let after_nav = (total_w - nav_w - SPLIT_HIT).max(0.0);
                 let max_list = (after_nav - READER_MIN - SPLIT_HIT).clamp(LIST_MIN, LIST_MAX);
                 let list_w = self.state.list_width.clamp(LIST_MIN, max_list);
-                self.state.list_width = list_w;
 
                 let mut x = full.min.x;
 
@@ -173,31 +188,20 @@ impl eframe::App for SpikeApp {
                 });
                 x += nav_w;
 
-                // Left splitter: only mutates nav_width (absolute from full.min.x).
-                x += splitter_nav(
-                    ui,
-                    ctx,
-                    &mut self.state.nav_width,
-                    x,
-                    full,
-                    NAV_MIN,
-                    max_nav,
-                    "split_nav",
-                );
+                let (hit, dragged) = splitter_drag(ui, ctx, x, full, "split_nav", |pos_x| {
+                    // Absolute width from panel left.
+                    self.state.nav_width = (pos_x - full.min.x).clamp(NAV_MIN, max_nav);
+                });
+                if dragged {
+                    self.state.splitting = true;
+                }
+                x += hit;
 
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                     column_contents(ui, "列表", |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("搜索");
-                            let te = egui::TextEdit::singleline(&mut self.state.search)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("在此测中文 IME…");
-                            ui.add(te);
-                        });
-                        ui.separator();
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
@@ -222,21 +226,16 @@ impl eframe::App for SpikeApp {
                 });
                 x += list_w;
 
-                // Right splitter: only mutates list_width.
-                let list_left = nav_w + SPLIT_HIT;
-                x += splitter_list(
-                    ui,
-                    ctx,
-                    &mut self.state.list_width,
-                    x,
-                    full,
-                    list_left,
-                    LIST_MIN,
-                    max_list,
-                    "split_list",
-                );
+                let list_left_x = full.min.x + nav_w + SPLIT_HIT;
+                let (hit, dragged) = splitter_drag(ui, ctx, x, full, "split_list", |pos_x| {
+                    self.state.list_width = (pos_x - list_left_x).clamp(LIST_MIN, max_list);
+                });
+                if dragged {
+                    self.state.splitting = true;
+                }
+                x += hit;
 
-                let reader_w = (full.max.x - x).max(READER_MIN);
+                let reader_w = (full.max.x - x).max(READER_MIN.min(full.width() * 0.2));
                 let reader_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(reader_w, h));
                 self.state.reader_rect = reader_rect;
@@ -256,7 +255,7 @@ impl eframe::App for SpikeApp {
                             ui.label(RichText::new("阅读区 (WebView)").strong());
                             ui.colored_label(
                                 Color32::from_rgb(200, 80, 40),
-                                "非 Windows：WebView2 未启用。请下载 CI artifact 或在 Win 上运行。",
+                                "非 Windows：WebView2 未启用。请下载 CI artifact。",
                             );
                             ui.separator();
                             ui.label(RichText::new(&self.state.current().title).heading());
@@ -281,7 +280,6 @@ impl eframe::App for SpikeApp {
                     }
                 }
                 Err(e) => {
-                    // Transient: HWND/rect not ready on first frames.
                     let transient =
                         e.contains("not ready") || e.contains("retry") || e.contains("not found");
                     if !transient {
@@ -296,6 +294,14 @@ impl eframe::App for SpikeApp {
             self.state.status =
                 "Linux/dev shell only — use Actions artifact glean-spike-windows-x64".into();
             self.primed = true;
+        }
+
+        // Only continuous-repaint while dragging splitters so WebView tracks bounds.
+        // Full-time request_repaint steals focus and breaks TextEdit / IME.
+        if self.state.splitting {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
 
@@ -333,55 +339,18 @@ fn column_contents(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// Left splitter: set nav width from pointer x relative to panel origin.
-fn splitter_nav(
+/// Returns (hit_width, is_dragging). `on_drag` receives pointer x in points.
+fn splitter_drag(
     ui: &mut Ui,
     ctx: &egui::Context,
-    nav_width: &mut f32,
     x: f32,
     full: egui::Rect,
-    min_w: f32,
-    max_w: f32,
     id: &'static str,
-) -> f32 {
-    let hit = 6.0_f32;
+    mut on_drag: impl FnMut(f32),
+) -> (f32, bool) {
+    let hit = SPLIT_HIT;
     let rect = egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(hit, full.height()));
     let resp = ui.interact(rect, ui.id().with(id), Sense::drag());
-    paint_split_handle(ui, ctx, &resp, rect);
-    if resp.dragged() {
-        if let Some(pos) = ctx.pointer_latest_pos() {
-            *nav_width = (pos.x - full.min.x).clamp(min_w, max_w);
-        }
-    }
-    hit
-}
-
-/// Right splitter: set list width from pointer x relative to list's left edge.
-fn splitter_list(
-    ui: &mut Ui,
-    ctx: &egui::Context,
-    list_width: &mut f32,
-    x: f32,
-    full: egui::Rect,
-    list_left_from_full: f32,
-    min_w: f32,
-    max_w: f32,
-    id: &'static str,
-) -> f32 {
-    let hit = 6.0_f32;
-    let rect = egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(hit, full.height()));
-    let resp = ui.interact(rect, ui.id().with(id), Sense::drag());
-    paint_split_handle(ui, ctx, &resp, rect);
-    if resp.dragged() {
-        if let Some(pos) = ctx.pointer_latest_pos() {
-            // list_left_from_full is width offset from full.min.x to list start.
-            *list_width = (pos.x - full.min.x - list_left_from_full).clamp(min_w, max_w);
-        }
-    }
-    hit
-}
-
-fn paint_split_handle(ui: &mut Ui, ctx: &egui::Context, resp: &egui::Response, rect: egui::Rect) {
     if resp.hovered() || resp.dragged() {
         ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         ui.painter().rect_filled(
@@ -396,4 +365,11 @@ fn paint_split_handle(ui: &mut Ui, ctx: &egui::Context, resp: &egui::Response, r
             Color32::from_rgba_unmultiplied(120, 120, 120, 40),
         );
     }
+    let dragging = resp.dragged();
+    if dragging {
+        if let Some(pos) = ctx.pointer_latest_pos() {
+            on_drag(pos.x);
+        }
+    }
+    (hit, dragging)
 }

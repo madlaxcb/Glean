@@ -1,0 +1,4 @@
+# Windows release artifacts must be GUI subsystem so double-click does not
+# spawn a console. Crate attribute in main.rs is primary; this is backup for MSVC.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/SUBSYSTEM:WINDOWS", "-C", "link-arg=/ENTRY:mainCRTStartup"]

@@ -34,6 +34,23 @@ jobs:
       - name: Release build
         run: cargo build -p glean-app --release
 
+      # Fail the job if the PE is still a CONSOLE app (double-click would flash cmd).
+      - name: Assert GUI subsystem
+        shell: pwsh
+        run: |
+          $exe = "target/release/glean-spike.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          # IMAGE_OPTIONAL_HEADER.Subsystem is at PE + 24 + 68 for PE32+ (magic 0x20B)
+          $magic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
+          if ($magic -ne 0x20B) { throw "Expected PE32+ magic 0x20B, got $magic" }
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
+          # IMAGE_SUBSYSTEM_WINDOWS_GUI = 2, CUI = 3
+          Write-Host "PE Subsystem=$subsystem (2=GUI, 3=CUI)"
+          if ($subsystem -ne 2) {
+            throw "glean-spike.exe must be WINDOWS GUI subsystem (2), got $subsystem"
+          }
+
       # Clippy remains advisory during M0; promote to hard gate after spike stabilizes.
       - name: Clippy (report only)
         continue-on-error: true
@@ -55,7 +72,10 @@ jobs:
             https://developer.microsoft.com/microsoft-edge/webview2/
 
           Run:
-            .\\glean-spike.exe
+            double-click glean-spike.exe
+            (must NOT open a black console window)
+
+          Search box is in the TOP toolbar (IME test).
 
           This binary is for Hybrid path validation ONLY.
           Completing docs/spike-ui.md checklist = M0 Pass/Fail.

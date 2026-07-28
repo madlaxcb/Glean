@@ -1,8 +1,7 @@
 //! WebView2 reader host for M0 spike (Windows).
 //!
 //! Single-instance webview; bounds track the egui reader rect.
-//! Parent HWND: prefer a visible top-level window whose title contains "Glean",
-//! never the process console (common when launched from cmd.exe).
+//! Parent HWND: prefer a visible top-level window whose title contains "Glean".
 
 use glean_core::ReaderHostMode;
 
@@ -15,12 +14,14 @@ mod win {
         RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
     };
     use std::num::NonZeroIsize;
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT, TRUE};
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClientRect, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, GW_OWNER,
+        IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
     };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
@@ -56,7 +57,6 @@ mod win {
         webview: Option<WebView>,
         last_html: String,
         mode: ReaderHostMode,
-        /// Cached main window once discovered.
         parent: Option<HWND>,
         dark_title: bool,
     }
@@ -75,7 +75,6 @@ mod win {
         pub fn set_mode(&mut self, mode: ReaderHostMode) {
             if self.mode != mode {
                 self.mode = mode;
-                // Drop and recreate so bounds policy can be re-evaluated.
                 self.webview = None;
             }
         }
@@ -124,11 +123,6 @@ mod win {
                     })?;
                     self.parent = Some(h);
                     apply_titlebar_dark(h, self.dark_title);
-                    eprintln!(
-                        "glean-spike: WebView parent HWND={:?} title={:?}",
-                        h,
-                        window_title(h)
-                    );
                     h
                 }
             };
@@ -143,7 +137,6 @@ mod win {
             let bounds = rect_to_wry(reader_rect, pixels_per_point);
             let parent_wrap = ParentHwnd(parent);
 
-            // H1 and H2 both use child webview + tracked bounds in this spike.
             let webview = WebViewBuilder::new()
                 .with_html(&html)
                 .with_bounds(bounds)
@@ -182,15 +175,19 @@ mod win {
     }
 
     fn apply_titlebar_dark(hwnd: HWND, dark: bool) {
+        use windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE;
         let value: u32 = if dark { 1 } else { 0 };
-        // DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_IMMERSIVE_DARK_MODE,
-                &value as *const u32 as *const _,
-                std::mem::size_of::<u32>() as u32,
-            );
+        // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE; 19 = legacy pre-release value.
+        for code in [20i32, 19i32] {
+            let attr = DWMWINDOWATTRIBUTE(code);
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    attr,
+                    &value as *const u32 as *const _,
+                    std::mem::size_of::<u32>() as u32,
+                );
+            }
         }
     }
 
@@ -213,12 +210,10 @@ mod win {
         w.saturating_mul(h)
     }
 
-    /// Prefer titled Glean window; never attach to the console host.
     fn find_glean_main_hwnd() -> Option<HWND> {
         struct State {
             pid: u32,
             console: HWND,
-            /// (hwnd, area, title_is_glean)
             best_glean: Option<(HWND, i32)>,
             best_any: Option<(HWND, i32)>,
         }
@@ -245,13 +240,12 @@ mod win {
                 }
             }
 
-            let title = window_title(hwnd);
-            // Skip bare console-like empty tool windows with tiny client area.
             let area = client_area(hwnd);
             if area < 10_000 {
                 return TRUE;
             }
 
+            let title = window_title(hwnd);
             let is_glean = title.contains("Glean") || title.contains("拾光");
             if is_glean {
                 match state.best_glean {
@@ -288,14 +282,7 @@ mod win {
             })
     }
 
-    /// egui rect is in points; WebView2 child bounds on Windows are in physical pixels
-    /// relative to the parent client area when using wry's Logical* with scale — we
-    /// pass Physical via scaling ourselves for stable high-DPI placement.
-    fn rect_to_wry(rect: Rect, ppp: f32) -> WryRect {
-        let ppp = f64::from(ppp.max(0.5));
-        // Use logical points: wry multiplies by window scale when parenting to Win32.
-        // If blank persists on high-DPI, switch to Physical explicitly in a follow-up.
-        let _ = ppp;
+    fn rect_to_wry(rect: Rect, _ppp: f32) -> WryRect {
         WryRect {
             position: Position::Logical(LogicalPosition::new(
                 f64::from(rect.min.x),
@@ -308,13 +295,25 @@ mod win {
         }
     }
 
-    fn open_external(uri: &str) -> std::io::Result<()> {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", uri])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+    /// Open https links without spawning a visible cmd.exe (unlike `cmd /C start`).
+    fn open_external(uri: &str) -> windows::core::Result<()> {
+        let mut wide: Vec<u16> = uri.encode_utf16().collect();
+        wide.push(0);
+        let operation: Vec<u16> = "open\0".encode_utf16().collect();
+        unsafe {
+            let h = ShellExecuteW(
+                None,
+                PCWSTR(operation.as_ptr()),
+                PCWSTR(wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            // ShellExecute returns > 32 on success (as HINSTANCE value).
+            if (h.0 as isize) <= 32 {
+                return Err(windows::core::Error::from_win32());
+            }
+        }
         Ok(())
     }
 }

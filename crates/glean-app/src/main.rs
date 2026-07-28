@@ -3,6 +3,10 @@
 //! Goal: validate Hybrid path A before any RSS business code.
 //! See docs/Glean-开发方案.md §9.0 and docs/spike-ui.md.
 
+// MUST stay at crate root. Without this, MSVC links a CONSOLE subsystem binary
+// and double-clicking the exe always flashes a black cmd window.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod fonts;
 mod reader;
 mod ui;
@@ -34,7 +38,9 @@ pub struct SpikeState {
     pub index: usize,
     pub dark: bool,
     pub host_mode: ReaderHostMode,
+    /// Desired nav column width (points). Not permanently shrunk by layout clamp.
     pub nav_width: f32,
+    /// Desired list column width (points).
     pub list_width: f32,
     pub status: String,
     pub open_count: u64,
@@ -42,6 +48,8 @@ pub struct SpikeState {
     /// Latest reader panel rect in egui points (window client space).
     pub reader_rect: egui::Rect,
     pub reader: ReaderHost,
+    /// True while a column splitter is being dragged (drives repaint).
+    pub splitting: bool,
 }
 
 impl SpikeState {
@@ -58,6 +66,7 @@ impl SpikeState {
             search: String::new(),
             reader_rect: egui::Rect::NOTHING,
             reader: ReaderHost::new(),
+            splitting: false,
         }
     }
 
