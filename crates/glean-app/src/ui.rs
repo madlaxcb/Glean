@@ -208,16 +208,14 @@ impl eframe::App for SpikeApp {
         #[cfg(windows)]
         {
             let ppp = ctx.pixels_per_point();
-            if let Err(e) = self.state.reader.ensure_attached(
-                self.state.host_mode,
-                self.state.reader_rect,
-                ppp,
-            ) {
-                self.state.status = format!("WebView error: {e}");
-            } else {
+            if let Err(e) =
                 self.state
                     .reader
-                    .sync_bounds(self.state.reader_rect, ppp);
+                    .ensure_attached(self.state.host_mode, self.state.reader_rect, ppp)
+            {
+                self.state.status = format!("WebView error: {e}");
+            } else {
+                self.state.reader.sync_bounds(self.state.reader_rect, ppp);
                 if !self.primed {
                     self.state.push_current_to_reader();
                     self.primed = true;
