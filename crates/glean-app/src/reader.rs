@@ -31,7 +31,9 @@ mod win {
 
     impl HasWindowHandle for ParentHwnd {
         fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-            let hwnd = self.0.0 as isize;
+            // Split field access so rustfmt does not thrash on `self.0 .0`.
+            let HWND(ptr) = self.0;
+            let hwnd = ptr as isize;
             let nz = NonZeroIsize::new(hwnd).ok_or(HandleError::NotSupported)?;
             let win32 = Win32WindowHandle::new(nz);
             let raw = RawWindowHandle::Win32(win32);
