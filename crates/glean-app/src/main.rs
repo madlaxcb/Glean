@@ -11,8 +11,8 @@ mod ui;
 use eframe::egui;
 use glean_core::{
     default_config_path, default_db_path, run_refresh_task, AppCommand, AppConfig, AppEvent,
-    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ImagePolicy,
-    ReaderHostMode, RefreshOutcome, RefreshTask,
+    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ReaderHostMode,
+    RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -48,12 +48,13 @@ fn main() -> eframe::Result<()> {
 #[cfg(windows)]
 fn single_instance_lock() -> Option<windows::Win32::Foundation::HANDLE> {
     use windows::core::PCWSTR;
+    use windows::Win32::Foundation::GetLastError;
     use windows::Win32::System::Threading::CreateMutexW;
     let name: Vec<u16> = "GleanSingleInstance\0".encode_utf16().collect();
     unsafe {
         let handle = CreateMutexW(None, false, PCWSTR(name.as_ptr())).ok()?;
         // ERROR_ALREADY_EXISTS = 183
-        if windows::core::GetLastError().0 == 183 {
+        if GetLastError().0 == 183 {
             None
         } else {
             Some(handle)
