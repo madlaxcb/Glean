@@ -162,10 +162,10 @@ impl SpikeState {
             rename_feed: None,
             errors: Vec::new(),
             new_folder_input: String::new(),
+            refresh_interval_input: config.refresh_interval_secs.to_string(),
             config,
             config_path,
             auto_refresh_timer: 0.0,
-            refresh_interval_input: config.refresh_interval_secs.to_string(),
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
