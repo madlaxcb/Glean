@@ -2,8 +2,26 @@
 
 use std::path::PathBuf;
 
+/// Portable mode data dir: if a `data` folder sits next to the running exe,
+/// use it for the DB + config (dev plan §6.1 portable directory mode).
+/// Returns the dir path only when it already exists.
+fn portable_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let data = dir.join("data");
+    if data.is_dir() {
+        Some(data)
+    } else {
+        None
+    }
+}
+
 /// `%APPDATA%\Glean\glean.db` on Windows; `~/.local/share/Glean/glean.db` elsewhere.
+/// Portable mode (`./data` next to the exe) takes precedence.
 pub fn default_db_path() -> PathBuf {
+    if let Some(p) = portable_dir() {
+        return p.join("glean.db");
+    }
     if let Ok(appdata) = std::env::var("APPDATA") {
         return PathBuf::from(appdata).join("Glean").join("glean.db");
     }

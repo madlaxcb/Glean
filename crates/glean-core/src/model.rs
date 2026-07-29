@@ -57,6 +57,7 @@ pub enum EntryFilter {
     All,
     Unread,
     Starred,
+    Today,
     Feed(FeedId),
 }
 

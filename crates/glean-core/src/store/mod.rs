@@ -311,6 +311,13 @@ impl Store {
                  FROM entries WHERE is_starred = 1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
+            // Last 24h; fallback to fetched_at when published_at is missing.
+            EntryFilter::Today => {
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                 FROM entries
+                 WHERE COALESCE(published_at, fetched_at) >= ?1
+                 ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
+            }
             EntryFilter::Feed(_) => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
                  FROM entries WHERE feed_id = ?1
@@ -333,6 +340,11 @@ impl Store {
         let list = match filter {
             EntryFilter::Feed(FeedId(fid)) => {
                 let rows = stmt.query_map(params![fid], map_row)?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+            EntryFilter::Today => {
+                let cutoff = now_secs() - 24 * 3600;
+                let rows = stmt.query_map(params![cutoff], map_row)?;
                 rows.filter_map(|r| r.ok()).collect()
             }
             _ => {

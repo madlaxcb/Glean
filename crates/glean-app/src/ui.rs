@@ -738,6 +738,12 @@ impl SpikeApp {
         {
             self.state.set_filter(EntryFilter::Starred);
         }
+        if ui
+            .selectable_label(matches!(self.state.filter, EntryFilter::Today), "今日")
+            .clicked()
+        {
+            self.state.set_filter(EntryFilter::Today);
+        }
         ui.separator();
 
         // Collect action requests from the closure.
