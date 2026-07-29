@@ -388,6 +388,10 @@ impl eframe::App for SpikeApp {
                 });
             });
 
+        // Hide WebView2 when any popup is open so it doesn't occlude.
+        let has_popup = self.state.opml_export.is_some() || self.show_opml_import;
+        self.state.reader.set_hidden(has_popup);
+
         // --- Popups (after CentralPanel so they render on top) ---
         // OPML export popup
         if let Some(xml) = self.state.opml_export.clone() {

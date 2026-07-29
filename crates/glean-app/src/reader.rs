@@ -60,6 +60,9 @@ mod win {
         mode: ReaderHostMode,
         parent: Option<HWND>,
         dark_title: bool,
+        hidden: bool,
+        last_rect: Option<Rect>,
+        last_ppp: f32,
     }
 
     impl ReaderHostInner {
@@ -70,6 +73,9 @@ mod win {
                 mode: ReaderHostMode::ChildEmbed,
                 parent: None,
                 dark_title: false,
+                hidden: false,
+                last_rect: None,
+                last_ppp: 1.0,
             }
         }
 
@@ -185,8 +191,36 @@ mod win {
             if reader_rect.width() < 2.0 || reader_rect.height() < 2.0 {
                 return;
             }
-            if let Err(e) = wv.set_bounds(rect_to_wry(reader_rect, pixels_per_point)) {
+            self.last_rect = Some(reader_rect);
+            self.last_ppp = pixels_per_point;
+            if self.hidden {
+                // Move offscreen so egui popups aren't occluded.
+                let hidden_rect = WryRect {
+                    position: Position::Logical(LogicalPosition::new(-10000.0, -10000.0)),
+                    size: Size::Logical(LogicalSize::new(1.0, 1.0)),
+                };
+                let _ = wv.set_bounds(hidden_rect);
+            } else if let Err(e) = wv.set_bounds(rect_to_wry(reader_rect, pixels_per_point)) {
                 eprintln!("set_bounds failed: {e}");
+            }
+        }
+
+        /// Hide/show the WebView2 so egui popups are not occluded.
+        pub fn set_hidden(&mut self, hidden: bool) {
+            if self.hidden == hidden {
+                return;
+            }
+            self.hidden = hidden;
+            if let (Some(wv), Some(rect)) = (self.webview.as_ref(), self.last_rect) {
+                if hidden {
+                    let hidden_rect = WryRect {
+                        position: Position::Logical(LogicalPosition::new(-10000.0, -10000.0)),
+                        size: Size::Logical(LogicalSize::new(1.0, 1.0)),
+                    };
+                    let _ = wv.set_bounds(hidden_rect);
+                } else {
+                    let _ = wv.set_bounds(rect_to_wry(rect, self.last_ppp));
+                }
             }
         }
     }
@@ -368,6 +402,10 @@ impl ReaderHost {
         self.inner.reclaim_shell_focus();
     }
 
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.inner.set_hidden(hidden);
+    }
+
     pub fn ensure_attached(
         &mut self,
         mode: ReaderHostMode,
@@ -396,4 +434,5 @@ impl ReaderHost {
     pub fn show_html(&mut self, _html: &str) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
     pub fn reclaim_shell_focus(&mut self) {}
+    pub fn set_hidden(&mut self, _hidden: bool) {}
 }
