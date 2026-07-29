@@ -381,6 +381,8 @@ impl SpikeState {
             egui::viewport::SystemTheme::Light
         }));
         self.reader.set_titlebar_dark(self.dark);
+        // Re-generate HTML with new theme and rebuild WebView2 so it
+        // reliably repaints (load_html alone doesn't always work).
         if let Some(entry) = self.open_detail.clone() {
             let html = glean_core::reader_document(
                 &entry.summary.title,
@@ -393,6 +395,7 @@ impl SpikeState {
             );
             self.reader.show_html(&html);
         }
+        self.reader.rebuild();
         self.sync_config();
         self.save_config();
     }

@@ -60,7 +60,6 @@ mod win {
         mode: ReaderHostMode,
         parent: Option<HWND>,
         dark_title: bool,
-        dark_title_applied: bool,
         hidden: bool,
         last_rect: Option<Rect>,
         last_ppp: f32,
@@ -74,7 +73,6 @@ mod win {
                 mode: ReaderHostMode::ChildEmbed,
                 parent: None,
                 dark_title: false,
-                dark_title_applied: false,
                 hidden: false,
                 last_rect: None,
                 last_ppp: 1.0,
@@ -104,10 +102,14 @@ mod win {
 
         pub fn set_titlebar_dark(&mut self, dark: bool) {
             self.dark_title = dark;
-            // Don't apply immediately — eframe may reset DWM attributes on the
-            // same frame when processing SetTheme.  Let sync_bounds apply it on
-            // the next frame instead, which is more reliable.
-            self.dark_title_applied = false;
+            // Applied in sync_bounds every frame — no flag needed.
+        }
+
+        /// Destroy the WebView2; it will be recreated on the next frame by
+        /// ensure_attached with the latest HTML.  Used when load_html doesn't
+        /// reliably repaint (e.g. theme change).
+        pub fn rebuild(&mut self) {
+            self.webview = None;
         }
 
         /// Pull Win32 keyboard focus from WebView2 child back to the main window.
@@ -160,7 +162,14 @@ mod win {
                 self.last_html.clone()
             };
 
-            let bounds = rect_to_wry(reader_rect, pixels_per_point);
+            let bounds = if self.hidden {
+                WryRect {
+                    position: Position::Logical(LogicalPosition::new(-10000.0, -10000.0)),
+                    size: Size::Logical(LogicalSize::new(1.0, 1.0)),
+                }
+            } else {
+                rect_to_wry(reader_rect, pixels_per_point)
+            };
             let parent_wrap = ParentHwnd(parent);
 
             let webview = WebViewBuilder::new()
@@ -188,12 +197,10 @@ mod win {
         }
 
         pub fn sync_bounds(&mut self, reader_rect: Rect, pixels_per_point: f32) {
-            // Re-apply dark titlebar if needed (eframe may reset it).
-            if !self.dark_title_applied {
-                if let Some(hwnd) = self.parent {
-                    apply_titlebar_dark(hwnd, self.dark_title);
-                    self.dark_title_applied = true;
-                }
+            // Always re-apply dark titlebar — eframe may reset DWM attributes
+            // on any frame when it processes theme changes internally.
+            if let Some(hwnd) = self.parent {
+                apply_titlebar_dark(hwnd, self.dark_title);
             }
             let Some(wv) = self.webview.as_ref() else {
                 return;
@@ -413,6 +420,10 @@ impl ReaderHost {
         self.inner.set_titlebar_dark(dark);
     }
 
+    pub fn rebuild(&mut self) {
+        self.inner.rebuild();
+    }
+
     pub fn reclaim_shell_focus(&mut self) {
         self.inner.reclaim_shell_focus();
     }
@@ -448,6 +459,7 @@ impl ReaderHost {
     pub fn shutdown(&mut self) {}
     pub fn show_html(&mut self, _html: &str) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
+    pub fn rebuild(&mut self) {}
     pub fn reclaim_shell_focus(&mut self) {}
     pub fn set_hidden(&mut self, _hidden: bool) {}
 }
