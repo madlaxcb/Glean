@@ -6,7 +6,9 @@
 
 mod fonts;
 mod reader;
+mod tray;
 mod ui;
+mod update;
 
 use eframe::egui;
 use glean_core::{
@@ -17,7 +19,9 @@ use glean_core::{
 use reader::ReaderHost;
 use std::sync::mpsc;
 use std::thread;
+use tray::Tray;
 use ui::SpikeApp;
+use update::{check_for_update, UpdateCheckResult, APPCAST_URL};
 
 fn main() -> eframe::Result<()> {
     // Single-instance lock: exit if another instance is already running.
@@ -156,6 +160,12 @@ pub struct SpikeState {
     /// Per-article one-shot override: when true, reader renders with Allow
     /// regardless of config.image_policy. Reset on entry switch.
     pub reader_show_images: bool,
+    /// System tray (Windows only; None on Linux stub).
+    pub tray: Tray,
+    /// Background update-check receiver (once, on startup).
+    update_rx: Option<mpsc::Receiver<UpdateCheckResult>>,
+    /// Pending update notification (set when remote version > current).
+    pub update_available: Option<UpdateCheckResult>,
 }
 
 impl SpikeState {
@@ -201,10 +211,14 @@ impl SpikeState {
             config_path,
             auto_refresh_timer: 0.0,
             reader_show_images: false,
+            tray: Tray::new(),
+            update_rx: None,
+            update_available: None,
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
+        s.spawn_update_check();
         s
     }
 
@@ -286,6 +300,56 @@ impl SpikeState {
             self.status = format!("自动刷新中… {} 个源（{} 并发）", tasks.len(), workers);
             spawn_refresh_workers(tasks, tx);
         }
+    }
+
+    /// Spawn a background thread to fetch and compare appcast.json.
+    fn spawn_update_check(&mut self) {
+        let (tx, rx) = mpsc::channel::<UpdateCheckResult>();
+        self.update_rx = Some(rx);
+        thread::spawn(move || {
+            let result = check_for_update(APPCAST_URL);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Poll the update-check thread (called every frame from update).
+    pub fn poll_update_check(&mut self) {
+        let rx = match &self.update_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        if let Ok(result) = rx.try_recv() {
+            match &result {
+                UpdateCheckResult::Available { current, cast } => {
+                    self.status = format!("发现新版本 {}（当前 {}）", cast.version, current);
+                    self.update_available = Some(result);
+                }
+                UpdateCheckResult::UpToDate { current, remote } => {
+                    eprintln!("glean: up to date (current={current}, remote={remote})");
+                }
+                UpdateCheckResult::Error(e) => {
+                    eprintln!("glean: update check failed: {e}");
+                }
+            }
+            self.update_rx = None;
+        }
+    }
+
+    /// Hide the main window to the system tray.
+    pub fn hide_to_tray(&mut self, ctx: &egui::Context) {
+        if !self.tray.is_active() {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.status = "已最小化到托盘".into();
+    }
+
+    /// Restore the main window from the tray.
+    pub fn show_from_tray(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Critical,
+        ));
     }
 
     fn apply_event(&mut self, ev: AppEvent) {

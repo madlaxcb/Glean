@@ -1,0 +1,18 @@
+Glean 便携模式说明
+==================
+
+默认情况下，Glean 将数据库和配置存储在：
+  %APPDATA%\Glean\glean.db
+  %APPDATA%\Glean\config.json
+
+便携模式：在本程序所在目录下创建一个名为 `data` 的文件夹
+（例如 "C:\Program Files\Glean\data\"），Glean 启动时会检测到它，
+并将 glean.db 和 config.json 存储在该文件夹内。
+
+适用场景：
+- 将 Glean 复制到 U 盘 / 移动硬盘，配置和数据随程序走
+- 多账号隔离（为不同实例创建不同 data 目录的快捷方式）
+- 系统重装前备份单个目录
+
+注意：便携模式下数据库文件需要本机有读写权限。如果安装在
+Program Files 下，可能需要以管理员身份运行，或选择安装到用户目录。

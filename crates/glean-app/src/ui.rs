@@ -1,3 +1,5 @@
+use crate::tray::TrayAction;
+use crate::update;
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use glean_core::{EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
@@ -42,6 +44,18 @@ impl eframe::App for SpikeApp {
 
         // Poll background refresh every frame.
         self.state.poll_refresh();
+
+        // Poll update-check thread.
+        self.state.poll_update_check();
+
+        // Poll tray actions (Windows only).
+        while let Some(action) = self.state.tray.poll() {
+            match action {
+                TrayAction::Show => self.state.show_from_tray(ctx),
+                TrayAction::Refresh => self.state.refresh_all_feeds_async(),
+                TrayAction::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
 
         if self.state.dark {
             ctx.set_visuals(egui::Visuals::dark());
@@ -114,6 +128,9 @@ impl eframe::App for SpikeApp {
                     }
                     if ui.button("设置").clicked() {
                         self.show_settings = !self.show_settings;
+                    }
+                    if self.state.tray.is_active() && ui.button("最小化到托盘").clicked() {
+                        self.state.hide_to_tray(ctx);
                     }
                     ui.separator();
                     ui.label("搜索");
@@ -341,7 +358,8 @@ impl eframe::App for SpikeApp {
             || self.show_opml_import
             || self.state.rename_feed.is_some()
             || self.show_errors
-            || self.show_settings;
+            || self.show_settings
+            || self.state.update_available.is_some();
         self.state.reader.set_hidden(has_popup);
 
         // --- Popups (after CentralPanel so they render on top) ---
@@ -661,6 +679,64 @@ impl eframe::App for SpikeApp {
                 });
             if close {
                 self.show_settings = false;
+            }
+        }
+
+        // Update available popup (V1: prompt only, no auto-install).
+        if self.state.update_available.is_some() {
+            let mut close = false;
+            let mut open_browser = false;
+            egui::Window::new("发现新版本")
+                .resizable(false)
+                .default_width(420.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let (current, version, url, changelog) = match &self.state.update_available {
+                        Some(update::UpdateCheckResult::Available { current, cast }) => (
+                            current.clone(),
+                            cast.version.clone(),
+                            cast.url.clone(),
+                            cast.changelog.clone(),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("✨").strong());
+                        ui.label(format!("新版本 {} 已发布（当前 {}）", version, current));
+                    });
+                    ui.add_space(6.0);
+                    if let Some(log) = &changelog {
+                        ui.label(RichText::new("更新日志：").weak());
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                ui.label(log);
+                            });
+                    } else {
+                        ui.label(RichText::new("无更新日志").weak().small());
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("前往下载").clicked() {
+                            open_browser = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("稍后").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    let _ = (current, version, url);
+                });
+            if open_browser {
+                if let Some(update::UpdateCheckResult::Available { cast, .. }) =
+                    &self.state.update_available
+                {
+                    update::open_url(&cast.url);
+                }
+            }
+            if close {
+                self.state.update_available = None;
             }
         }
 

@@ -1,0 +1,6 @@
+{
+  "version": "0.0.2",
+  "url": "https://github.com/madlaxcb/Glean/releases/download/v0.0.2/glean-spike-setup.exe",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "- 修复若干 bug\n- 新增系统托盘\n- 新增自动更新检查"
+}
