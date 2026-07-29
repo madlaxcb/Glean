@@ -16,23 +16,40 @@ fn portable_dir() -> Option<PathBuf> {
     }
 }
 
+/// Base data directory shared by DB, config and cache. Portable mode
+/// (`./data` next to the exe) takes precedence; then `%APPDATA%\Glean`
+/// (Windows) or `~/.local/share/Glean`. Returns `None` only when neither
+/// `APPDATA` nor `HOME` is set.
+fn data_base_dir() -> Option<PathBuf> {
+    if let Some(p) = portable_dir() {
+        return Some(p);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(PathBuf::from(appdata).join("Glean"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("Glean"),
+        );
+    }
+    None
+}
+
 /// `%APPDATA%\Glean\glean.db` on Windows; `~/.local/share/Glean/glean.db` elsewhere.
 /// Portable mode (`./data` next to the exe) takes precedence.
 pub fn default_db_path() -> PathBuf {
-    if let Some(p) = portable_dir() {
-        return p.join("glean.db");
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("Glean").join("glean.db");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("Glean")
-            .join("glean.db");
-    }
-    PathBuf::from("glean.db")
+    data_base_dir()
+        .map(|b| b.join("glean.db"))
+        .unwrap_or_else(|| PathBuf::from("glean.db"))
+}
+
+/// Disk cache dir for entry bodies (dev plan §2.5): `<data_dir>/cache/entries/`.
+/// Returns `None` when no base data dir can be resolved.
+pub fn cache_entries_dir() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("cache").join("entries"))
 }
 
 /// `config.json` next to the DB file.

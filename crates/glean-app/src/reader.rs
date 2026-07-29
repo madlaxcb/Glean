@@ -120,24 +120,14 @@ mod win {
             self.needs_nc_repaint = true;
         }
 
-        /// Switch the reader content theme instantly via JavaScript, without
-        /// reloading the document.  The HTML uses CSS custom properties driven
-        /// by a `data-theme` attribute on <html>, so this just flips the
-        /// attribute.  Falls back to a full reload if evaluate_script fails.
+        /// Record the desired reader theme. With JavaScript disabled (§7.2),
+        /// the theme cannot be flipped live via `evaluate_script`; the caller
+        /// regenerates the document with `reader_document(dark=…)` and calls
+        /// `show_html` to reload it. This stores the value so that a later
+        /// `ensure_attached` knows the intended theme (the rebuilt WebView
+        /// already loads `last_html`, which carries the correct `data-theme`).
         pub fn apply_theme(&mut self, dark: bool) {
             self.pending_theme = Some(dark);
-            if let Some(wv) = self.webview.as_ref() {
-                let theme = if dark { "dark" } else { "light" };
-                let script =
-                    format!(r#"document.documentElement.setAttribute("data-theme","{theme}");"#);
-                if let Err(e) = wv.evaluate_script(&script) {
-                    // Fallback: reload the whole document.
-                    eprintln!("evaluate_script failed: {e}; falling back to load_html");
-                    if !self.last_html.is_empty() {
-                        let _ = wv.load_html(&self.last_html);
-                    }
-                }
-            }
         }
 
         /// Pull Win32 keyboard focus from WebView2 child back to the main window.
@@ -201,6 +191,11 @@ mod win {
             let webview = WebViewBuilder::new()
                 .with_html(&html)
                 .with_bounds(bounds)
+                // §7.2 / §8.6 critical security default: no JavaScript in the
+                // reader WebView. Reader content is sanitized HTML only; theme
+                // is baked into the document via `reader_document(dark=…)` and
+                // applied by `load_html`, so no scripting is needed.
+                .with_javascript_disabled()
                 .with_navigation_handler(|uri: String| {
                     if uri.starts_with("http://") || uri.starts_with("https://") {
                         let _ = open_external(&uri);
@@ -218,7 +213,8 @@ mod win {
                 .map_err(|e| format!("WebView build_as_child: {e}"))?;
 
             self.webview = Some(webview);
-            // After (re)creation, apply any pending theme + titlebar.
+            // Re-record any pending theme so it stays consistent; with JS off
+            // the webview already loaded `last_html` which carries the theme.
             if let Some(dark) = self.pending_theme.take() {
                 self.apply_theme(dark);
             }
@@ -253,16 +249,10 @@ mod win {
             } else if let Err(e) = wv.set_bounds(rect_to_wry(reader_rect, pixels_per_point)) {
                 eprintln!("set_bounds failed: {e}");
             }
-            // Apply any pending theme JS (deferred from apply_theme when
-            // webview was None).
-            if let Some(dark) = self.pending_theme.take() {
-                let theme = if dark { "dark" } else { "light" };
-                let script =
-                    format!(r#"document.documentElement.setAttribute("data-theme","{theme}");"#);
-                if let Err(e) = wv.evaluate_script(&script) {
-                    eprintln!("evaluate_script failed: {e}");
-                }
-            }
+            // With JavaScript disabled, the live theme-flip via evaluate_script
+            // is gone; the caller reloads the themed document via show_html.
+            // Just drop any stale pending theme so it doesn't accumulate.
+            let _ = self.pending_theme.take();
         }
 
         /// Hide/show the WebView2 so egui popups are not occluded.

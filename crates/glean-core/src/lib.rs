@@ -22,7 +22,7 @@ pub use model::{
     ImagePolicy,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
-pub use paths::{default_config_path, default_db_path};
+pub use paths::{cache_entries_dir, default_config_path, default_db_path};
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};
 pub use service::GleanService;
@@ -184,5 +184,28 @@ mod tests {
         // sample has two items same guid - second IGNORE
         assert_eq!(n, 1);
         assert_eq!(store.list_entries(EntryFilter::All).unwrap().len(), 1);
+    }
+
+    /// §1.5 conditional requests: etag/last_modified written by
+    /// `update_feed_after_fetch` must round-trip through `get_feed_fetch_meta`
+    /// so the next refresh sends If-None-Match / If-Modified-Since.
+    #[test]
+    fn etag_last_modified_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        store
+            .update_feed_after_fetch(
+                fid,
+                Some("T"),
+                Some("https://ex"),
+                Some(r#""abc123""#),
+                Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+                None,
+            )
+            .unwrap();
+        let (url, etag, lm) = store.get_feed_fetch_meta(fid).unwrap();
+        assert_eq!(url, "https://ex/feed.xml");
+        assert_eq!(etag.as_deref(), Some(r#""abc123""#));
+        assert_eq!(lm.as_deref(), Some("Wed, 21 Oct 2015 07:28:00 GMT"));
     }
 }

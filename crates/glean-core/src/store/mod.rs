@@ -4,24 +4,39 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,
 };
+use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i64 = 4;
 
 pub struct Store {
     conn: Connection,
+    /// Optional disk cache dir for entry bodies (§2.5). `None` for in-memory
+    /// stores and tests; the app sets it to `cache_entries_dir()` via
+    /// [`Store::open_path`].
+    cache_dir: Option<PathBuf>,
 }
 
 impl Store {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let mut s = Self { conn };
+        let mut s = Self {
+            conn,
+            cache_dir: None,
+        };
         s.migrate()?;
         Ok(s)
     }
 
+    /// Open a DB file with the default on-disk cache dir (`cache_entries_dir()`).
     pub fn open_path(path: &Path) -> Result<Self> {
+        Self::open_path_with_cache(path, cache_entries_dir())
+    }
+
+    /// Open a DB file with an explicit cache dir. `cache_dir = None` disables
+    /// the disk cache (used by tests to avoid polluting the real data dir).
+    pub fn open_path_with_cache(path: &Path, cache_dir: Option<PathBuf>) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CoreError::Message(e.to_string()))?;
         }
@@ -30,9 +45,35 @@ impl Store {
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;",
         )?;
-        let mut s = Self { conn };
+        let mut s = Self { conn, cache_dir };
         s.migrate()?;
         Ok(s)
+    }
+
+    /// Path to the cached body for an entry: `<cache_dir>/<id>/body.html`.
+    fn cache_path(&self, id: EntryId) -> Option<PathBuf> {
+        self.cache_dir
+            .as_ref()
+            .map(|d| d.join(id.0.to_string()).join("body.html"))
+    }
+
+    /// Best-effort write of sanitized HTML to the disk cache (§2.5.1).
+    /// Failures are silently ignored — the DB copy is the source of truth.
+    fn write_entry_cache(&self, id: EntryId, html: &str) {
+        let Some(path) = self.cache_path(id) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, html);
+    }
+
+    /// Best-effort read of the cached body (§2.5.3). `None` if disabled or
+    /// the file is missing/unreadable.
+    fn read_entry_cache(&self, id: EntryId) -> Option<String> {
+        let path = self.cache_path(id)?;
+        std::fs::read_to_string(&path).ok()
     }
 
     fn migrate(&mut self) -> Result<()> {
@@ -232,6 +273,7 @@ impl Store {
             "INSERT INTO entries_fts(rowid, title, summary, content_html) VALUES(?1, ?2, ?3, ?4)",
             params![id, title, title, content_html],
         );
+        self.write_entry_cache(EntryId(id), content_html);
         Ok(id)
     }
 
@@ -356,7 +398,8 @@ impl Store {
     }
 
     pub fn get_entry(&self, id: EntryId) -> Result<EntryDetail> {
-        self.conn
+        let mut detail = self
+            .conn
             .query_row(
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred, author, content_html
                  FROM entries WHERE id = ?1",
@@ -379,7 +422,19 @@ impl Store {
                 },
             )
             .optional()?
-            .ok_or_else(|| CoreError::NotFound(format!("entry {}", id.0)))
+            .ok_or_else(|| CoreError::NotFound(format!("entry {}", id.0)))?;
+        // §2.5.3: if the DB body is empty (e.g. future truncation or a feed
+        // that only shipped a summary), fall back to the disk cache so offline
+        // reading still works.
+        if detail.content_html.is_empty() {
+            if let Some(cached) = self.read_entry_cache(id) {
+                if !cached.is_empty() {
+                    detail.content_html = cached;
+                    detail.summary.has_content = true;
+                }
+            }
+        }
+        Ok(detail)
     }
 
     pub fn set_read(&mut self, id: EntryId, read: bool) -> Result<()> {
@@ -553,6 +608,7 @@ impl Store {
             "INSERT INTO entries_fts(rowid, title, summary, content_html) VALUES(?1, ?2, ?3, ?4)",
             params![id, title, summary.unwrap_or(""), content_html],
         );
+        self.write_entry_cache(EntryId(id), content_html);
         Ok(true)
     }
 
@@ -710,4 +766,91 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_tmp(prefix: &str) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tmp
+    }
+
+    /// §2.5 disk cache: `add_entry` writes `cache/entries/<id>/body.html`,
+    /// and `get_entry` falls back to it when the DB body is empty (offline).
+    #[test]
+    fn disk_cache_write_and_offline_fallback() {
+        let tmp = unique_tmp("glean-cache");
+        let db_path = tmp.join("glean.db");
+        let cache_dir = tmp.join("cache").join("entries");
+        let mut store = Store::open_path_with_cache(&db_path, Some(cache_dir.clone())).unwrap();
+
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let body = "<p>cached body &amp; soul</p>";
+        let id = store.add_entry(fid, "g1", "Title", None, body).unwrap();
+
+        // Cache file written alongside the DB row.
+        let cache_file = cache_dir.join(id.0.to_string()).join("body.html");
+        let on_disk = std::fs::read_to_string(&cache_file).expect("cache file written");
+        assert_eq!(on_disk, body);
+
+        // DB copy present → get_entry returns DB body.
+        assert_eq!(store.get_entry(id).unwrap().content_html, body);
+
+        // Simulate an empty DB body: the cache must fill in (offline read).
+        store
+            .conn
+            .execute(
+                "UPDATE entries SET content_html = '' WHERE id = ?1",
+                params![id.0],
+            )
+            .unwrap();
+        let detail = store.get_entry(id).unwrap();
+        assert_eq!(detail.content_html, body);
+        assert!(detail.summary.has_content);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `open_path_with_cache(None)` must not write any cache files.
+    #[test]
+    fn cache_disabled_when_dir_none() {
+        let tmp = unique_tmp("glean-nocache");
+        let db_path = tmp.join("glean.db");
+        let mut store = Store::open_path_with_cache(&db_path, None).unwrap();
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let id = store
+            .add_entry(fid, "g1", "Title", None, "<p>x</p>")
+            .unwrap();
+        assert!(!tmp.join("cache").exists());
+        assert_eq!(store.get_entry(id).unwrap().content_html, "<p>x</p>");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `upsert_entry` (refresh path) also writes the cache.
+    #[test]
+    fn upsert_writes_cache() {
+        let tmp = unique_tmp("glean-upsert-cache");
+        let db_path = tmp.join("glean.db");
+        let cache_dir = tmp.join("cache").join("entries");
+        let mut store = Store::open_path_with_cache(&db_path, Some(cache_dir.clone())).unwrap();
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let body = "<p>upserted</p>";
+        assert!(store
+            .upsert_entry(fid, "g1", "Title", None, None, None, None, body)
+            .unwrap());
+        let entries = store.list_entries(EntryFilter::All).unwrap();
+        let id = entries[0].id;
+        let cache_file = cache_dir.join(id.0.to_string()).join("body.html");
+        assert_eq!(std::fs::read_to_string(&cache_file).unwrap(), body);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
