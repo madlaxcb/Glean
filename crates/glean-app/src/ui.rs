@@ -155,96 +155,7 @@ impl eframe::App for SpikeApp {
                 });
             });
 
-        // --- OPML export popup ---
-        let opml_xml = self.state.opml_export.clone();
-        if let Some(xml) = &opml_xml {
-            let mut close = false;
-            let mut copied = false;
-            let mut saved = false;
-            egui::Window::new("OPML 导出")
-                .resizable(true)
-                .default_width(520.0)
-                .default_height(340.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("复制到剪贴板").clicked() {
-                            copied = true;
-                        }
-                        if ui.button("另存为…").clicked() {
-                            saved = true;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("关闭").clicked() {
-                                close = true;
-                            }
-                        });
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(ui.available_height())
-                        .show(ui, |ui| {
-                            let mut txt = xml.clone();
-                            ui.add(
-                                egui::TextEdit::multiline(&mut txt)
-                                    .desired_width(f32::INFINITY)
-                                    .code_editor(),
-                            );
-                        });
-                });
-            if copied {
-                ctx.copy_text(xml.clone());
-                self.state.status = "OPML 已复制到剪贴板".into();
-            }
-            if saved {
-                let xml_clone = xml.clone();
-                let status = self.state.status.clone();
-                let path = rfd::FileDialog::new()
-                    .set_file_name("glean-subscriptions.opml")
-                    .add_filter("OPML", &["opml", "xml"])
-                    .save_file();
-                if let Some(path) = path {
-                    match std::fs::write(&path, &xml_clone) {
-                        Ok(()) => self.state.status = format!("已保存到 {}", path.display()),
-                        Err(e) => self.state.status = format!("保存失败: {e}"),
-                    }
-                } else {
-                    self.state.status = status;
-                }
-            }
-            if close {
-                self.state.opml_export = None;
-            }
-        }
-
-        // --- OPML import panel ---
-        if self.show_opml_import {
-            egui::TopBottomPanel::top("opml_import")
-                .frame(
-                    Frame::new()
-                        .fill(panel_fill)
-                        .inner_margin(Margin::symmetric(8, 4)),
-                )
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("粘贴 OPML XML：");
-                        let te = egui::TextEdit::singleline(&mut self.state.opml_import_input)
-                            .desired_width(300.0)
-                            .hint_text("<opml>…");
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                        if ui.button("导入").clicked() {
-                            self.state.import_opml();
-                        }
-                        if ui.button("取消").clicked() {
-                            self.show_opml_import = false;
-                        }
-                    });
-                });
-        }
+        // OPML export popup moved to after CentralPanel
 
         // --- Bottom hints ---
         egui::TopBottomPanel::bottom("hints")
@@ -476,6 +387,124 @@ impl eframe::App for SpikeApp {
                     });
                 });
             });
+
+        // --- Popups (after CentralPanel so they render on top) ---
+        // OPML export popup
+        if let Some(xml) = self.state.opml_export.clone() {
+            let mut close = false;
+            let mut copied = false;
+            let mut saved = false;
+            let mut txt = xml.clone();
+            egui::Window::new("OPML 导出")
+                .resizable(true)
+                .default_width(520.0)
+                .default_height(340.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("复制到剪贴板").clicked() {
+                            copied = true;
+                        }
+                        if ui.button("另存为…").clicked() {
+                            saved = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut txt)
+                                    .desired_width(f32::INFINITY)
+                                    .code_editor(),
+                            );
+                        });
+                });
+            if copied {
+                ctx.copy_text(xml.clone());
+                self.state.status = "OPML 已复制到剪贴板".into();
+            }
+            if saved {
+                let xml_clone = xml.clone();
+                let path = rfd::FileDialog::new()
+                    .set_file_name("glean-subscriptions.opml")
+                    .add_filter("OPML", &["opml", "xml"])
+                    .save_file();
+                if let Some(path) = path {
+                    match std::fs::write(&path, &xml_clone) {
+                        Ok(()) => self.state.status = format!("已保存到 {}", path.display()),
+                        Err(e) => self.state.status = format!("保存失败: {e}"),
+                    }
+                }
+            }
+            if close {
+                self.state.opml_export = None;
+            }
+        }
+
+        // OPML import popup
+        if self.show_opml_import {
+            let mut do_import_text = false;
+            let mut do_import_file = false;
+            let mut close = false;
+            egui::Window::new("OPML 导入")
+                .resizable(true)
+                .default_width(520.0)
+                .default_height(200.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("选择文件…").clicked() {
+                            do_import_file = true;
+                        }
+                        if ui.button("导入文本").clicked() {
+                            do_import_text = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.label("或粘贴 OPML XML：");
+                    let te = egui::TextEdit::multiline(&mut self.state.opml_import_input)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(4)
+                        .code_editor();
+                    let resp = ui.add(te);
+                    if resp.clicked() || resp.gained_focus() {
+                        self.state.reader.reclaim_shell_focus();
+                        resp.request_focus();
+                    }
+                });
+            if do_import_file {
+                let path = rfd::FileDialog::new()
+                    .add_filter("OPML", &["opml", "xml"])
+                    .pick_file();
+                if let Some(path) = path {
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            self.state.opml_import_input = content;
+                            self.state.import_opml();
+                        }
+                        Err(e) => self.state.status = format!("读取失败: {e}"),
+                    }
+                }
+            }
+            if do_import_text {
+                self.state.import_opml();
+            }
+            if close {
+                self.show_opml_import = false;
+                self.state.opml_import_input.clear();
+            }
+        }
 
         // --- WebView2 attach (Windows only) ---
         #[cfg(windows)]
