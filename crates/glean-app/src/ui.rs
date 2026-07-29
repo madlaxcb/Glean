@@ -36,6 +36,10 @@ impl SpikeApp {
 
 impl eframe::App for SpikeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Auto-refresh timer.
+        let dt = ctx.input(|i| i.stable_dt);
+        self.state.tick_auto_refresh(dt);
+
         // Poll background refresh every frame.
         self.state.poll_refresh();
 
@@ -181,11 +185,9 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new(
-                        "j/k 换文 · s 星标 · r 刷新 · t 主题 · 右键 菜单 · 设置 图片/布局",
-                    )
-                    .small()
-                    .weak(),
+                    RichText::new("j/k 换文 · r 刷新 · s 星标 · t 主题 · , 设置 · Esc 关闭弹窗")
+                        .small()
+                        .weak(),
                 );
             });
 
@@ -208,6 +210,23 @@ impl eframe::App for SpikeApp {
             }
             if ctx.input(|i| i.key_pressed(egui::Key::R)) {
                 self.state.refresh_all_feeds_async();
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Comma)) {
+                self.show_settings = !self.show_settings;
+            }
+        }
+        // Esc closes topmost popup.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.state.rename_feed.is_some() {
+                self.state.rename_feed = None;
+            } else if self.show_errors {
+                self.show_errors = false;
+            } else if self.show_opml_import {
+                self.show_opml_import = false;
+            } else if self.show_settings {
+                self.show_settings = false;
+            } else if self.state.opml_export.is_some() {
+                self.state.opml_export = None;
             }
         }
 
@@ -585,6 +604,26 @@ impl eframe::App for SpikeApp {
                         }
                     });
 
+                    ui.add_space(8.0);
+                    ui.heading("刷新");
+                    ui.horizontal(|ui| {
+                        ui.label("全局自动刷新间隔（秒，0=关闭）");
+                        let mut secs_text = self.state.config.refresh_interval_secs.to_string();
+                        let te = egui::TextEdit::singleline(&mut secs_text)
+                            .desired_width(80.0);
+                        let resp = ui.add(te);
+                        if resp.lost_focus() {
+                            if let Ok(v) = secs_text.parse::<i64>() {
+                                self.state.set_global_refresh_interval(v.max(0));
+                            }
+                        }
+                    });
+                    ui.label(
+                        RichText::new("每源可在右键菜单单独设置刷新间隔")
+                            .small()
+                            .weak(),
+                    );
+
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -745,7 +784,7 @@ impl SpikeApp {
                 .iter()
                 .filter(|f| f.folder_id == Some(folder.id))
                 .collect();
-            let is_empty = folder_feeds.is_empty();
+            let _is_empty = folder_feeds.is_empty();
             ui.label(
                 RichText::new(format!("📁 {}", folder.name))
                     .small()
@@ -875,6 +914,21 @@ impl SpikeApp {
                     // Will be handled via do_create_folder below; just signal move.
                     *feed_move_folder = Some((feed.id, None)); // placeholder, will create first
                     ui.close_menu();
+                }
+            });
+            // Refresh interval sub-menu.
+            ui.menu_button("刷新间隔", |ui| {
+                let current = feed.refresh_interval_secs;
+                for &secs in &[0, 300, 900, 1800, 3600, 21600] {
+                    let label = if secs == 0 {
+                        "默认".into()
+                    } else {
+                        format!("{}分钟", secs / 60)
+                    };
+                    if ui.selectable_label(current == secs, label).clicked() {
+                        self.state.set_feed_refresh_interval(feed.id, secs);
+                        ui.close_menu();
+                    }
                 }
             });
             // Show feed error details.

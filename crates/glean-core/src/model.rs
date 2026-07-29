@@ -27,6 +27,8 @@ pub struct Feed {
     pub feed_url: String,
     pub last_error: Option<String>,
     pub muted: bool,
+    /// Refresh interval in seconds; 0 = use global default.
+    pub refresh_interval_secs: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +94,8 @@ pub struct AppConfig {
     pub nav_width: f32,
     pub list_width: f32,
     pub image_policy: ImagePolicy,
+    /// Global default refresh interval in seconds (0 = manual only).
+    pub refresh_interval_secs: i64,
 }
 
 impl Default for AppConfig {
@@ -101,6 +105,7 @@ impl Default for AppConfig {
             nav_width: 200.0,
             list_width: 320.0,
             image_policy: ImagePolicy::Block,
+            refresh_interval_secs: 0,
         }
     }
 }

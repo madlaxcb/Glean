@@ -60,6 +60,7 @@ mod win {
         mode: ReaderHostMode,
         parent: Option<HWND>,
         dark_title: bool,
+        dark_title_applied: bool,
         hidden: bool,
         last_rect: Option<Rect>,
         last_ppp: f32,
@@ -73,6 +74,7 @@ mod win {
                 mode: ReaderHostMode::ChildEmbed,
                 parent: None,
                 dark_title: false,
+                dark_title_applied: false,
                 hidden: false,
                 last_rect: None,
                 last_ppp: 1.0,
@@ -101,9 +103,13 @@ mod win {
         }
 
         pub fn set_titlebar_dark(&mut self, dark: bool) {
-            self.dark_title = dark;
+            if self.dark_title != dark {
+                self.dark_title = dark;
+                self.dark_title_applied = false;
+            }
             if let Some(hwnd) = self.parent {
                 apply_titlebar_dark(hwnd, dark);
+                self.dark_title_applied = true;
             }
         }
 
@@ -185,6 +191,13 @@ mod win {
         }
 
         pub fn sync_bounds(&mut self, reader_rect: Rect, pixels_per_point: f32) {
+            // Re-apply dark titlebar if needed (eframe may reset it).
+            if !self.dark_title_applied {
+                if let Some(hwnd) = self.parent {
+                    apply_titlebar_dark(hwnd, self.dark_title);
+                    self.dark_title_applied = true;
+                }
+            }
             let Some(wv) = self.webview.as_ref() else {
                 return;
             };

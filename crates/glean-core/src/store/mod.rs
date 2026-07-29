@@ -7,7 +7,7 @@ use crate::model::{
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct Store {
     conn: Connection,
@@ -123,6 +123,25 @@ impl Store {
                 .execute_batch("ALTER TABLE feeds ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;")?;
             self.conn.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', '2')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
+        if ver < 3 {
+            self.conn.execute_batch(
+                "ALTER TABLE feeds ADD COLUMN refresh_interval_secs INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '3')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
+        if ver < 4 {
+            self.conn
+                .execute_batch("ALTER TABLE feeds ADD COLUMN last_refresh INTEGER;")?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '4')
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [],
             )?;
@@ -259,7 +278,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs FROM feeds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -270,6 +289,7 @@ impl Store {
                 feed_url: r.get(4)?,
                 last_error: r.get(5)?,
                 muted: r.get::<_, i64>(6)? != 0,
+                refresh_interval_secs: r.get(7)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -476,7 +496,8 @@ impl Store {
                 etag = COALESCE(?3, etag),
                 last_modified = COALESCE(?4, last_modified),
                 last_error = NULL,
-                last_fetched_at = ?5
+                last_fetched_at = ?5,
+                last_refresh = ?5
              WHERE id = ?6",
             params![title, site_url, etag, last_modified, now, id.0],
         )?;
@@ -599,6 +620,48 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(n as u64)
+    }
+
+    pub fn set_feed_refresh_interval(&mut self, id: FeedId, secs: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE feeds SET refresh_interval_secs = ?1 WHERE id = ?2",
+            params![secs, id.0],
+        )?;
+        Ok(())
+    }
+
+    /// Return feed IDs whose last_refresh is older than their interval (or global default).
+    pub fn feeds_due_for_refresh(
+        &self,
+        global_interval_secs: i64,
+        now_secs: i64,
+    ) -> Result<Vec<FeedId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, refresh_interval_secs, last_refresh FROM feeds")?;
+        let rows = stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let interval: i64 = r.get(1)?;
+            let last: Option<i64> = r.get(2)?;
+            Ok((id, interval, last))
+        })?;
+        let mut due = Vec::new();
+        for row in rows {
+            let (id, interval, last) = row?;
+            let effective = if interval > 0 {
+                interval
+            } else {
+                global_interval_secs
+            };
+            if effective <= 0 {
+                continue;
+            }
+            let last = last.unwrap_or(0);
+            if now_secs - last >= effective {
+                due.push(FeedId(id));
+            }
+        }
+        Ok(due)
     }
 
     pub fn mark_all_read_in_feed(&mut self, feed_id: FeedId) -> Result<()> {

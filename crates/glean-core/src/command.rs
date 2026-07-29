@@ -59,6 +59,11 @@ pub enum AppCommand {
     ToggleMuteFeed {
         id: FeedId,
     },
+    SetFeedRefreshInterval {
+        id: FeedId,
+        secs: i64,
+    },
+    AutoRefresh,
     CreateFolder {
         name: String,
     },

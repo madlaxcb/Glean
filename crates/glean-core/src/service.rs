@@ -187,6 +187,14 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::SetFeedRefreshInterval { id, secs } => {
+                self.store.set_feed_refresh_interval(id, secs)?;
+                self.emit_nav()
+            }
+            AppCommand::AutoRefresh => {
+                // Caller (UI) checks interval and dispatches refresh tasks for due feeds.
+                Ok(vec![])
+            }
             AppCommand::CreateFolder { name } => {
                 let id = self.store.add_folder(&name)?;
                 let mut ev = self.emit_nav()?;
@@ -240,6 +248,33 @@ impl GleanService {
         };
         let mut tasks = Vec::with_capacity(ids.len());
         for id in ids {
+            let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id)?;
+            tasks.push(RefreshTask {
+                feed_id: id,
+                url,
+                etag,
+                last_modified,
+            });
+        }
+        Ok(tasks)
+    }
+
+    pub fn prepare_auto_refresh_tasks(
+        &self,
+        global_interval_secs: i64,
+    ) -> Result<Vec<RefreshTask>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let due = self
+            .store
+            .feeds_due_for_refresh(global_interval_secs, now)?;
+        if due.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut tasks = Vec::with_capacity(due.len());
+        for id in due {
             let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id)?;
             tasks.push(RefreshTask {
                 feed_id: id,

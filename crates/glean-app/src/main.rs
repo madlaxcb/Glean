@@ -20,6 +20,15 @@ use std::thread;
 use ui::SpikeApp;
 
 fn main() -> eframe::Result<()> {
+    // Single-instance lock: exit if another instance is already running.
+    let _lock = match single_instance_lock() {
+        Some(lock) => lock,
+        None => {
+            eprintln!("Glean 已在运行。");
+            return Ok(());
+        }
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
@@ -33,6 +42,40 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(SpikeApp::new(cc)))),
     )
+}
+
+/// Acquire a single-instance lock. Returns None if another instance holds it.
+#[cfg(windows)]
+fn single_instance_lock() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "GleanSingleInstance\0".encode_utf16().collect();
+    unsafe {
+        let handle = CreateMutexW(None, false, PCWSTR(name.as_ptr())).ok()?;
+        // ERROR_ALREADY_EXISTS = 183
+        if windows::core::GetLastError().0 == 183 {
+            None
+        } else {
+            Some(handle)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn single_instance_lock() -> Option<std::fs::File> {
+    use fs4::fs_std::FileExt;
+    let lock_path = std::env::temp_dir().join("glean-single-instance.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    if file.try_lock_exclusive().is_err() {
+        return None;
+    }
+    Some(file)
 }
 
 /// UI-thread state: projects AppEvent; sends AppCommand to GleanService.
@@ -73,6 +116,8 @@ pub struct SpikeState {
     pub config: AppConfig,
     /// Config file path.
     config_path: std::path::PathBuf,
+    /// Auto-refresh timer: seconds since last check.
+    auto_refresh_timer: f32,
 }
 
 impl SpikeState {
@@ -115,6 +160,7 @@ impl SpikeState {
             new_folder_input: String::new(),
             config,
             config_path,
+            auto_refresh_timer: 0.0,
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
@@ -169,6 +215,38 @@ impl SpikeState {
             self.status = "刷新完成".into();
         } else if got > 0 {
             self.status = format!("刷新中… 剩余 {} 个源", self.refresh_pending);
+        }
+    }
+
+    /// Called every frame with delta time. Triggers auto-refresh if interval > 0.
+    pub fn tick_auto_refresh(&mut self, dt: f32) {
+        let interval = self.config.refresh_interval_secs;
+        if interval <= 0 || self.refresh_rx.is_some() {
+            return;
+        }
+        self.auto_refresh_timer += dt;
+        if self.auto_refresh_timer >= interval as f32 {
+            self.auto_refresh_timer = 0.0;
+            let tasks = match self
+                .service
+                .prepare_auto_refresh_tasks(self.config.refresh_interval_secs)
+            {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            if tasks.is_empty() {
+                return;
+            }
+            let (tx, rx) = mpsc::channel::<RefreshOutcome>();
+            self.refresh_rx = Some(rx);
+            self.refresh_pending = tasks.len();
+            self.status = format!("自动刷新中… {} 个源", tasks.len());
+            thread::spawn(move || {
+                for task in tasks {
+                    let outcome = run_refresh_task(task);
+                    let _ = tx.send(outcome);
+                }
+            });
         }
     }
 
@@ -444,6 +522,22 @@ impl SpikeState {
         self.sync_config();
         self.save_config();
         self.status = "布局已重置".into();
+    }
+
+    pub fn set_feed_refresh_interval(&mut self, id: glean_core::FeedId, secs: i64) {
+        self.dispatch(AppCommand::SetFeedRefreshInterval { id, secs });
+    }
+
+    pub fn set_global_refresh_interval(&mut self, secs: i64) {
+        self.config.refresh_interval_secs = secs;
+        self.auto_refresh_timer = 0.0;
+        self.sync_config();
+        self.save_config();
+        self.status = if secs > 0 {
+            format!("自动刷新间隔: {}秒", secs)
+        } else {
+            "自动刷新已关闭".into()
+        };
     }
 }
 

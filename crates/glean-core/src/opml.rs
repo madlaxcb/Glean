@@ -231,6 +231,7 @@ mod tests {
             feed_url: "https://ex.com/rss".into(),
             last_error: None,
             muted: false,
+            refresh_interval_secs: 0,
         }];
         let xml = export_opml(&feeds);
         assert!(xml.contains("https://ex.com/rss"));
