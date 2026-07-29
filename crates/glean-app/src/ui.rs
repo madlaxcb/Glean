@@ -609,8 +609,7 @@ impl eframe::App for SpikeApp {
                     ui.horizontal(|ui| {
                         ui.label("全局自动刷新间隔（秒，0=关闭）");
                         let mut secs_text = self.state.config.refresh_interval_secs.to_string();
-                        let te = egui::TextEdit::singleline(&mut secs_text)
-                            .desired_width(80.0);
+                        let te = egui::TextEdit::singleline(&mut secs_text).desired_width(80.0);
                         let resp = ui.add(te);
                         if resp.lost_focus() {
                             if let Ok(v) = secs_text.parse::<i64>() {
