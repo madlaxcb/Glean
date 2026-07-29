@@ -1,4 +1,4 @@
-//! Glean app — Hybrid shell (egui) + WebView2 reader + core service (M0b).
+//! Glean app — Hybrid shell (egui) + WebView2 reader + core service.
 //!
 //! See docs/Glean-开发方案.md and docs/spike-ui.md.
 
@@ -10,10 +10,12 @@ mod ui;
 
 use eframe::egui;
 use glean_core::{
-    default_db_path, AppCommand, AppEvent, EntryDetail, EntryFilter, EntrySummary, Feed, Folder,
-    GleanService, ReaderHostMode,
+    default_db_path, run_refresh_task, AppCommand, AppEvent, EntryDetail, EntryFilter,
+    EntrySummary, Feed, Folder, GleanService, ReaderHostMode, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
+use std::sync::mpsc;
+use std::thread;
 use ui::SpikeApp;
 
 fn main() -> eframe::Result<()> {
@@ -21,12 +23,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title("Glean / 拾光 — M1"),
+            .with_title("Glean / 拾光"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Glean M1",
+        "Glean",
         options,
         Box::new(|cc| Ok(Box::new(SpikeApp::new(cc)))),
     )
@@ -53,6 +55,13 @@ pub struct SpikeState {
     pub reader: ReaderHost,
     pub splitting: bool,
     pub feed_url_input: String,
+    /// Background refresh state.
+    refresh_rx: Option<mpsc::Receiver<RefreshOutcome>>,
+    refresh_pending: usize,
+    /// Clipboard-captured OPML export text (for copy/paste).
+    pub opml_export: Option<String>,
+    /// Pasted OPML text for import.
+    pub opml_import_input: String,
 }
 
 impl SpikeState {
@@ -75,13 +84,17 @@ impl SpikeState {
             host_mode: ReaderHostMode::ChildEmbed,
             nav_width: 200.0,
             list_width: 320.0,
-            status: format!("库: {} · 添加 URL 订阅", db.display()),
+            status: format!("库: {}", db.display()),
             open_count: 0,
             search: String::new(),
             reader_rect: egui::Rect::NOTHING,
             reader: ReaderHost::new(),
             splitting: false,
             feed_url_input: String::new(),
+            refresh_rx: None,
+            refresh_pending: 0,
+            opml_export: None,
+            opml_import_input: String::new(),
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
@@ -91,6 +104,39 @@ impl SpikeState {
         let events = self.service.handle(cmd);
         for ev in events {
             self.apply_event(ev);
+        }
+    }
+
+    /// Poll background refresh results (called every frame from update).
+    pub fn poll_refresh(&mut self) {
+        let rx = match &self.refresh_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        // Drain all available outcomes first to release the borrow.
+        let mut outcomes = Vec::new();
+        while let Ok(outcome) = rx.try_recv() {
+            outcomes.push(outcome);
+        }
+        let got = outcomes.len();
+        for outcome in outcomes {
+            self.refresh_pending = self.refresh_pending.saturating_sub(1);
+            let events = self.service.apply_refresh_outcome(outcome);
+            for ev in events {
+                self.apply_event(ev);
+            }
+        }
+        if got > 0 {
+            self.dispatch(AppCommand::RefreshNav);
+            self.dispatch(AppCommand::ListEntries {
+                filter: self.filter,
+            });
+        }
+        if self.refresh_pending == 0 {
+            self.refresh_rx = None;
+            self.status = "刷新完成".into();
+        } else if got > 0 {
+            self.status = format!("刷新中… 剩余 {} 个源", self.refresh_pending);
         }
     }
 
@@ -132,7 +178,6 @@ impl SpikeState {
                 );
                 self.open_detail = Some(entry);
                 self.reader.show_html(&html);
-                // Status refreshed again after UnreadChanged in the same batch.
                 self.refresh_status();
             }
             AppEvent::UnreadChanged { total } => {
@@ -145,6 +190,9 @@ impl SpikeState {
             AppEvent::Error { message } => {
                 self.status = format!("Error: {message}");
             }
+            AppEvent::OpmlExported { xml } => {
+                self.opml_export = Some(xml);
+            }
         }
     }
 
@@ -152,7 +200,7 @@ impl SpikeState {
         self.select_index_with(index, false);
     }
 
-    /// `force`: reload reader even if the same entry is already open (Re-open / Stress).
+    /// `force`: reload reader even if the same entry is already open.
     pub fn select_index_with(&mut self, index: usize, force: bool) {
         if index >= self.entries.len() {
             return;
@@ -165,7 +213,6 @@ impl SpikeState {
             .unwrap_or(false);
         self.selected = Some(index);
         if already && !force {
-            // Same row again: do not re-dispatch OpenEntry (avoids opens++ / HTML thrash).
             self.refresh_status();
             return;
         }
@@ -239,6 +286,7 @@ impl SpikeState {
     pub fn set_filter(&mut self, filter: EntryFilter) {
         self.filter = filter;
         self.selected = None;
+        self.search.clear();
         self.dispatch(AppCommand::ListEntries { filter });
     }
 
@@ -249,17 +297,76 @@ impl SpikeState {
             return;
         }
         self.status = format!("正在抓取 {url} …");
-        self.dispatch(AppCommand::AddFeedFromUrl {
-            feed_url: url,
-            folder_id: None,
-        });
+        self.dispatch(AppCommand::AddFeedFromUrl { feed_url: url });
         if !self.status.starts_with("Error") {
             self.feed_url_input.clear();
         }
     }
 
-    pub fn refresh_all_feeds(&mut self) {
-        self.status = "正在刷新全部订阅…".into();
-        self.dispatch(AppCommand::RefreshFeeds { feed_id: None });
+    /// Launch background refresh: HTTP on threads, DB writes on UI thread.
+    pub fn refresh_all_feeds_async(&mut self) {
+        if self.refresh_rx.is_some() {
+            self.status = "刷新进行中…".into();
+            return;
+        }
+        let tasks: Vec<RefreshTask> = match self.service.prepare_refresh_tasks(None) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("刷新失败: {e}");
+                return;
+            }
+        };
+        if tasks.is_empty() {
+            self.status = "没有可刷新的订阅".into();
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<RefreshOutcome>();
+        self.refresh_rx = Some(rx);
+        self.refresh_pending = tasks.len();
+        self.status = format!("刷新中… {} 个源", tasks.len());
+        thread::spawn(move || {
+            for task in tasks {
+                let outcome = run_refresh_task(task);
+                let _ = tx.send(outcome);
+            }
+        });
+    }
+
+    pub fn delete_feed(&mut self, id: glean_core::FeedId) {
+        self.dispatch(AppCommand::DeleteFeed { id });
+    }
+
+    pub fn toggle_star_current(&mut self) {
+        if let Some(e) = &self.open_detail {
+            let id = e.summary.id;
+            self.dispatch(AppCommand::ToggleStar { id });
+            self.dispatch(AppCommand::OpenEntry { id });
+        }
+    }
+
+    pub fn mark_all_read(&mut self, feed_id: Option<glean_core::FeedId>) {
+        self.dispatch(AppCommand::MarkAllRead { feed_id });
+    }
+
+    pub fn run_search(&mut self) {
+        self.dispatch(AppCommand::SearchEntries {
+            query: self.search.clone(),
+        });
+    }
+
+    pub fn export_opml(&mut self) {
+        self.dispatch(AppCommand::ExportOpml);
+    }
+
+    pub fn import_opml(&mut self) {
+        let content = self.opml_import_input.clone();
+        if content.trim().is_empty() {
+            self.status = "请粘贴 OPML 内容".into();
+            return;
+        }
+        self.dispatch(AppCommand::ImportOpml { content });
+        if !self.status.starts_with("Error") {
+            self.opml_import_input.clear();
+        }
     }
 }

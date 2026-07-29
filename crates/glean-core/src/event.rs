@@ -26,4 +26,7 @@ pub enum AppEvent {
     Error {
         message: String,
     },
+    OpmlExported {
+        xml: String,
+    },
 }

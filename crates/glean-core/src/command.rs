@@ -1,17 +1,19 @@
 //! UI → core commands.
 
-use crate::model::{EntryFilter, EntryId, FeedId, FolderId};
+use crate::model::{EntryFilter, EntryId, FeedId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppCommand {
-    /// Ensure schema and optionally load offline demo rows.
     Bootstrap {
         seed_demo: bool,
     },
     RefreshNav,
     ListEntries {
         filter: EntryFilter,
+    },
+    SearchEntries {
+        query: String,
     },
     OpenEntry {
         id: EntryId,
@@ -23,11 +25,12 @@ pub enum AppCommand {
     ToggleStar {
         id: EntryId,
     },
-    /// Insert feed row without network (tests).
+    MarkAllRead {
+        feed_id: Option<FeedId>,
+    },
     AddFeedLocal {
         title: String,
         feed_url: String,
-        folder_id: Option<FolderId>,
     },
     AddEntryLocal {
         feed_id: FeedId,
@@ -36,13 +39,21 @@ pub enum AppCommand {
         url: Option<String>,
         content_html: String,
     },
-    /// Fetch URL, parse feed, insert feed + entries (M1).
     AddFeedFromUrl {
         feed_url: String,
-        folder_id: Option<FolderId>,
     },
-    /// Refresh one feed or all (None).
+    DeleteFeed {
+        id: FeedId,
+    },
+    RenameFeed {
+        id: FeedId,
+        title: String,
+    },
     RefreshFeeds {
         feed_id: Option<FeedId>,
     },
+    ImportOpml {
+        content: String,
+    },
+    ExportOpml,
 }

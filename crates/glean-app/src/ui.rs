@@ -12,6 +12,8 @@ const READER_MIN: f32 = 240.0;
 pub struct SpikeApp {
     state: SpikeState,
     primed: bool,
+    /// Show OPML import text area.
+    show_opml_import: bool,
 }
 
 impl SpikeApp {
@@ -21,12 +23,16 @@ impl SpikeApp {
         Self {
             state: SpikeState::new(),
             primed: false,
+            show_opml_import: false,
         }
     }
 }
 
 impl eframe::App for SpikeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll background refresh every frame.
+        self.state.poll_refresh();
+
         if self.state.dark {
             ctx.set_visuals(egui::Visuals::dark());
         } else {
@@ -37,6 +43,7 @@ impl eframe::App for SpikeApp {
         let extreme = ctx.style().visuals.extreme_bg_color;
         let stroke_color = ctx.style().visuals.window_stroke.color;
 
+        // --- Top toolbar ---
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 Frame::new()
@@ -46,16 +53,27 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Glean M1");
-                    if ui.button("刷新").clicked() {
-                        self.state.refresh_all_feeds();
+                    ui.heading("Glean");
+                    if ui.button("刷新全部").clicked() {
+                        self.state.refresh_all_feeds_async();
+                    }
+                    if ui.button("全部已读").clicked() {
+                        self.state.mark_all_read(None);
+                    }
+                    ui.separator();
+                    if ui.button("星标").clicked() {
+                        self.state.toggle_star_current();
+                    }
+                    ui.separator();
+                    if ui.button("导入OPML").clicked() {
+                        self.show_opml_import = !self.show_opml_import;
+                    }
+                    if ui.button("导出OPML").clicked() {
+                        self.state.export_opml();
                     }
                     ui.separator();
                     if ui
-                        .selectable_label(
-                            self.state.host_mode == ReaderHostMode::ChildEmbed,
-                            "H1 Embed",
-                        )
+                        .selectable_label(self.state.host_mode == ReaderHostMode::ChildEmbed, "H1")
                         .clicked()
                         && self.state.host_mode != ReaderHostMode::ChildEmbed
                     {
@@ -64,7 +82,7 @@ impl eframe::App for SpikeApp {
                     if ui
                         .selectable_label(
                             self.state.host_mode == ReaderHostMode::FollowOverlay,
-                            "H2 Overlay",
+                            "H2",
                         )
                         .clicked()
                         && self.state.host_mode != ReaderHostMode::FollowOverlay
@@ -72,38 +90,32 @@ impl eframe::App for SpikeApp {
                         self.state.toggle_host_mode();
                     }
                     ui.separator();
-                    if ui.button("Prev (k)").clicked() {
-                        self.state.prev();
-                    }
-                    if ui.button("Next (j)").clicked() {
-                        self.state.next();
-                    }
                     if ui.button("Theme").clicked() {
                         self.state.toggle_theme(ctx);
-                    }
-                    if ui.button("Re-open x1").clicked() {
-                        if let Some(i) = self.state.selected {
-                            self.state.select_index_with(i, true);
-                        } else if !self.state.entries.is_empty() {
-                            self.state.select_index_with(0, true);
-                        }
-                    }
-                    if ui.button("Stress x50").clicked() {
-                        for _ in 0..50 {
-                            self.state.next();
-                        }
                     }
                     ui.separator();
                     ui.label("搜索");
                     let search_id = egui::Id::new("spike_search");
+                    let prev_search = self.state.search.clone();
                     let te = egui::TextEdit::singleline(&mut self.state.search)
                         .id(search_id)
-                        .desired_width(180.0)
-                        .hint_text("中文 IME…");
+                        .desired_width(160.0)
+                        .hint_text("标题/正文…");
                     let search_resp = ui.add(te);
                     if search_resp.clicked() || search_resp.gained_focus() {
                         self.state.reader.reclaim_shell_focus();
                         search_resp.request_focus();
+                    }
+                    // Run search on text change or Enter.
+                    if self.state.search != prev_search
+                        || (search_resp.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        self.state.run_search();
+                    }
+                    if ui.button("✕").clicked() {
+                        self.state.search.clear();
+                        self.state.set_filter(self.state.filter);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(&self.state.status).small());
@@ -111,6 +123,7 @@ impl eframe::App for SpikeApp {
                 });
             });
 
+        // --- Add-feed bar ---
         egui::TopBottomPanel::top("add_feed")
             .frame(
                 Frame::new()
@@ -123,7 +136,7 @@ impl eframe::App for SpikeApp {
                     let feed_id = egui::Id::new("feed_url_input");
                     let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
                         .id(feed_id)
-                        .desired_width(420.0)
+                        .desired_width(400.0)
                         .hint_text("https://…/rss.xml");
                     let resp = ui.add(te);
                     if resp.clicked() || resp.gained_focus() {
@@ -131,7 +144,7 @@ impl eframe::App for SpikeApp {
                         resp.request_focus();
                     }
                     let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("添加订阅").clicked() || enter {
+                    if ui.button("添加").clicked() || enter {
                         self.state.add_feed_from_url();
                     }
                     ui.label(
@@ -142,6 +155,63 @@ impl eframe::App for SpikeApp {
                 });
             });
 
+        // --- OPML export popup ---
+        if self.state.opml_export.is_some() {
+            let mut close = false;
+            let xml = self.state.opml_export.clone().unwrap_or_default();
+            let mut xml_mut = xml.as_str();
+            egui::Window::new("OPML 导出")
+                .resizable(true)
+                .default_width(500.0)
+                .default_height(300.0)
+                .show(ctx, |ui| {
+                    ui.label("复制以下 XML，保存为 .opml 文件：");
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut xml_mut)
+                                .desired_width(f32::INFINITY)
+                                .code_editor(),
+                        );
+                    });
+                    if ui.button("关闭").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.state.opml_export = None;
+            }
+        }
+
+        // --- OPML import panel ---
+        if self.show_opml_import {
+            egui::TopBottomPanel::top("opml_import")
+                .frame(
+                    Frame::new()
+                        .fill(panel_fill)
+                        .inner_margin(Margin::symmetric(8, 4)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("粘贴 OPML XML：");
+                        let te = egui::TextEdit::singleline(&mut self.state.opml_import_input)
+                            .desired_width(300.0)
+                            .hint_text("<opml>…");
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                        if ui.button("导入").clicked() {
+                            self.state.import_opml();
+                        }
+                        if ui.button("取消").clicked() {
+                            self.show_opml_import = false;
+                        }
+                    });
+                });
+        }
+
+        // --- Bottom hints ---
         egui::TopBottomPanel::bottom("hints")
             .frame(
                 Frame::new()
@@ -150,16 +220,16 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new(
-                        "M1: 本地库持久化 · 添加 URL · 刷新 · 阅读页含标题/原文链接 · 远程图剥离",
-                    )
-                    .small()
-                    .weak(),
+                    RichText::new("j/k 换文 · 搜索实时 · 刷新后台异步 · 删除右键 · OPML 导入导出")
+                        .small()
+                        .weak(),
                 );
             });
 
+        // --- Keyboard shortcuts ---
         let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
-        if !search_focused {
+        let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
+        if !search_focused && !feed_focused {
             if ctx.input(|i| i.key_pressed(egui::Key::J)) {
                 self.state.next();
             }
@@ -169,20 +239,12 @@ impl eframe::App for SpikeApp {
             if ctx.input(|i| i.key_pressed(egui::Key::T)) {
                 self.state.toggle_theme(ctx);
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Num1))
-                && self.state.host_mode != ReaderHostMode::ChildEmbed
-            {
-                self.state.toggle_host_mode();
+            if ctx.input(|i| i.key_pressed(egui::Key::S)) {
+                self.state.toggle_star_current();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Num2))
-                && self.state.host_mode != ReaderHostMode::FollowOverlay
-            {
-                self.state.toggle_host_mode();
+            if ctx.input(|i| i.key_pressed(egui::Key::R)) {
+                self.state.refresh_all_feeds_async();
             }
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.state.search.clear();
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("spike_search")));
         }
 
         self.state.splitting = false;
@@ -197,6 +259,7 @@ impl eframe::App for SpikeApp {
             }
         }
 
+        // --- Three columns ---
         egui::CentralPanel::default()
             .frame(Frame::new().fill(extreme).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
@@ -214,14 +277,14 @@ impl eframe::App for SpikeApp {
 
                 let mut x = full.min.x;
 
+                // --- Nav column ---
                 let nav_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(nav_w, h));
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
                     column_contents(ui, "导航", |ui| {
                         ui.label(
-                            RichText::new(format!("未读合计：{}", self.state.unread_total))
-                                .strong(),
+                            RichText::new(format!("未读：{}", self.state.unread_total)).strong(),
                         );
                         if ui
                             .selectable_label(
@@ -251,24 +314,51 @@ impl eframe::App for SpikeApp {
                             self.state.set_filter(EntryFilter::Starred);
                         }
                         ui.separator();
-                        ui.label(RichText::new("文件夹").weak());
-                        for f in &self.state.folders {
-                            ui.label(format!("· {}", f.name));
-                        }
-                        ui.separator();
                         ui.label(RichText::new("订阅").weak());
+                        let feed_items: Vec<(glean_core::FeedId, String, bool)> = self
+                            .state
+                            .feeds
+                            .iter()
+                            .map(|f| {
+                                let sel = matches!(
+                                    self.state.filter,
+                                    EntryFilter::Feed(id) if id == f.id
+                                );
+                                let label = format!(
+                                    "{} {}",
+                                    f.title,
+                                    if f.last_error.is_some() { "⚠" } else { "" }
+                                );
+                                (f.id, label, sel)
+                            })
+                            .collect();
                         let mut feed_click = None;
-                        for feed in &self.state.feeds {
-                            let selected = matches!(
-                                self.state.filter,
-                                EntryFilter::Feed(id) if id == feed.id
-                            );
-                            if ui.selectable_label(selected, &feed.title).clicked() {
-                                feed_click = Some(feed.id);
+                        let mut feed_delete = None;
+                        let mut feed_mark_read = None;
+                        for (fid, label, selected) in &feed_items {
+                            let resp = ui.selectable_label(*selected, label);
+                            if resp.clicked() {
+                                feed_click = Some(*fid);
                             }
+                            resp.context_menu(|ui| {
+                                if ui.button("删除订阅").clicked() {
+                                    feed_delete = Some(*fid);
+                                    ui.close_menu();
+                                }
+                                if ui.button("标记全部已读").clicked() {
+                                    feed_mark_read = Some(*fid);
+                                    ui.close_menu();
+                                }
+                            });
                         }
                         if let Some(id) = feed_click {
                             self.state.set_filter(EntryFilter::Feed(id));
+                        }
+                        if let Some(id) = feed_delete {
+                            self.state.delete_feed(id);
+                        }
+                        if let Some(id) = feed_mark_read {
+                            self.state.mark_all_read(Some(id));
                         }
                     });
                 });
@@ -282,6 +372,7 @@ impl eframe::App for SpikeApp {
                 }
                 x += hit;
 
+                // --- List column ---
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
@@ -295,12 +386,7 @@ impl eframe::App for SpikeApp {
                                 for (i, entry) in self.state.entries.iter().enumerate() {
                                     let state = if entry.is_read { "已读" } else { "未读" };
                                     let star = if entry.is_starred { "★" } else { "" };
-                                    let label = format!(
-                                        "[{state}]{star} {title}",
-                                        state = state,
-                                        star = star,
-                                        title = entry.title
-                                    );
+                                    let label = format!("[{state}]{star} {}", entry.title);
                                     let rich = if entry.is_read {
                                         RichText::new(label).weak()
                                     } else {
@@ -327,6 +413,7 @@ impl eframe::App for SpikeApp {
                 }
                 x += hit;
 
+                // --- Reader column ---
                 let reader_w = (full.max.x - x).max(READER_MIN.min(full.width() * 0.2));
                 let reader_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(reader_w, h));
@@ -349,19 +436,12 @@ impl eframe::App for SpikeApp {
                                 Color32::from_rgb(200, 80, 40),
                                 "非 Windows：WebView2 未启用。请下载 CI artifact。",
                             );
-                            ui.separator();
-                            if let Some(e) = &self.state.open_detail {
-                                ui.label(RichText::new(&e.summary.title).heading());
-                            } else if let Some(i) = self.state.selected {
-                                if let Some(e) = self.state.entries.get(i) {
-                                    ui.label(RichText::new(&e.title).heading());
-                                }
-                            }
                         });
                     });
                 });
             });
 
+        // --- WebView2 attach (Windows only) ---
         #[cfg(windows)]
         {
             let ppp = ctx.pixels_per_point();
@@ -394,11 +474,11 @@ impl eframe::App for SpikeApp {
             if !self.state.entries.is_empty() {
                 self.state.select_index(0);
             }
-            self.state.status = "Linux/dev — core M0b OK; use Actions artifact for WebView".into();
             self.primed = true;
         }
 
-        if self.state.splitting {
+        // Repaint: faster during refresh/split for responsiveness.
+        if self.state.splitting || self.state.refresh_rx.is_some() {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));

@@ -6,6 +6,7 @@ mod error;
 mod event;
 pub mod feed;
 mod model;
+mod opml;
 mod paths;
 mod reader_html;
 mod sanitize;
@@ -15,7 +16,9 @@ pub mod store;
 pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
+pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
 pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId};
+pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::default_db_path;
 pub use reader_html::reader_document;
 pub use sanitize::sanitize_html;
@@ -132,7 +135,6 @@ mod tests {
         let ev = svc.handle(AppCommand::AddFeedLocal {
             title: "Local".into(),
             feed_url: "https://example.org/rss.xml".into(),
-            folder_id: None,
         });
         assert!(ev
             .iter()

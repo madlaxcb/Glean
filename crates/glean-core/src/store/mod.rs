@@ -516,6 +516,49 @@ impl Store {
         let rows = stmt.query_map([], |r| r.get(0))?;
         Ok(rows.filter_map(|r| r.ok()).map(FeedId).collect())
     }
+
+    pub fn delete_feed(&mut self, id: FeedId) -> Result<()> {
+        let n = self
+            .conn
+            .execute("DELETE FROM feeds WHERE id = ?1", params![id.0])?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("feed {}", id.0)));
+        }
+        Ok(())
+    }
+
+    pub fn rename_feed(&mut self, id: FeedId, title: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE feeds SET title = ?1 WHERE id = ?2",
+            params![title, id.0],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("feed {}", id.0)));
+        }
+        Ok(())
+    }
+
+    pub fn add_folder(&mut self, name: &str) -> Result<FolderId> {
+        self.conn.execute(
+            "INSERT INTO folders(name, sort_key) VALUES(?1, 0)",
+            params![name],
+        )?;
+        Ok(FolderId(self.conn.last_insert_rowid()))
+    }
+
+    pub fn mark_all_read_in_feed(&mut self, feed_id: FeedId) -> Result<()> {
+        self.conn.execute(
+            "UPDATE entries SET is_read = 1 WHERE feed_id = ?1 AND is_read = 0",
+            params![feed_id.0],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_all_read(&mut self) -> Result<()> {
+        self.conn
+            .execute("UPDATE entries SET is_read = 1 WHERE is_read = 0", [])?;
+        Ok(())
+    }
 }
 
 fn map_summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntrySummary> {
