@@ -11,7 +11,8 @@ mod ui;
 use eframe::egui;
 use glean_core::{
     default_db_path, run_refresh_task, AppCommand, AppEvent, EntryDetail, EntryFilter,
-    EntrySummary, Feed, Folder, GleanService, ReaderHostMode, RefreshOutcome, RefreshTask,
+    EntrySummary, Feed, Folder, FolderId, GleanService, ReaderHostMode, RefreshOutcome,
+    RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -62,6 +63,12 @@ pub struct SpikeState {
     pub opml_export: Option<String>,
     /// Pasted OPML text for import.
     pub opml_import_input: String,
+    /// Feed being renamed (id + current title for editing).
+    pub rename_feed: Option<(glean_core::FeedId, String)>,
+    /// Recent error messages for notification popup.
+    pub errors: Vec<String>,
+    /// New folder name input.
+    pub new_folder_input: String,
 }
 
 impl SpikeState {
@@ -95,6 +102,9 @@ impl SpikeState {
             refresh_pending: 0,
             opml_export: None,
             opml_import_input: String::new(),
+            rename_feed: None,
+            errors: Vec::new(),
+            new_folder_input: String::new(),
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
@@ -188,7 +198,12 @@ impl SpikeState {
                 self.status = message;
             }
             AppEvent::Error { message } => {
-                self.status = format!("Error: {message}");
+                self.status = format!("错误: {message}");
+                self.errors.push(message);
+                // Keep only last 50 errors.
+                if self.errors.len() > 50 {
+                    self.errors.drain(..self.errors.len() - 50);
+                }
             }
             AppEvent::OpmlExported { xml } => {
                 self.opml_export = Some(xml);
@@ -365,8 +380,24 @@ impl SpikeState {
             return;
         }
         self.dispatch(AppCommand::ImportOpml { content });
-        if !self.status.starts_with("Error") {
+        if !self.status.starts_with("错误") {
             self.opml_import_input.clear();
         }
+    }
+
+    pub fn rename_feed(&mut self, id: glean_core::FeedId, title: String) {
+        self.dispatch(AppCommand::RenameFeed { id, title });
+    }
+
+    pub fn move_feed_to_folder(
+        &mut self,
+        feed_id: glean_core::FeedId,
+        folder_id: Option<FolderId>,
+    ) {
+        self.dispatch(AppCommand::MoveFeedToFolder { feed_id, folder_id });
+    }
+
+    pub fn create_folder(&mut self, name: String) {
+        self.dispatch(AppCommand::CreateFolder { name });
     }
 }

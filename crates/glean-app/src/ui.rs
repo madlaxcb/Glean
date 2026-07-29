@@ -1,6 +1,6 @@
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::{EntryFilter, ReaderHostMode};
+use glean_core::{EntryFilter, FolderId, ReaderHostMode};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -14,6 +14,8 @@ pub struct SpikeApp {
     primed: bool,
     /// Show OPML import text area.
     show_opml_import: bool,
+    /// Show error log popup.
+    show_errors: bool,
 }
 
 impl SpikeApp {
@@ -24,6 +26,7 @@ impl SpikeApp {
             state: SpikeState::new(),
             primed: false,
             show_opml_import: false,
+            show_errors: false,
         }
     }
 }
@@ -117,6 +120,14 @@ impl eframe::App for SpikeApp {
                         self.state.search.clear();
                         self.state.set_filter(self.state.filter);
                     }
+                    // Error badge
+                    let err_count = self.state.errors.len();
+                    if err_count > 0 {
+                        let badge = format!("⚠{}", err_count);
+                        if ui.button(&badge).clicked() {
+                            self.show_errors = !self.show_errors;
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(&self.state.status).small());
                     });
@@ -155,8 +166,6 @@ impl eframe::App for SpikeApp {
                 });
             });
 
-        // OPML export popup moved to after CentralPanel
-
         // --- Bottom hints ---
         egui::TopBottomPanel::bottom("hints")
             .frame(
@@ -166,16 +175,19 @@ impl eframe::App for SpikeApp {
             )
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new("j/k 换文 · 搜索实时 · 刷新后台异步 · 删除右键 · OPML 导入导出")
-                        .small()
-                        .weak(),
+                    RichText::new(
+                        "j/k 换文 · s 星标 · r 刷新 · t 主题 · 右键 菜单 · OPML 导入导出",
+                    )
+                    .small()
+                    .weak(),
                 );
             });
 
         // --- Keyboard shortcuts ---
         let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
         let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
-        if !search_focused && !feed_focused {
+        let rename_focused = self.state.rename_feed.is_some();
+        if !search_focused && !feed_focused && !rename_focused {
             if ctx.input(|i| i.key_pressed(egui::Key::J)) {
                 self.state.next();
             }
@@ -229,83 +241,7 @@ impl eframe::App for SpikeApp {
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
                     column_contents(ui, "导航", |ui| {
-                        ui.label(
-                            RichText::new(format!("未读：{}", self.state.unread_total)).strong(),
-                        );
-                        if ui
-                            .selectable_label(
-                                matches!(self.state.filter, EntryFilter::All),
-                                "全部文章",
-                            )
-                            .clicked()
-                        {
-                            self.state.set_filter(EntryFilter::All);
-                        }
-                        if ui
-                            .selectable_label(
-                                matches!(self.state.filter, EntryFilter::Unread),
-                                "仅未读",
-                            )
-                            .clicked()
-                        {
-                            self.state.set_filter(EntryFilter::Unread);
-                        }
-                        if ui
-                            .selectable_label(
-                                matches!(self.state.filter, EntryFilter::Starred),
-                                "星标",
-                            )
-                            .clicked()
-                        {
-                            self.state.set_filter(EntryFilter::Starred);
-                        }
-                        ui.separator();
-                        ui.label(RichText::new("订阅").weak());
-                        let feed_items: Vec<(glean_core::FeedId, String, bool)> = self
-                            .state
-                            .feeds
-                            .iter()
-                            .map(|f| {
-                                let sel = matches!(
-                                    self.state.filter,
-                                    EntryFilter::Feed(id) if id == f.id
-                                );
-                                let label = format!(
-                                    "{} {}",
-                                    f.title,
-                                    if f.last_error.is_some() { "⚠" } else { "" }
-                                );
-                                (f.id, label, sel)
-                            })
-                            .collect();
-                        let mut feed_click = None;
-                        let mut feed_delete = None;
-                        let mut feed_mark_read = None;
-                        for (fid, label, selected) in &feed_items {
-                            let resp = ui.selectable_label(*selected, label);
-                            if resp.clicked() {
-                                feed_click = Some(*fid);
-                            }
-                            resp.context_menu(|ui| {
-                                if ui.button("删除订阅").clicked() {
-                                    feed_delete = Some(*fid);
-                                    ui.close_menu();
-                                }
-                                if ui.button("标记全部已读").clicked() {
-                                    feed_mark_read = Some(*fid);
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                        if let Some(id) = feed_click {
-                            self.state.set_filter(EntryFilter::Feed(id));
-                        }
-                        if let Some(id) = feed_delete {
-                            self.state.delete_feed(id);
-                        }
-                        if let Some(id) = feed_mark_read {
-                            self.state.mark_all_read(Some(id));
-                        }
+                        self.draw_nav_contents(ui);
                     });
                 });
                 x += nav_w;
@@ -324,29 +260,7 @@ impl eframe::App for SpikeApp {
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                     column_contents(ui, "列表", |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(ui.available_height())
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                let current = self.state.selected;
-                                let mut clicked = None;
-                                for (i, entry) in self.state.entries.iter().enumerate() {
-                                    let state = if entry.is_read { "已读" } else { "未读" };
-                                    let star = if entry.is_starred { "★" } else { "" };
-                                    let label = format!("[{state}]{star} {}", entry.title);
-                                    let rich = if entry.is_read {
-                                        RichText::new(label).weak()
-                                    } else {
-                                        RichText::new(label).strong()
-                                    };
-                                    if ui.selectable_label(Some(i) == current, rich).clicked() {
-                                        clicked = Some(i);
-                                    }
-                                }
-                                if let Some(i) = clicked {
-                                    self.state.select_index(i);
-                                }
-                            });
+                        self.draw_list_contents(ui);
                     });
                 });
                 x += list_w;
@@ -389,10 +303,14 @@ impl eframe::App for SpikeApp {
             });
 
         // Hide WebView2 when any popup is open so it doesn't occlude.
-        let has_popup = self.state.opml_export.is_some() || self.show_opml_import;
+        let has_popup = self.state.opml_export.is_some()
+            || self.show_opml_import
+            || self.state.rename_feed.is_some()
+            || self.show_errors;
         self.state.reader.set_hidden(has_popup);
 
         // --- Popups (after CentralPanel so they render on top) ---
+
         // OPML export popup
         if let Some(xml) = self.state.opml_export.clone() {
             let mut close = false;
@@ -510,6 +428,91 @@ impl eframe::App for SpikeApp {
             }
         }
 
+        // Rename feed popup
+        if let Some((feed_id, ref mut title)) = self.state.rename_feed {
+            let mut do_rename = false;
+            let mut close = false;
+            egui::Window::new("重命名订阅")
+                .resizable(false)
+                .default_width(360.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("新名称");
+                        let te = egui::TextEdit::singleline(title)
+                            .id(egui::Id::new("rename_feed_input"))
+                            .desired_width(f32::INFINITY);
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            do_rename = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            do_rename = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if do_rename {
+                let t = title.clone();
+                self.state.rename_feed(feed_id, t);
+                self.state.rename_feed = None;
+            }
+            if close {
+                self.state.rename_feed = None;
+            }
+        }
+
+        // Error log popup
+        if self.show_errors {
+            let mut close = false;
+            let mut clear = false;
+            egui::Window::new("错误日志")
+                .resizable(true)
+                .default_width(480.0)
+                .default_height(320.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("清空").clicked() {
+                            clear = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            for (i, err) in self.state.errors.iter().enumerate().rev() {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("#{}", i + 1)).small().weak());
+                                    ui.label(RichText::new(err).small());
+                                });
+                                ui.separator();
+                            }
+                        });
+                });
+            if clear {
+                self.state.errors.clear();
+                self.state.status = "错误日志已清空".into();
+            }
+            if close {
+                self.show_errors = false;
+            }
+        }
+
         // --- WebView2 attach (Windows only) ---
         #[cfg(windows)]
         {
@@ -556,6 +559,259 @@ impl eframe::App for SpikeApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.state.reader.shutdown();
+    }
+}
+
+// --- Nav column contents (folder-grouped feed list) ---
+
+impl SpikeApp {
+    fn draw_nav_contents(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(format!("未读：{}", self.state.unread_total)).strong());
+        if ui
+            .selectable_label(matches!(self.state.filter, EntryFilter::All), "全部文章")
+            .clicked()
+        {
+            self.state.set_filter(EntryFilter::All);
+        }
+        if ui
+            .selectable_label(matches!(self.state.filter, EntryFilter::Unread), "仅未读")
+            .clicked()
+        {
+            self.state.set_filter(EntryFilter::Unread);
+        }
+        if ui
+            .selectable_label(matches!(self.state.filter, EntryFilter::Starred), "星标")
+            .clicked()
+        {
+            self.state.set_filter(EntryFilter::Starred);
+        }
+        ui.separator();
+
+        // Collect action requests from the closure.
+        let mut feed_click = None;
+        let mut feed_delete = None;
+        let mut feed_mark_read = None;
+        let mut feed_rename = None;
+        let mut feed_move_folder = None;
+        let mut do_create_folder = false;
+
+        // Context menu on "订阅" header for creating folders.
+        ui.label(RichText::new("订阅").weak());
+        ui.menu_button("＋ 新建文件夹", |ui| {
+            let te = egui::TextEdit::singleline(&mut self.state.new_folder_input)
+                .id(egui::Id::new("new_folder_input"))
+                .desired_width(120.0)
+                .hint_text("文件夹名");
+            let resp = ui.add(te);
+            if resp.clicked() || resp.gained_focus() {
+                self.state.reader.reclaim_shell_focus();
+                resp.request_focus();
+            }
+            if ui.button("创建").clicked()
+                || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            {
+                do_create_folder = true;
+            }
+        });
+
+        // Group feeds by folder.
+        let folders = self.state.folders.clone();
+        let feeds = self.state.feeds.clone();
+
+        // Feeds without folder first.
+        let orphans: Vec<_> = feeds.iter().filter(|f| f.folder_id.is_none()).collect();
+
+        for feed in &orphans {
+            let sel = matches!(
+                self.state.filter,
+                EntryFilter::Feed(id) if id == feed.id
+            );
+            let error_mark = if feed.last_error.is_some() {
+                " ⚠"
+            } else {
+                ""
+            };
+            let label = format!("{}{error_mark}", feed.title);
+            let resp = ui.selectable_label(sel, &label);
+            if resp.clicked() {
+                feed_click = Some(feed.id);
+            }
+            self.draw_feed_context_menu(
+                ui,
+                &resp,
+                feed,
+                &folders,
+                &mut feed_delete,
+                &mut feed_rename,
+                &mut feed_mark_read,
+                &mut feed_move_folder,
+            );
+        }
+
+        // Feeds grouped by folder.
+        for folder in &folders {
+            let folder_feeds: Vec<_> = feeds
+                .iter()
+                .filter(|f| f.folder_id == Some(folder.id))
+                .collect();
+            if folder_feeds.is_empty() {
+                continue;
+            }
+            ui.label(
+                RichText::new(format!("📁 {}", folder.name))
+                    .small()
+                    .strong(),
+            );
+            for feed in &folder_feeds {
+                let sel = matches!(
+                    self.state.filter,
+                    EntryFilter::Feed(id) if id == feed.id
+                );
+                let error_mark = if feed.last_error.is_some() {
+                    " ⚠"
+                } else {
+                    ""
+                };
+                let label = format!("  {}{error_mark}", feed.title);
+                let resp = ui.selectable_label(sel, &label);
+                if resp.clicked() {
+                    feed_click = Some(feed.id);
+                }
+                self.draw_feed_context_menu(
+                    ui,
+                    &resp,
+                    feed,
+                    &folders,
+                    &mut feed_delete,
+                    &mut feed_rename,
+                    &mut feed_mark_read,
+                    &mut feed_move_folder,
+                );
+            }
+        }
+
+        // Apply actions after the closure borrows are released.
+        if let Some(id) = feed_click {
+            self.state.set_filter(EntryFilter::Feed(id));
+        }
+        if let Some(id) = feed_delete {
+            self.state.delete_feed(id);
+        }
+        if let Some(id) = feed_rename {
+            if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
+                self.state.rename_feed = Some((id, f.title.clone()));
+            }
+        }
+        if let Some((feed_id, folder_id)) = feed_move_folder {
+            self.state.move_feed_to_folder(feed_id, folder_id);
+        }
+        if let Some(id) = feed_mark_read {
+            self.state.mark_all_read(Some(id));
+        }
+        if do_create_folder {
+            let name = self.state.new_folder_input.trim().to_string();
+            if !name.is_empty() {
+                self.state.create_folder(name);
+                self.state.new_folder_input.clear();
+            }
+        }
+    }
+
+    fn draw_feed_context_menu(
+        &mut self,
+        _ui: &mut Ui,
+        resp: &egui::Response,
+        feed: &glean_core::Feed,
+        folders: &[glean_core::Folder],
+        feed_delete: &mut Option<glean_core::FeedId>,
+        feed_rename: &mut Option<glean_core::FeedId>,
+        feed_mark_read: &mut Option<glean_core::FeedId>,
+        feed_move_folder: &mut Option<(glean_core::FeedId, Option<FolderId>)>,
+    ) {
+        resp.context_menu(|ui| {
+            if ui.button("重命名").clicked() {
+                *feed_rename = Some(feed.id);
+                ui.close_menu();
+            }
+            if ui.button("标记全部已读").clicked() {
+                *feed_mark_read = Some(feed.id);
+                ui.close_menu();
+            }
+            if ui.button("删除订阅").clicked() {
+                *feed_delete = Some(feed.id);
+                ui.close_menu();
+            }
+            ui.separator();
+            // Move to folder sub-menu.
+            ui.menu_button("移动到文件夹", |ui| {
+                // Option to remove from folder.
+                if feed.folder_id.is_some() {
+                    if ui.button("（无文件夹）").clicked() {
+                        *feed_move_folder = Some((feed.id, None));
+                        ui.close_menu();
+                    }
+                }
+                for folder in folders {
+                    let already = feed.folder_id == Some(folder.id);
+                    if ui
+                        .add_enabled(!already, egui::Button::new(&folder.name))
+                        .clicked()
+                    {
+                        *feed_move_folder = Some((feed.id, Some(folder.id)));
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                let te = egui::TextEdit::singleline(&mut self.state.new_folder_input)
+                    .id(egui::Id::new("ctx_new_folder"))
+                    .desired_width(100.0)
+                    .hint_text("新文件夹");
+                let r = ui.add(te);
+                if r.clicked() || r.gained_focus() {
+                    self.state.reader.reclaim_shell_focus();
+                    r.request_focus();
+                }
+                if ui.button("创建并移入").clicked() {
+                    // Will be handled via do_create_folder below; just signal move.
+                    *feed_move_folder = Some((feed.id, None)); // placeholder, will create first
+                    ui.close_menu();
+                }
+            });
+            // Show feed error details.
+            if let Some(err) = &feed.last_error {
+                ui.separator();
+                ui.colored_label(
+                    Color32::from_rgb(220, 80, 60),
+                    RichText::new(format!("错误: {err}")).small(),
+                );
+            }
+        });
+    }
+
+    fn draw_list_contents(&mut self, ui: &mut Ui) {
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height())
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let current = self.state.selected;
+                let mut clicked = None;
+                for (i, entry) in self.state.entries.iter().enumerate() {
+                    let read_mark = if entry.is_read { "已读" } else { "未读" };
+                    let star = if entry.is_starred { "★" } else { "" };
+                    let label = format!("[{read_mark}]{star} {}", entry.title);
+                    let rich = if entry.is_read {
+                        RichText::new(label).weak()
+                    } else {
+                        RichText::new(label).strong()
+                    };
+                    if ui.selectable_label(Some(i) == current, rich).clicked() {
+                        clicked = Some(i);
+                    }
+                }
+                if let Some(i) = clicked {
+                    self.state.select_index(i);
+                }
+            });
     }
 }
 

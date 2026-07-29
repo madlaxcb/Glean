@@ -32,7 +32,7 @@ pub fn reader_document(
     };
 
     let body = if body_html.trim().is_empty() {
-        r#"<p class="empty">此条目没有正文或摘要。请使用「查看原文」在浏览器中打开。</p>"#
+        r#"<p class="empty">此条目没有缓存正文。需要联网刷新后才能阅读，或使用「查看原文」在浏览器中打开。</p>"#
             .to_string()
     } else {
         body_html.to_string()

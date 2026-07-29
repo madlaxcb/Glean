@@ -52,6 +52,13 @@ pub enum AppCommand {
     RefreshFeeds {
         feed_id: Option<FeedId>,
     },
+    MoveFeedToFolder {
+        feed_id: FeedId,
+        folder_id: Option<crate::model::FolderId>,
+    },
+    CreateFolder {
+        name: String,
+    },
     ImportOpml {
         content: String,
     },

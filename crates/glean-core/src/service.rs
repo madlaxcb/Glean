@@ -167,6 +167,22 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::MoveFeedToFolder { feed_id, folder_id } => {
+                self.store.move_feed_to_folder(feed_id, folder_id)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: "已移动到文件夹".into(),
+                });
+                Ok(ev)
+            }
+            AppCommand::CreateFolder { name } => {
+                let id = self.store.add_folder(&name)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: format!("已创建文件夹「{name}」id={}", id.0),
+                });
+                Ok(ev)
+            }
             AppCommand::RefreshFeeds { feed_id } => {
                 // Synchronous fallback; UI should prefer prepare/apply for async.
                 let ids = match feed_id {

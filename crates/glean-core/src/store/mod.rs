@@ -538,6 +538,21 @@ impl Store {
         Ok(())
     }
 
+    pub fn move_feed_to_folder(
+        &mut self,
+        feed_id: FeedId,
+        folder_id: Option<FolderId>,
+    ) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE feeds SET folder_id = ?1 WHERE id = ?2",
+            params![folder_id.map(|f| f.0), feed_id.0],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("feed {}", feed_id.0)));
+        }
+        Ok(())
+    }
+
     pub fn add_folder(&mut self, name: &str) -> Result<FolderId> {
         self.conn.execute(
             "INSERT INTO folders(name, sort_key) VALUES(?1, 0)",
