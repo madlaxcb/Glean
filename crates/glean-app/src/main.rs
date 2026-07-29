@@ -119,6 +119,9 @@ pub struct SpikeState {
     config_path: std::path::PathBuf,
     /// Auto-refresh timer: seconds since last check.
     auto_refresh_timer: f32,
+    /// Persistent buffer for the refresh-interval TextEdit in settings.
+    /// Must outlive the frame so user typing isn't overwritten each frame.
+    pub refresh_interval_input: String,
 }
 
 impl SpikeState {
@@ -162,6 +165,7 @@ impl SpikeState {
             config,
             config_path,
             auto_refresh_timer: 0.0,
+            refresh_interval_input: config.refresh_interval_secs.to_string(),
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
@@ -381,8 +385,9 @@ impl SpikeState {
             egui::viewport::SystemTheme::Light
         }));
         self.reader.set_titlebar_dark(self.dark);
-        // Re-generate HTML with new theme and rebuild WebView2 so it
-        // reliably repaints (load_html alone doesn't always work).
+        // Update last_html with the new theme so that if the WebView2 is
+        // recreated later it picks up the right colours.  Then flip the
+        // theme live via JS (no document reload needed).
         if let Some(entry) = self.open_detail.clone() {
             let html = glean_core::reader_document(
                 &entry.summary.title,
@@ -395,7 +400,7 @@ impl SpikeState {
             );
             self.reader.show_html(&html);
         }
-        self.reader.rebuild();
+        self.reader.apply_theme(self.dark);
         self.sync_config();
         self.save_config();
     }
@@ -534,6 +539,7 @@ impl SpikeState {
 
     pub fn set_global_refresh_interval(&mut self, secs: i64) {
         self.config.refresh_interval_secs = secs;
+        self.refresh_interval_input = secs.to_string();
         self.auto_refresh_timer = 0.0;
         self.sync_config();
         self.save_config();

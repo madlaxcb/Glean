@@ -22,7 +22,8 @@ mod win {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClientRect, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, GW_OWNER, SW_SHOWNORMAL,
+        IsWindowVisible, SetWindowPos, GW_OWNER, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNORMAL,
     };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
@@ -60,6 +61,8 @@ mod win {
         mode: ReaderHostMode,
         parent: Option<HWND>,
         dark_title: bool,
+        /// Pending theme to apply to the WebView2 content via JS.
+        pending_theme: Option<bool>,
         hidden: bool,
         last_rect: Option<Rect>,
         last_ppp: f32,
@@ -73,6 +76,7 @@ mod win {
                 mode: ReaderHostMode::ChildEmbed,
                 parent: None,
                 dark_title: false,
+                pending_theme: None,
                 hidden: false,
                 last_rect: None,
                 last_ppp: 1.0,
@@ -102,14 +106,30 @@ mod win {
 
         pub fn set_titlebar_dark(&mut self, dark: bool) {
             self.dark_title = dark;
-            // Applied in sync_bounds every frame — no flag needed.
+            // Apply immediately if we have the HWND.
+            if let Some(hwnd) = self.parent {
+                apply_titlebar_dark(hwnd, dark);
+            }
         }
 
-        /// Destroy the WebView2; it will be recreated on the next frame by
-        /// ensure_attached with the latest HTML.  Used when load_html doesn't
-        /// reliably repaint (e.g. theme change).
-        pub fn rebuild(&mut self) {
-            self.webview = None;
+        /// Switch the reader content theme instantly via JavaScript, without
+        /// reloading the document.  The HTML uses CSS custom properties driven
+        /// by a `data-theme` attribute on <html>, so this just flips the
+        /// attribute.  Falls back to a full reload if evaluate_script fails.
+        pub fn apply_theme(&mut self, dark: bool) {
+            self.pending_theme = Some(dark);
+            if let Some(wv) = self.webview.as_ref() {
+                let theme = if dark { "dark" } else { "light" };
+                let script =
+                    format!(r#"document.documentElement.setAttribute("data-theme","{theme}");"#);
+                if let Err(e) = wv.evaluate_script(&script) {
+                    // Fallback: reload the whole document.
+                    eprintln!("evaluate_script failed: {e}; falling back to load_html");
+                    if !self.last_html.is_empty() {
+                        let _ = wv.load_html(&self.last_html);
+                    }
+                }
+            }
         }
 
         /// Pull Win32 keyboard focus from WebView2 child back to the main window.
@@ -118,12 +138,10 @@ mod win {
                 return;
             };
             unsafe {
-                // windows 0.58: GetFocus() -> HWND (not Result).
                 let focus = GetFocus();
                 if focus == parent {
                     return;
                 }
-                // Focus is elsewhere (typically a WebView2 child) — reclaim.
                 let _ = SetFocus(parent);
             }
         }
@@ -192,16 +210,15 @@ mod win {
                 .map_err(|e| format!("WebView build_as_child: {e}"))?;
 
             self.webview = Some(webview);
+            // After (re)creation, apply any pending theme + titlebar.
+            if let Some(dark) = self.pending_theme.take() {
+                self.apply_theme(dark);
+            }
             let _ = mode;
             Ok(())
         }
 
         pub fn sync_bounds(&mut self, reader_rect: Rect, pixels_per_point: f32) {
-            // Always re-apply dark titlebar — eframe may reset DWM attributes
-            // on any frame when it processes theme changes internally.
-            if let Some(hwnd) = self.parent {
-                apply_titlebar_dark(hwnd, self.dark_title);
-            }
             let Some(wv) = self.webview.as_ref() else {
                 return;
             };
@@ -211,7 +228,6 @@ mod win {
             self.last_rect = Some(reader_rect);
             self.last_ppp = pixels_per_point;
             if self.hidden {
-                // Move offscreen so egui popups aren't occluded.
                 let hidden_rect = WryRect {
                     position: Position::Logical(LogicalPosition::new(-10000.0, -10000.0)),
                     size: Size::Logical(LogicalSize::new(1.0, 1.0)),
@@ -219,6 +235,16 @@ mod win {
                 let _ = wv.set_bounds(hidden_rect);
             } else if let Err(e) = wv.set_bounds(rect_to_wry(reader_rect, pixels_per_point)) {
                 eprintln!("set_bounds failed: {e}");
+            }
+            // Apply any pending theme JS (deferred from apply_theme when
+            // webview was None).
+            if let Some(dark) = self.pending_theme.take() {
+                let theme = if dark { "dark" } else { "light" };
+                let script =
+                    format!(r#"document.documentElement.setAttribute("data-theme","{theme}");"#);
+                if let Err(e) = wv.evaluate_script(&script) {
+                    eprintln!("evaluate_script failed: {e}");
+                }
             }
         }
 
@@ -237,16 +263,15 @@ mod win {
                     let _ = wv.set_bounds(hidden_rect);
                 } else {
                     let _ = wv.set_bounds(rect_to_wry(rect, self.last_ppp));
-                    // Reload HTML so WebView2 renders the latest content
-                    // (e.g. after a theme change while hidden).
-                    if !self.last_html.is_empty() {
-                        let _ = wv.load_html(&self.last_html);
-                    }
                 }
             }
         }
     }
 
+    /// Set the DWM immersive dark mode attribute AND force a non-client area
+    /// repaint via `SetWindowPos(SWP_FRAMECHANGED)`.  Without the repaint,
+    /// Windows often keeps the old title bar colour until the next manual
+    /// resize/activation.
     fn apply_titlebar_dark(hwnd: HWND, dark: bool) {
         use windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE;
         let value: u32 = if dark { 1 } else { 0 };
@@ -261,6 +286,19 @@ mod win {
                     std::mem::size_of::<u32>() as u32,
                 );
             }
+        }
+        // Force the non-client area (title bar) to repaint so the new
+        // DWM attribute takes effect immediately.
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         }
     }
 
@@ -420,8 +458,9 @@ impl ReaderHost {
         self.inner.set_titlebar_dark(dark);
     }
 
-    pub fn rebuild(&mut self) {
-        self.inner.rebuild();
+    /// Switch reader content theme instantly via JS (no document reload).
+    pub fn apply_theme(&mut self, dark: bool) {
+        self.inner.apply_theme(dark);
     }
 
     pub fn reclaim_shell_focus(&mut self) {
@@ -459,7 +498,7 @@ impl ReaderHost {
     pub fn shutdown(&mut self) {}
     pub fn show_html(&mut self, _html: &str) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
-    pub fn rebuild(&mut self) {}
+    pub fn apply_theme(&mut self, _dark: bool) {}
     pub fn reclaim_shell_focus(&mut self) {}
     pub fn set_hidden(&mut self, _hidden: bool) {}
 }

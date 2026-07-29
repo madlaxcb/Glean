@@ -608,8 +608,7 @@ impl eframe::App for SpikeApp {
                     ui.heading("刷新");
                     ui.horizontal(|ui| {
                         ui.label("全局自动刷新间隔（秒，0=关闭）");
-                        let mut secs_text = self.state.config.refresh_interval_secs.to_string();
-                        let te = egui::TextEdit::singleline(&mut secs_text)
+                        let te = egui::TextEdit::singleline(&mut self.state.refresh_interval_input)
                             .id(egui::Id::new("refresh_interval_input"))
                             .desired_width(80.0);
                         let resp = ui.add(te);
@@ -618,8 +617,12 @@ impl eframe::App for SpikeApp {
                             resp.request_focus();
                         }
                         if resp.lost_focus() {
-                            if let Ok(v) = secs_text.parse::<i64>() {
+                            if let Ok(v) = self.state.refresh_interval_input.parse::<i64>() {
                                 self.state.set_global_refresh_interval(v.max(0));
+                            } else {
+                                // Reset to current config on invalid input.
+                                self.state.refresh_interval_input =
+                                    self.state.config.refresh_interval_secs.to_string();
                             }
                         }
                     });

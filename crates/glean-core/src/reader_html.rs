@@ -1,4 +1,8 @@
 //! Reader HTML shell (no scripts). Shared by spike and real entries.
+//!
+//! Theme is driven by a `data-theme` attribute on <html> and CSS custom
+//! properties, so the host can switch themes via `evaluate_script` without
+//! reloading the document.
 
 use crate::model::ImagePolicy;
 use crate::sanitize::sanitize_html_with_policy;
@@ -14,11 +18,7 @@ pub fn reader_document(
     has_content: bool,
     image_policy: ImagePolicy,
 ) -> String {
-    let (bg, fg, muted, link) = if dark {
-        ("#1C1C1E", "#F2F2F7", "#8E8E93", "#64D2FF")
-    } else {
-        ("#F7F7F5", "#1C1C1E", "#6C6C70", "#0A84FF")
-    };
+    let theme_attr = if dark { "dark" } else { "light" };
 
     let cache_label = if has_content {
         "已缓存".to_string()
@@ -57,23 +57,26 @@ pub fn reader_document(
 
     format!(
         r#"<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="{theme_attr}">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; {img_src} base-uri 'none'; form-action 'none';"/>
 <title>{title}</title>
 <style>
-  html, body {{ margin: 0; padding: 0; background: {bg}; color: {fg};
-    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; line-height: 1.65; }}
+  html[data-theme="light"] {{ --bg: #F7F7F5; --fg: #1C1C1E; --muted: #6C6C70; --link: #0A84FF; }}
+  html[data-theme="dark"]  {{ --bg: #1C1C1E; --fg: #F2F2F7; --muted: #8E8E93; --link: #64D2FF; }}
+  html, body {{ margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; line-height: 1.65;
+    transition: background-color 0.15s, color 0.15s; }}
   main {{ max-width: 42rem; margin: 0 auto; padding: 1.25rem 1.5rem 2.5rem; }}
   h1 {{ font-size: 1.45rem; font-weight: 650; margin: 0 0 0.5rem; line-height: 1.35; }}
-  .meta {{ color: {muted}; font-size: 0.82rem; margin-bottom: 0.75rem; }}
+  .meta {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 0.75rem; }}
   .orig {{ margin: 0 0 1.25rem; font-size: 0.92rem; }}
-  .orig a {{ color: {link}; }}
-  .empty {{ color: {muted}; }}
+  .orig a {{ color: var(--link); }}
+  .empty {{ color: var(--muted); }}
   p, li {{ font-size: 1rem; }}
-  a {{ color: {link}; }}
+  a {{ color: var(--link); }}
   img {{ max-width: 100%; height: auto; }}
 </style>
 </head>
@@ -87,14 +90,11 @@ pub fn reader_document(
 </body>
 </html>
 "#,
+        theme_attr = theme_attr,
         title = html_escape(title),
         meta = meta,
         link_html = link_html,
         body = body,
-        bg = bg,
-        fg = fg,
-        muted = muted,
-        link = link,
         img_src = img_src,
     )
 }
@@ -125,5 +125,25 @@ mod tests {
         assert!(doc.contains("https://ex.com/a"));
         assert!(doc.contains("查看原文"));
         assert!(!doc.to_lowercase().contains("<script"));
+    }
+
+    #[test]
+    fn has_data_theme_dark() {
+        let doc = reader_document("t", None, None, "<p>x</p>", true, true, ImagePolicy::Block);
+        assert!(doc.contains(r#"data-theme="dark""#));
+    }
+
+    #[test]
+    fn has_data_theme_light() {
+        let doc = reader_document("t", None, None, "<p>x</p>", false, true, ImagePolicy::Block);
+        assert!(doc.contains(r#"data-theme="light""#));
+    }
+
+    #[test]
+    fn has_css_variables() {
+        let doc = reader_document("t", None, None, "<p>x</p>", false, true, ImagePolicy::Block);
+        assert!(doc.contains("--bg"));
+        assert!(doc.contains("--fg"));
+        assert!(doc.contains("var(--bg)"));
     }
 }
