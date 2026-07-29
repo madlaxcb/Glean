@@ -37,6 +37,8 @@ pub struct EntrySummary {
     pub published_at: Option<i64>,
     pub is_read: bool,
     pub is_starred: bool,
+    /// True if content_html is non-empty (cached / offline-readable).
+    pub has_content: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

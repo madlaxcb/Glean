@@ -654,9 +654,7 @@ impl SpikeApp {
                 .iter()
                 .filter(|f| f.folder_id == Some(folder.id))
                 .collect();
-            if folder_feeds.is_empty() {
-                continue;
-            }
+            let is_empty = folder_feeds.is_empty();
             ui.label(
                 RichText::new(format!("📁 {}", folder.name))
                     .small()
@@ -798,7 +796,8 @@ impl SpikeApp {
                 for (i, entry) in self.state.entries.iter().enumerate() {
                     let read_mark = if entry.is_read { "已读" } else { "未读" };
                     let star = if entry.is_starred { "★" } else { "" };
-                    let label = format!("[{read_mark}]{star} {}", entry.title);
+                    let cache = if entry.has_content { "" } else { " ⇊" };
+                    let label = format!("[{read_mark}]{star}{cache} {}", entry.title);
                     let rich = if entry.is_read {
                         RichText::new(label).weak()
                     } else {

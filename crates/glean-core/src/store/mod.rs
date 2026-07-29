@@ -268,21 +268,21 @@ impl Store {
     pub fn list_entries(&self, filter: EntryFilter) -> Result<Vec<EntrySummary>> {
         let sql = match filter {
             EntryFilter::All => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
                  FROM entries ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Unread => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
                  FROM entries WHERE is_read = 0
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Starred => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
                  FROM entries WHERE is_starred = 1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Feed(_) => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
                  FROM entries WHERE feed_id = ?1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
@@ -297,6 +297,7 @@ impl Store {
                 published_at: r.get(4)?,
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
+                has_content: !r.get::<_, String>(7)?.is_empty(),
             })
         };
         let list = match filter {
@@ -328,6 +329,7 @@ impl Store {
                             published_at: r.get(4)?,
                             is_read: r.get::<_, i64>(5)? != 0,
                             is_starred: r.get::<_, i64>(6)? != 0,
+                            has_content: !r.get::<_, String>(8)?.is_empty(),
                         },
                         author: r.get(7)?,
                         content_html: r.get(8)?,
@@ -393,7 +395,7 @@ impl Store {
 
     fn search_fts(&self, q: &str, limit: i64) -> Result<Vec<EntrySummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.feed_id, e.title, e.url, e.published_at, e.is_read, e.is_starred
+            "SELECT e.id, e.feed_id, e.title, e.url, e.published_at, e.is_read, e.is_starred, e.content_html
              FROM entries_fts f
              JOIN entries e ON e.id = f.rowid
              WHERE entries_fts MATCH ?1
@@ -406,7 +408,7 @@ impl Store {
     fn search_like(&self, q: &str, limit: i64) -> Result<Vec<EntrySummary>> {
         let pattern = format!("%{q}%");
         let mut stmt = self.conn.prepare(
-            "SELECT id, feed_id, title, url, published_at, is_read, is_starred
+            "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
              FROM entries
              WHERE title LIKE ?1 OR IFNULL(summary,'') LIKE ?1 OR content_html LIKE ?1
              ORDER BY id DESC LIMIT ?2",
@@ -585,6 +587,7 @@ fn map_summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntrySummary> {
         published_at: r.get(4)?,
         is_read: r.get::<_, i64>(5)? != 0,
         is_starred: r.get::<_, i64>(6)? != 0,
+        has_content: !r.get::<_, String>(7)?.is_empty(),
     })
 }
 
