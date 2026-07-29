@@ -1,5 +1,6 @@
 use crate::error::{CoreError, Result};
-use crate::sanitize::sanitize_html;
+use crate::model::ImagePolicy;
+use crate::sanitize::sanitize_html_with_policy;
 use feed_rs::model::{Content, Text};
 use feed_rs::parser;
 
@@ -56,7 +57,7 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed> {
         let author = e.authors.first().map(|a| a.name.clone());
         let published_at = e.published.or(e.updated).map(|t| t.timestamp());
         let raw_html = pick_html(e.content.as_ref(), e.summary.as_ref());
-        let content_html = sanitize_html(&raw_html);
+        let content_html = sanitize_html_with_policy(&raw_html, ImagePolicy::Allow);
         let summary = e.summary.as_ref().map(|s| plainish(&s.content));
         entries.push(ParsedEntry {
             guid,
@@ -92,7 +93,7 @@ fn pick_html(content: Option<&Content>, summary: Option<&Text>) -> String {
 
 fn plainish(s: &str) -> String {
     // light strip for summary column
-    let cleaned = sanitize_html(s);
+    let cleaned = sanitize_html_with_policy(s, ImagePolicy::Block);
     cleaned.chars().take(280).collect()
 }
 
@@ -121,7 +122,7 @@ mod tests {
         assert_eq!(f.entries.len(), 1);
         assert_eq!(f.entries[0].guid, "guid-1");
         assert!(!f.entries[0].content_html.to_lowercase().contains("script"));
-        assert!(!f.entries[0].content_html.to_lowercase().contains("<img"));
+        // img is kept at parse time (Allow policy); removed at render time if ImagePolicy::Block.
         assert!(f.entries[0].content_html.contains("Body"));
     }
 }

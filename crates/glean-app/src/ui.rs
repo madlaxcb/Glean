@@ -1,6 +1,6 @@
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::{EntryFilter, FolderId, ReaderHostMode};
+use glean_core::{EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -16,6 +16,8 @@ pub struct SpikeApp {
     show_opml_import: bool,
     /// Show error log popup.
     show_errors: bool,
+    /// Show settings popup.
+    show_settings: bool,
 }
 
 impl SpikeApp {
@@ -27,6 +29,7 @@ impl SpikeApp {
             primed: false,
             show_opml_import: false,
             show_errors: false,
+            show_settings: false,
         }
     }
 }
@@ -95,6 +98,9 @@ impl eframe::App for SpikeApp {
                     ui.separator();
                     if ui.button("Theme").clicked() {
                         self.state.toggle_theme(ctx);
+                    }
+                    if ui.button("设置").clicked() {
+                        self.show_settings = !self.show_settings;
                     }
                     ui.separator();
                     ui.label("搜索");
@@ -176,7 +182,7 @@ impl eframe::App for SpikeApp {
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(
-                        "j/k 换文 · s 星标 · r 刷新 · t 主题 · 右键 菜单 · OPML 导入导出",
+                        "j/k 换文 · s 星标 · r 刷新 · t 主题 · 右键 菜单 · 设置 图片/布局",
                     )
                     .small()
                     .weak(),
@@ -306,7 +312,8 @@ impl eframe::App for SpikeApp {
         let has_popup = self.state.opml_export.is_some()
             || self.show_opml_import
             || self.state.rename_feed.is_some()
-            || self.show_errors;
+            || self.show_errors
+            || self.show_settings;
         self.state.reader.set_hidden(has_popup);
 
         // --- Popups (after CentralPanel so they render on top) ---
@@ -513,6 +520,85 @@ impl eframe::App for SpikeApp {
             }
         }
 
+        // Settings popup
+        if self.show_settings {
+            let mut close = false;
+            egui::Window::new("设置")
+                .resizable(false)
+                .default_width(380.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.heading("外观");
+                    ui.horizontal(|ui| {
+                        ui.label("主题");
+                        if ui.selectable_label(!self.state.dark, "浅色").clicked()
+                            && self.state.dark
+                        {
+                            self.state.toggle_theme(ctx);
+                        }
+                        if ui.selectable_label(self.state.dark, "深色").clicked()
+                            && !self.state.dark
+                        {
+                            self.state.toggle_theme(ctx);
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.heading("阅读");
+                    ui.horizontal(|ui| {
+                        ui.label("远程图片");
+                        let policy = self.state.config.image_policy;
+                        if ui
+                            .selectable_label(policy == ImagePolicy::Block, "拦截")
+                            .clicked()
+                            && policy != ImagePolicy::Block
+                        {
+                            self.state.config.image_policy = ImagePolicy::Block;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                        if ui
+                            .selectable_label(policy == ImagePolicy::Allow, "允许")
+                            .clicked()
+                            && policy != ImagePolicy::Allow
+                        {
+                            self.state.config.image_policy = ImagePolicy::Allow;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                    });
+                    ui.label(
+                        RichText::new("切换后需刷新订阅才能生效（图片在抓取时消毒）")
+                            .small()
+                            .weak(),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.heading("布局");
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "导航 {} · 列表 {}",
+                            self.state.nav_width as i32, self.state.list_width as i32
+                        ));
+                        if ui.button("重置布局").clicked() {
+                            self.state.reset_layout();
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                });
+            if close {
+                self.show_settings = false;
+            }
+        }
+
         // --- WebView2 attach (Windows only) ---
         #[cfg(windows)]
         {
@@ -558,6 +644,8 @@ impl eframe::App for SpikeApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.state.sync_config();
+        self.state.save_config();
         self.state.reader.shutdown();
     }
 }
@@ -593,6 +681,7 @@ impl SpikeApp {
         let mut feed_mark_read = None;
         let mut feed_rename = None;
         let mut feed_move_folder = None;
+        let mut feed_toggle_mute = None;
         let mut do_create_folder = false;
 
         // Context menu on "订阅" header for creating folders.
@@ -631,7 +720,8 @@ impl SpikeApp {
             } else {
                 ""
             };
-            let label = format!("{}{error_mark}", feed.title);
+            let mute_mark = if feed.muted { "🔇" } else { "" };
+            let label = format!("{mute_mark}{}{error_mark}", feed.title);
             let resp = ui.selectable_label(sel, &label);
             if resp.clicked() {
                 feed_click = Some(feed.id);
@@ -645,6 +735,7 @@ impl SpikeApp {
                 &mut feed_rename,
                 &mut feed_mark_read,
                 &mut feed_move_folder,
+                &mut feed_toggle_mute,
             );
         }
 
@@ -670,7 +761,8 @@ impl SpikeApp {
                 } else {
                     ""
                 };
-                let label = format!("  {}{error_mark}", feed.title);
+                let mute_mark = if feed.muted { "🔇" } else { "" };
+                let label = format!("  {mute_mark}{}{error_mark}", feed.title);
                 let resp = ui.selectable_label(sel, &label);
                 if resp.clicked() {
                     feed_click = Some(feed.id);
@@ -684,6 +776,7 @@ impl SpikeApp {
                     &mut feed_rename,
                     &mut feed_mark_read,
                     &mut feed_move_folder,
+                    &mut feed_toggle_mute,
                 );
             }
         }
@@ -702,6 +795,9 @@ impl SpikeApp {
         }
         if let Some((feed_id, folder_id)) = feed_move_folder {
             self.state.move_feed_to_folder(feed_id, folder_id);
+        }
+        if let Some(id) = feed_toggle_mute {
+            self.state.toggle_mute_feed(id);
         }
         if let Some(id) = feed_mark_read {
             self.state.mark_all_read(Some(id));
@@ -725,10 +821,16 @@ impl SpikeApp {
         feed_rename: &mut Option<glean_core::FeedId>,
         feed_mark_read: &mut Option<glean_core::FeedId>,
         feed_move_folder: &mut Option<(glean_core::FeedId, Option<FolderId>)>,
+        feed_toggle_mute: &mut Option<glean_core::FeedId>,
     ) {
         resp.context_menu(|ui| {
             if ui.button("重命名").clicked() {
                 *feed_rename = Some(feed.id);
+                ui.close_menu();
+            }
+            let mute_label = if feed.muted { "取消静音" } else { "静音" };
+            if ui.button(mute_label).clicked() {
+                *feed_toggle_mute = Some(feed.id);
                 ui.close_menu();
             }
             if ui.button("标记全部已读").clicked() {

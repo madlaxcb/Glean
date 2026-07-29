@@ -17,11 +17,14 @@ pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
 pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
-pub use model::{EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId};
+pub use model::{
+    AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,
+    ImagePolicy,
+};
 pub use opml::{export_opml, parse_opml, OpmlOutline};
-pub use paths::default_db_path;
+pub use paths::{default_config_path, default_db_path};
 pub use reader_html::reader_document;
-pub use sanitize::sanitize_html;
+pub use sanitize::{sanitize_html, sanitize_html_with_policy};
 pub use service::GleanService;
 pub use store::Store;
 
@@ -99,7 +102,15 @@ mod tests {
 
     #[test]
     fn document_has_no_script_tags() {
-        let doc = reader_document("t", None, None, "<p>hi</p>", false, true);
+        let doc = reader_document(
+            "t",
+            None,
+            None,
+            "<p>hi</p>",
+            false,
+            true,
+            ImagePolicy::Block,
+        );
         assert!(!doc.to_lowercase().contains("<script"));
     }
 

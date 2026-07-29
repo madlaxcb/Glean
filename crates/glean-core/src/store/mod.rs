@@ -7,7 +7,7 @@ use crate::model::{
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub struct Store {
     conn: Connection,
@@ -116,6 +116,15 @@ impl Store {
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![SCHEMA_VERSION.to_string()],
+            )?;
+        }
+        if ver < 2 {
+            self.conn
+                .execute_batch("ALTER TABLE feeds ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;")?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '2')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
             )?;
         }
         Ok(())
@@ -250,7 +259,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted FROM feeds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -260,6 +269,7 @@ impl Store {
                 site_url: r.get(3)?,
                 feed_url: r.get(4)?,
                 last_error: r.get(5)?,
+                muted: r.get::<_, i64>(6)? != 0,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -561,6 +571,34 @@ impl Store {
             params![name],
         )?;
         Ok(FolderId(self.conn.last_insert_rowid()))
+    }
+
+    pub fn toggle_mute_feed(&mut self, id: FeedId) -> Result<bool> {
+        let cur: i64 = self
+            .conn
+            .query_row(
+                "SELECT muted FROM feeds WHERE id = ?1",
+                params![id.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("feed {}", id.0)))?;
+        let next = if cur == 0 { 1 } else { 0 };
+        self.conn.execute(
+            "UPDATE feeds SET muted = ?1 WHERE id = ?2",
+            params![next, id.0],
+        )?;
+        Ok(next != 0)
+    }
+
+    pub fn unread_count_excluding_muted(&self) -> Result<u64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entries e JOIN feeds f ON e.feed_id = f.id
+             WHERE e.is_read = 0 AND f.muted = 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
     }
 
     pub fn mark_all_read_in_feed(&mut self, feed_id: FeedId) -> Result<()> {

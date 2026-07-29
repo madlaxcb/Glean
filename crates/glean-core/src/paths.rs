@@ -16,3 +16,11 @@ pub fn default_db_path() -> PathBuf {
     }
     PathBuf::from("glean.db")
 }
+
+/// `config.json` next to the DB file.
+pub fn default_config_path() -> PathBuf {
+    default_db_path()
+        .parent()
+        .map(|p| p.join("config.json"))
+        .unwrap_or_else(|| PathBuf::from("config.json"))
+}

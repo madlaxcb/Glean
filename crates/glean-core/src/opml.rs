@@ -230,6 +230,7 @@ mod tests {
             site_url: Some("https://ex.com".into()),
             feed_url: "https://ex.com/rss".into(),
             last_error: None,
+            muted: false,
         }];
         let xml = export_opml(&feeds);
         assert!(xml.contains("https://ex.com/rss"));

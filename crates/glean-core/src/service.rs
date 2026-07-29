@@ -175,6 +175,18 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::ToggleMuteFeed { id } => {
+                let muted = self.store.toggle_mute_feed(id)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: if muted {
+                        "已静音".into()
+                    } else {
+                        "已取消静音".into()
+                    },
+                });
+                Ok(ev)
+            }
             AppCommand::CreateFolder { name } => {
                 let id = self.store.add_folder(&name)?;
                 let mut ev = self.emit_nav()?;
@@ -423,7 +435,7 @@ impl GleanService {
         Ok(vec![AppEvent::NavUpdated {
             folders: self.store.list_folders()?,
             feeds: self.store.list_feeds()?,
-            unread_total: self.store.unread_count()?,
+            unread_total: self.store.unread_count_excluding_muted()?,
         }])
     }
 

@@ -1737,6 +1737,7 @@ dependencies = [
  "glean-core",
  "raw-window-handle",
  "rfd",
+ "serde_json",
  "windows 0.58.0",
  "wry",
 ]

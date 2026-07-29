@@ -10,9 +10,9 @@ mod ui;
 
 use eframe::egui;
 use glean_core::{
-    default_db_path, run_refresh_task, AppCommand, AppEvent, EntryDetail, EntryFilter,
-    EntrySummary, Feed, Folder, FolderId, GleanService, ReaderHostMode, RefreshOutcome,
-    RefreshTask,
+    default_config_path, default_db_path, run_refresh_task, AppCommand, AppConfig, AppEvent,
+    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ImagePolicy,
+    ReaderHostMode, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -69,6 +69,10 @@ pub struct SpikeState {
     pub errors: Vec<String>,
     /// New folder name input.
     pub new_folder_input: String,
+    /// Persistent config.
+    pub config: AppConfig,
+    /// Config file path.
+    config_path: std::path::PathBuf,
 }
 
 impl SpikeState {
@@ -78,6 +82,10 @@ impl SpikeState {
             eprintln!("glean: open db {:?}: {e}; falling back to memory", db);
             GleanService::open_in_memory().expect("memory store")
         });
+
+        let config_path = default_config_path();
+        let config = load_config(&config_path);
+
         let mut s = Self {
             service,
             folders: Vec::new(),
@@ -87,10 +95,10 @@ impl SpikeState {
             selected: None,
             open_detail: None,
             filter: EntryFilter::All,
-            dark: false,
+            dark: config.dark,
             host_mode: ReaderHostMode::ChildEmbed,
-            nav_width: 200.0,
-            list_width: 320.0,
+            nav_width: config.nav_width,
+            list_width: config.list_width,
             status: format!("库: {}", db.display()),
             open_count: 0,
             search: String::new(),
@@ -105,9 +113,23 @@ impl SpikeState {
             rename_feed: None,
             errors: Vec::new(),
             new_folder_input: String::new(),
+            config,
+            config_path,
         };
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
+    }
+
+    /// Persist current config to disk.
+    pub fn save_config(&self) {
+        save_config(&self.config_path, &self.config);
+    }
+
+    /// Sync runtime state → config struct (call before save).
+    pub fn sync_config(&mut self) {
+        self.config.dark = self.dark;
+        self.config.nav_width = self.nav_width;
+        self.config.list_width = self.list_width;
     }
 
     pub fn dispatch(&mut self, cmd: AppCommand) {
@@ -186,8 +208,8 @@ impl SpikeState {
                     &entry.content_html,
                     self.dark,
                     entry.summary.has_content,
+                    self.config.image_policy,
                 );
-                self.open_detail = Some(entry);
                 self.reader.show_html(&html);
                 self.refresh_status();
             }
@@ -288,10 +310,12 @@ impl SpikeState {
                 &entry.content_html,
                 self.dark,
                 entry.summary.has_content,
+                self.config.image_policy,
             );
             self.reader.show_html(&html);
         }
-        self.status = format!("Theme: {}", if self.dark { "dark" } else { "light" });
+        self.sync_config();
+        self.save_config();
     }
 
     pub fn toggle_host_mode(&mut self) {
@@ -401,5 +425,42 @@ impl SpikeState {
 
     pub fn create_folder(&mut self, name: String) {
         self.dispatch(AppCommand::CreateFolder { name });
+    }
+
+    pub fn toggle_mute_feed(&mut self, id: glean_core::FeedId) {
+        self.dispatch(AppCommand::ToggleMuteFeed { id });
+    }
+
+    pub fn toggle_image_policy(&mut self) {
+        self.config.image_policy = self.config.image_policy.next();
+        self.sync_config();
+        self.save_config();
+        self.status = format!("图片策略: {}", self.config.image_policy.label());
+    }
+
+    pub fn reset_layout(&mut self) {
+        self.nav_width = 200.0;
+        self.list_width = 320.0;
+        self.sync_config();
+        self.save_config();
+        self.status = "布局已重置".into();
+    }
+}
+
+// --- Config load / save helpers ---
+
+fn load_config(path: &std::path::Path) -> AppConfig {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_config(path: &std::path::Path, config: &AppConfig) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = std::fs::write(path, json);
     }
 }

@@ -26,6 +26,7 @@ pub struct Feed {
     pub site_url: Option<String>,
     pub feed_url: String,
     pub last_error: Option<String>,
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,4 +56,51 @@ pub enum EntryFilter {
     Unread,
     Starred,
     Feed(FeedId),
+}
+
+// --- App config (persisted as JSON next to the DB) ---
+
+/// Remote image policy for the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ImagePolicy {
+    /// Strip all remote images (privacy default).
+    #[default]
+    Block,
+    /// Keep img tags; WebView loads them.
+    Allow,
+}
+
+impl ImagePolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Block => "拦截远程图片",
+            Self::Allow => "允许远程图片",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Block => Self::Allow,
+            Self::Allow => Self::Block,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub dark: bool,
+    pub nav_width: f32,
+    pub list_width: f32,
+    pub image_policy: ImagePolicy,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            dark: false,
+            nav_width: 200.0,
+            list_width: 320.0,
+            image_policy: ImagePolicy::Block,
+        }
+    }
 }

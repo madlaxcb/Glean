@@ -1,13 +1,28 @@
 //! HTML sanitization for entry bodies.
-//! Defaults: no scripts; remote images stripped (privacy).
+//! Defaults: no scripts; remote images policy configurable.
+
+use crate::model::ImagePolicy;
 
 /// Clean feed HTML for local storage / WebView (script disabled there too).
+/// Uses the default Block image policy.
 pub fn sanitize_html(html: &str) -> String {
+    sanitize_html_with_policy(html, ImagePolicy::Block)
+}
+
+/// Clean feed HTML with a specific image policy.
+pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
     let mut builder = ammonia::Builder::default();
-    // Default Block remote images: drop <img> entirely for M1.
-    builder.rm_tags([
-        "img", "picture", "source", "video", "audio", "iframe", "object", "embed", "form",
-    ]);
+    match policy {
+        ImagePolicy::Block => {
+            builder.rm_tags([
+                "img", "picture", "source", "video", "audio", "iframe", "object", "embed", "form",
+            ]);
+        }
+        ImagePolicy::Allow => {
+            builder.rm_tags(["video", "audio", "iframe", "object", "embed", "form"]);
+            // Keep img, picture, source for image display.
+        }
+    }
     builder.clean(html).to_string()
 }
 
@@ -23,5 +38,20 @@ mod tests {
         assert!(!out.to_lowercase().contains("<img"));
         assert!(out.contains("hi"));
         assert!(out.contains("ex.com") || out.contains("x"));
+    }
+
+    #[test]
+    fn allow_policy_keeps_img() {
+        let raw = r#"<p>hi</p><img src="https://example.com/a.png"/>"#;
+        let out = sanitize_html_with_policy(raw, ImagePolicy::Allow);
+        assert!(out.contains("<img"));
+        assert!(out.contains("example.com"));
+    }
+
+    #[test]
+    fn block_policy_strips_img() {
+        let raw = r#"<p>hi</p><img src="https://example.com/a.png"/>"#;
+        let out = sanitize_html_with_policy(raw, ImagePolicy::Block);
+        assert!(!out.contains("<img"));
     }
 }

@@ -56,6 +56,9 @@ pub enum AppCommand {
         feed_id: FeedId,
         folder_id: Option<crate::model::FolderId>,
     },
+    ToggleMuteFeed {
+        id: FeedId,
+    },
     CreateFolder {
         name: String,
     },

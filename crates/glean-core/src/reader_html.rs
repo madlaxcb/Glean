@@ -1,5 +1,8 @@
 //! Reader HTML shell (no scripts). Shared by spike and real entries.
 
+use crate::model::ImagePolicy;
+use crate::sanitize::sanitize_html_with_policy;
+
 /// Build a full reader document. Safe for IsScriptEnabled=false.
 /// Always shows title; body may be summary-only for many feeds.
 pub fn reader_document(
@@ -9,6 +12,7 @@ pub fn reader_document(
     body_html: &str,
     dark: bool,
     has_content: bool,
+    image_policy: ImagePolicy,
 ) -> String {
     let (bg, fg, muted, link) = if dark {
         ("#1C1C1E", "#F2F2F7", "#8E8E93", "#64D2FF")
@@ -41,7 +45,14 @@ pub fn reader_document(
         r#"<p class="empty">此条目没有缓存正文。需要联网刷新后才能阅读，或使用「查看原文」在浏览器中打开。</p>"#
             .to_string()
     } else {
-        body_html.to_string()
+        // Apply image policy at render time (DB stores raw sanitized HTML with img tags).
+        sanitize_html_with_policy(body_html, image_policy)
+    };
+
+    // CSP: allow remote img only when policy is Allow.
+    let img_src = match image_policy {
+        ImagePolicy::Block => "img-src data:;",
+        ImagePolicy::Allow => "img-src data: https: http:;",
     };
 
     format!(
@@ -50,7 +61,7 @@ pub fn reader_document(
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none';"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; {img_src} base-uri 'none'; form-action 'none';"/>
 <title>{title}</title>
 <style>
   html, body {{ margin: 0; padding: 0; background: {bg}; color: {fg};
@@ -84,6 +95,7 @@ pub fn reader_document(
         fg = fg,
         muted = muted,
         link = link,
+        img_src = img_src,
     )
 }
 
@@ -107,6 +119,7 @@ mod tests {
             "<p>x</p>",
             false,
             true,
+            ImagePolicy::Block,
         );
         assert!(doc.contains("<h1>Hello</h1>"));
         assert!(doc.contains("https://ex.com/a"));
