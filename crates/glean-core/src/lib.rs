@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn document_has_no_script_tags() {
-        let doc = reader_document("t", None, None, "<p>hi</p>", false);
+        let doc = reader_document("t", None, None, "<p>hi</p>", false, true);
         assert!(!doc.to_lowercase().contains("<script"));
     }
 

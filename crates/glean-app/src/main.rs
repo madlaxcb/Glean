@@ -185,6 +185,7 @@ impl SpikeState {
                     entry.author.as_deref(),
                     &entry.content_html,
                     self.dark,
+                    entry.summary.has_content,
                 );
                 self.open_detail = Some(entry);
                 self.reader.show_html(&html);
@@ -286,6 +287,7 @@ impl SpikeState {
                 entry.author.as_deref(),
                 &entry.content_html,
                 self.dark,
+                entry.summary.has_content,
             );
             self.reader.show_html(&html);
         }

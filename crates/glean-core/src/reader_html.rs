@@ -8,6 +8,7 @@ pub fn reader_document(
     author: Option<&str>,
     body_html: &str,
     dark: bool,
+    has_content: bool,
 ) -> String {
     let (bg, fg, muted, link) = if dark {
         ("#1C1C1E", "#F2F2F7", "#8E8E93", "#64D2FF")
@@ -15,7 +16,12 @@ pub fn reader_document(
         ("#F7F7F5", "#1C1C1E", "#6C6C70", "#0A84FF")
     };
 
-    let mut meta_bits = vec!["Glean · 脚本已禁用".to_string()];
+    let cache_label = if has_content {
+        "已缓存".to_string()
+    } else {
+        "未缓存".to_string()
+    };
+    let mut meta_bits = vec![format!("Glean · 脚本已禁用 · {cache_label}")];
     if let Some(a) = author {
         if !a.is_empty() {
             meta_bits.push(html_escape(a));
@@ -94,7 +100,14 @@ mod tests {
 
     #[test]
     fn includes_h1_and_link() {
-        let doc = reader_document("Hello", Some("https://ex.com/a"), None, "<p>x</p>", false);
+        let doc = reader_document(
+            "Hello",
+            Some("https://ex.com/a"),
+            None,
+            "<p>x</p>",
+            false,
+            true,
+        );
         assert!(doc.contains("<h1>Hello</h1>"));
         assert!(doc.contains("https://ex.com/a"));
         assert!(doc.contains("查看原文"));
