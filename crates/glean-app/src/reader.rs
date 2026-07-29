@@ -558,6 +558,7 @@ impl ReaderHost {
     pub fn shutdown(&mut self) {}
     pub fn show_html(&mut self, _html: &str) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
+    pub fn set_dark_title(&mut self, _dark: bool) {}
     pub fn apply_theme(&mut self, _dark: bool) {}
     pub fn reclaim_shell_focus(&mut self) {}
     pub fn set_hidden(&mut self, _hidden: bool) {}

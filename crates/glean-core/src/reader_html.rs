@@ -50,8 +50,10 @@ pub fn reader_document(
     };
 
     // CSP: allow remote img only when policy is Allow.
+    // LoadOnDemand strips img at render (like Block); the host re-renders with
+    // Allow on a per-article "显示图片" click, which swaps CSP too.
     let img_src = match image_policy {
-        ImagePolicy::Block => "img-src data:;",
+        ImagePolicy::Block | ImagePolicy::LoadOnDemand => "img-src data:;",
         ImagePolicy::Allow => "img-src data: https: http:;",
     };
 

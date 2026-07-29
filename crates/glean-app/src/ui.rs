@@ -74,6 +74,15 @@ impl eframe::App for SpikeApp {
                     if ui.button("星标").clicked() {
                         self.state.toggle_star_current();
                     }
+                    // Per-article "显示图片" only in LoadOnDemand mode and not yet shown.
+                    if self.state.config.image_policy == ImagePolicy::LoadOnDemand
+                        && !self.state.reader_show_images
+                        && self.state.open_detail.is_some()
+                    {
+                        if ui.button("显示图片").clicked() {
+                            self.state.show_reader_images();
+                        }
+                    }
                     ui.separator();
                     if ui.button("导入OPML").clicked() {
                         self.show_opml_import = !self.show_opml_import;
@@ -577,6 +586,15 @@ impl eframe::App for SpikeApp {
                             self.state.save_config();
                         }
                         if ui
+                            .selectable_label(policy == ImagePolicy::LoadOnDemand, "按需")
+                            .clicked()
+                            && policy != ImagePolicy::LoadOnDemand
+                        {
+                            self.state.config.image_policy = ImagePolicy::LoadOnDemand;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                        if ui
                             .selectable_label(policy == ImagePolicy::Allow, "允许")
                             .clicked()
                             && policy != ImagePolicy::Allow
@@ -587,7 +605,7 @@ impl eframe::App for SpikeApp {
                         }
                     });
                     ui.label(
-                        RichText::new("切换后需刷新订阅才能生效（图片在抓取时消毒）")
+                        RichText::new("拦截=去图；按需=每篇可点「显示图片」；允许=始终加载")
                             .small()
                             .weak(),
                     );

@@ -62,12 +62,14 @@ pub enum EntryFilter {
 
 // --- App config (persisted as JSON next to the DB) ---
 
-/// Remote image policy for the reader.
+/// Remote image policy for the reader (dev plan §2.4.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ImagePolicy {
     /// Strip all remote images (privacy default).
     #[default]
     Block,
+    /// Strip at render; a per-article "显示图片" button re-renders with Allow.
+    LoadOnDemand,
     /// Keep img tags; WebView loads them.
     Allow,
 }
@@ -76,13 +78,15 @@ impl ImagePolicy {
     pub fn label(self) -> &'static str {
         match self {
             Self::Block => "拦截远程图片",
+            Self::LoadOnDemand => "按需加载图片",
             Self::Allow => "允许远程图片",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Self::Block => Self::Allow,
+            Self::Block => Self::LoadOnDemand,
+            Self::LoadOnDemand => Self::Allow,
             Self::Allow => Self::Block,
         }
     }

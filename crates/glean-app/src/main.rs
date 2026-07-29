@@ -11,8 +11,8 @@ mod ui;
 use eframe::egui;
 use glean_core::{
     default_config_path, default_db_path, run_refresh_task, AppCommand, AppConfig, AppEvent,
-    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ReaderHostMode,
-    RefreshOutcome, RefreshTask,
+    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ImagePolicy,
+    ReaderHostMode, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -79,6 +79,37 @@ fn single_instance_lock() -> Option<std::fs::File> {
     Some(file)
 }
 
+/// Max concurrent HTTP fetches during a refresh batch (dev plan §7.1: 4–8).
+const REFRESH_WORKERS: usize = 6;
+
+/// Spawn bounded worker threads that fetch+parse in parallel, sending each
+/// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;
+/// the receiver sees disconnect only after all workers finish.
+fn spawn_refresh_workers(tasks: Vec<RefreshTask>, tx: mpsc::Sender<RefreshOutcome>) {
+    let n = tasks.len();
+    if n == 0 {
+        return;
+    }
+    let workers = REFRESH_WORKERS.min(n);
+    // Round-robin chunk so each worker gets a balanced slice.
+    let mut chunks: Vec<Vec<RefreshTask>> = vec![Vec::new(); workers];
+    for (i, task) in tasks.into_iter().enumerate() {
+        chunks[i % workers].push(task);
+    }
+    for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+        let tx = tx.clone();
+        thread::spawn(move || {
+            for task in chunk {
+                let outcome = run_refresh_task(task);
+                let _ = tx.send(outcome);
+            }
+        });
+    }
+}
+
 /// UI-thread state: projects AppEvent; sends AppCommand to GleanService.
 pub struct SpikeState {
     pub service: GleanService,
@@ -122,6 +153,9 @@ pub struct SpikeState {
     /// Persistent buffer for the refresh-interval TextEdit in settings.
     /// Must outlive the frame so user typing isn't overwritten each frame.
     pub refresh_interval_input: String,
+    /// Per-article one-shot override: when true, reader renders with Allow
+    /// regardless of config.image_policy. Reset on entry switch.
+    pub reader_show_images: bool,
 }
 
 impl SpikeState {
@@ -166,6 +200,7 @@ impl SpikeState {
             config,
             config_path,
             auto_refresh_timer: 0.0,
+            reader_show_images: false,
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
@@ -247,13 +282,9 @@ impl SpikeState {
             let (tx, rx) = mpsc::channel::<RefreshOutcome>();
             self.refresh_rx = Some(rx);
             self.refresh_pending = tasks.len();
-            self.status = format!("自动刷新中… {} 个源", tasks.len());
-            thread::spawn(move || {
-                for task in tasks {
-                    let outcome = run_refresh_task(task);
-                    let _ = tx.send(outcome);
-                }
-            });
+            let workers = REFRESH_WORKERS.min(tasks.len());
+            self.status = format!("自动刷新中… {} 个源（{} 并发）", tasks.len(), workers);
+            spawn_refresh_workers(tasks, tx);
         }
     }
 
@@ -285,6 +316,8 @@ impl SpikeState {
                     .unwrap_or(false);
                 if !same {
                     self.open_count += 1;
+                    // New article: clear the per-article image override.
+                    self.reader_show_images = false;
                 }
                 let html = glean_core::reader_document(
                     &entry.summary.title,
@@ -293,9 +326,10 @@ impl SpikeState {
                     &entry.content_html,
                     self.dark,
                     entry.summary.has_content,
-                    self.config.image_policy,
+                    self.effective_image_policy(),
                 );
                 self.reader.show_html(&html);
+                self.open_detail = Some(entry);
                 self.refresh_status();
             }
             AppEvent::UnreadChanged { total } => {
@@ -398,7 +432,7 @@ impl SpikeState {
                 &entry.content_html,
                 self.dark,
                 entry.summary.has_content,
-                self.config.image_policy,
+                self.effective_image_policy(),
             );
             self.reader.show_html(&html);
         }
@@ -453,13 +487,9 @@ impl SpikeState {
         let (tx, rx) = mpsc::channel::<RefreshOutcome>();
         self.refresh_rx = Some(rx);
         self.refresh_pending = tasks.len();
-        self.status = format!("刷新中… {} 个源", tasks.len());
-        thread::spawn(move || {
-            for task in tasks {
-                let outcome = run_refresh_task(task);
-                let _ = tx.send(outcome);
-            }
-        });
+        let workers = REFRESH_WORKERS.min(tasks.len());
+        self.status = format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers);
+        spawn_refresh_workers(tasks, tx);
     }
 
     pub fn delete_feed(&mut self, id: glean_core::FeedId) {
@@ -525,6 +555,36 @@ impl SpikeState {
         self.sync_config();
         self.save_config();
         self.status = format!("图片策略: {}", self.config.image_policy.label());
+    }
+
+    /// Policy actually used for rendering: per-article override beats config.
+    pub fn effective_image_policy(&self) -> ImagePolicy {
+        if self.reader_show_images {
+            ImagePolicy::Allow
+        } else {
+            self.config.image_policy
+        }
+    }
+
+    /// Per-article "显示图片": re-render the current entry with Allow policy.
+    pub fn show_reader_images(&mut self) {
+        if self.open_detail.is_none() {
+            return;
+        }
+        self.reader_show_images = true;
+        if let Some(entry) = self.open_detail.clone() {
+            let html = glean_core::reader_document(
+                &entry.summary.title,
+                entry.summary.url.as_deref(),
+                entry.author.as_deref(),
+                &entry.content_html,
+                self.dark,
+                entry.summary.has_content,
+                ImagePolicy::Allow,
+            );
+            self.reader.show_html(&html);
+        }
+        self.status = "已显示当前文章图片".into();
     }
 
     pub fn reset_layout(&mut self) {

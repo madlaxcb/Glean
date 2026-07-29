@@ -13,7 +13,9 @@ pub fn sanitize_html(html: &str) -> String {
 pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
     let mut builder = ammonia::Builder::default();
     match policy {
-        ImagePolicy::Block => {
+        ImagePolicy::Block | ImagePolicy::LoadOnDemand => {
+            // LoadOnDemand strips at sanitize time; the reader re-renders with
+            // Allow on a per-article "显示图片" click (see reader_html).
             builder.rm_tags([
                 "img", "picture", "source", "video", "audio", "iframe", "object", "embed", "form",
             ]);
