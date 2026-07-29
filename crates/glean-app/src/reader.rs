@@ -103,14 +103,11 @@ mod win {
         }
 
         pub fn set_titlebar_dark(&mut self, dark: bool) {
-            if self.dark_title != dark {
-                self.dark_title = dark;
-                self.dark_title_applied = false;
-            }
-            if let Some(hwnd) = self.parent {
-                apply_titlebar_dark(hwnd, dark);
-                self.dark_title_applied = true;
-            }
+            self.dark_title = dark;
+            // Don't apply immediately — eframe may reset DWM attributes on the
+            // same frame when processing SetTheme.  Let sync_bounds apply it on
+            // the next frame instead, which is more reliable.
+            self.dark_title_applied = false;
         }
 
         /// Pull Win32 keyboard focus from WebView2 child back to the main window.
@@ -233,6 +230,11 @@ mod win {
                     let _ = wv.set_bounds(hidden_rect);
                 } else {
                     let _ = wv.set_bounds(rect_to_wry(rect, self.last_ppp));
+                    // Reload HTML so WebView2 renders the latest content
+                    // (e.g. after a theme change while hidden).
+                    if !self.last_html.is_empty() {
+                        let _ = wv.load_html(&self.last_html);
+                    }
                 }
             }
         }
