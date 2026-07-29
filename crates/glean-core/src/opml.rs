@@ -19,7 +19,7 @@ pub fn parse_opml(xml: &str) -> Vec<OpmlOutline> {
             XmlToken::OpenTag { name, attrs } => {
                 if name == "outline" || name.ends_with(":outline") {
                     depth += 1;
-                    let kind = attrs
+                    let _kind = attrs
                         .iter()
                         .find(|(k, _)| k == "type")
                         .map(|(_, v)| v.as_str());

@@ -15,6 +15,7 @@ glean-core = { workspace = true }
 eframe = { version = "0.31", default-features = true }
 egui = "0.31"
 raw-window-handle = "0.6"
+rfd = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 wry = "0.50"

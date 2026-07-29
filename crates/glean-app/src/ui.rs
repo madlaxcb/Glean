@@ -156,27 +156,62 @@ impl eframe::App for SpikeApp {
             });
 
         // --- OPML export popup ---
-        if self.state.opml_export.is_some() {
+        let opml_xml = self.state.opml_export.clone();
+        if let Some(xml) = &opml_xml {
             let mut close = false;
-            let xml = self.state.opml_export.clone().unwrap_or_default();
-            let mut xml_mut = xml.as_str();
+            let mut copied = false;
+            let mut saved = false;
             egui::Window::new("OPML 导出")
                 .resizable(true)
-                .default_width(500.0)
-                .default_height(300.0)
+                .default_width(520.0)
+                .default_height(340.0)
+                .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.label("复制以下 XML，保存为 .opml 文件：");
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut xml_mut)
-                                .desired_width(f32::INFINITY)
-                                .code_editor(),
-                        );
+                    ui.horizontal(|ui| {
+                        if ui.button("复制到剪贴板").clicked() {
+                            copied = true;
+                        }
+                        if ui.button("另存为…").clicked() {
+                            saved = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
                     });
-                    if ui.button("关闭").clicked() {
-                        close = true;
-                    }
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            let mut txt = xml.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut txt)
+                                    .desired_width(f32::INFINITY)
+                                    .code_editor(),
+                            );
+                        });
                 });
+            if copied {
+                ctx.copy_text(xml.clone());
+                self.state.status = "OPML 已复制到剪贴板".into();
+            }
+            if saved {
+                let xml_clone = xml.clone();
+                let status = self.state.status.clone();
+                let path = rfd::FileDialog::new()
+                    .set_file_name("glean-subscriptions.opml")
+                    .add_filter("OPML", &["opml", "xml"])
+                    .save_file();
+                if let Some(path) = path {
+                    match std::fs::write(&path, &xml_clone) {
+                        Ok(()) => self.state.status = format!("已保存到 {}", path.display()),
+                        Err(e) => self.state.status = format!("保存失败: {e}"),
+                    }
+                } else {
+                    self.state.status = status;
+                }
+            }
             if close {
                 self.state.opml_export = None;
             }
@@ -379,6 +414,7 @@ impl eframe::App for SpikeApp {
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                     column_contents(ui, "列表", |ui| {
                         egui::ScrollArea::vertical()
+                            .max_height(ui.available_height())
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 let current = self.state.selected;
@@ -508,15 +544,16 @@ fn paint_column_bg(ui: &Ui, rect: egui::Rect, fill: Color32, stroke: Color32) {
 }
 
 fn column_contents(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.add_space(6.0);
+    ui.spacing_mut().item_spacing.y = 2.0;
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).strong());
-            ui.separator();
-            add(ui);
-        });
+        ui.label(RichText::new(title).strong());
     });
+    ui.separator();
+    ui.add_space(2.0);
+    // Give the body the full remaining height.
+    add(ui);
 }
 
 fn splitter_drag(
