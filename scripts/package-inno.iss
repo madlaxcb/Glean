@@ -44,7 +44,6 @@ DisableProgramGroupPage=yes
 MinVersion=10.0.17763
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
