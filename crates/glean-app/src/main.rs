@@ -167,6 +167,8 @@ impl SpikeState {
             config_path,
             auto_refresh_timer: 0.0,
         };
+        // Sync the reader's title bar dark state with the loaded config.
+        s.reader.set_dark_title(s.dark);
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s
     }

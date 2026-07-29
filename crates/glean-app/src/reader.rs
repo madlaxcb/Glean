@@ -61,8 +61,9 @@ mod win {
         mode: ReaderHostMode,
         parent: Option<HWND>,
         dark_title: bool,
-        /// Pending theme to apply to the WebView2 content via JS.
         pending_theme: Option<bool>,
+        /// Deferred NC repaint: SetWindowPos(SWP_FRAMECHANGED) on next sync_bounds.
+        needs_nc_repaint: bool,
         hidden: bool,
         last_rect: Option<Rect>,
         last_ppp: f32,
@@ -77,10 +78,15 @@ mod win {
                 parent: None,
                 dark_title: false,
                 pending_theme: None,
+                needs_nc_repaint: false,
                 hidden: false,
                 last_rect: None,
                 last_ppp: 1.0,
             }
+        }
+
+        pub fn set_dark_title(&mut self, dark: bool) {
+            self.dark_title = dark;
         }
 
         pub fn set_mode(&mut self, mode: ReaderHostMode) {
@@ -106,10 +112,12 @@ mod win {
 
         pub fn set_titlebar_dark(&mut self, dark: bool) {
             self.dark_title = dark;
-            // Apply immediately if we have the HWND.
+            // Apply DWM attribute now.  Defer NC repaint to next sync_bounds
+            // so it runs AFTER eframe processes the async SetTheme command.
             if let Some(hwnd) = self.parent {
-                apply_titlebar_dark(hwnd, dark);
+                apply_dwm_dark(hwnd, dark);
             }
+            self.needs_nc_repaint = true;
         }
 
         /// Switch the reader content theme instantly via JavaScript, without
@@ -168,7 +176,7 @@ mod win {
                         "Glean main HWND not found yet (retry next frame)".to_string()
                     })?;
                     self.parent = Some(h);
-                    apply_titlebar_dark(h, self.dark_title);
+                    apply_dwm_dark(h, self.dark_title);
                     h
                 }
             };
@@ -219,6 +227,15 @@ mod win {
         }
 
         pub fn sync_bounds(&mut self, reader_rect: Rect, pixels_per_point: f32) {
+            // Re-apply DWM dark attribute every frame as a safety net.
+            // eframe/winit may reset it when processing theme changes.
+            if let Some(hwnd) = self.parent {
+                apply_dwm_dark(hwnd, self.dark_title);
+                if self.needs_nc_repaint {
+                    trigger_nc_repaint(hwnd);
+                    self.needs_nc_repaint = false;
+                }
+            }
             let Some(wv) = self.webview.as_ref() else {
                 return;
             };
@@ -268,29 +285,51 @@ mod win {
         }
     }
 
-    /// Set the DWM immersive dark mode attribute AND force a non-client area
-    /// repaint via `SetWindowPos(SWP_FRAMECHANGED)`.  Without the repaint,
-    /// Windows often keeps the old title bar colour until the next manual
-    /// resize/activation.
-    fn apply_titlebar_dark(hwnd: HWND, dark: bool) {
+    /// Write a diagnostic line to %TEMP%\glean_dwm.log.
+    fn dwm_log(msg: &str) {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("glean_dwm.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+
+    /// Set ONLY the DWM attribute (cheap, safe to call every frame).
+    fn apply_dwm_dark(hwnd: HWND, dark: bool) {
         use windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE;
         let value: u32 = if dark { 1 } else { 0 };
-        // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE; 19 = legacy pre-release value.
         for code in [20i32, 19i32] {
             let attr = DWMWINDOWATTRIBUTE(code);
-            unsafe {
-                let _ = DwmSetWindowAttribute(
+            let result = unsafe {
+                DwmSetWindowAttribute(
                     hwnd,
                     attr,
                     &value as *const u32 as *const _,
                     std::mem::size_of::<u32>() as u32,
-                );
+                )
+            };
+            if code == 20 {
+                let status = match &result {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR: {e}"),
+                };
+                let title = window_title(hwnd);
+                dwm_log(&format!(
+                    "apply_dwm_dark hwnd={:?} title=\"{}\" dark={} -> {}",
+                    hwnd.0, title, dark, status,
+                ));
             }
         }
-        // Force the non-client area (title bar) to repaint so the new
-        // DWM attribute takes effect immediately.
-        unsafe {
-            let _ = SetWindowPos(
+    }
+
+    /// Force non-client area repaint via SetWindowPos(SWP_FRAMECHANGED).
+    fn trigger_nc_repaint(hwnd: HWND) {
+        let result = unsafe {
+            SetWindowPos(
                 hwnd,
                 HWND_TOP,
                 0,
@@ -298,8 +337,13 @@ mod win {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
-        }
+            )
+        };
+        let title = window_title(hwnd);
+        dwm_log(&format!(
+            "trigger_nc_repaint hwnd={:?} title=\"{}\" -> {:?}",
+            hwnd.0, title, result,
+        ));
     }
 
     fn window_title(hwnd: HWND) -> String {
@@ -383,14 +427,26 @@ mod win {
             let _ = EnumWindows(Some(enum_proc), LPARAM(&mut state as *mut State as isize));
         }
 
-        state
+        let result = state
             .best_glean
             .or(state.best_any)
             .map(|(h, _)| h)
             .filter(|h| {
                 let HWND(p) = *h;
                 !p.is_null()
-            })
+            });
+
+        if let Some(h) = result {
+            let title = window_title(h);
+            dwm_log(&format!(
+                "find_glean_main_hwnd -> hwnd={:?} title=\"{}\"",
+                h.0, title,
+            ));
+        } else {
+            dwm_log("find_glean_main_hwnd -> None");
+        }
+
+        result
     }
 
     fn rect_to_wry(rect: Rect, _ppp: f32) -> WryRect {
@@ -440,6 +496,10 @@ impl ReaderHost {
         Self {
             inner: win::ReaderHostInner::new(),
         }
+    }
+
+    pub fn set_dark_title(&mut self, dark: bool) {
+        self.inner.set_dark_title(dark);
     }
 
     pub fn set_mode(&mut self, mode: ReaderHostMode) {
