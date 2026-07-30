@@ -205,31 +205,34 @@ mod win {
                 // Custom protocol for locally-cached images (dev plan §2.5.2).
                 // The WebView rewrites <img src> to glean-img://<filename>; this
                 // handler reads the file from the image cache dir.
-                .with_custom_protocol(glean_core::IMAGE_CUSTOM_SCHEME.into(), move |_id, request| {
-                    let url = request.url();
-                    // URL is like glean-img://filename or glean-img://host/filename
-                    let path = url.trim_start_matches("glean-img://");
-                    // Strip host part if present (glean-img://host/filename → filename)
-                    let filename = if path.contains('/') {
-                        path.split('/').last().unwrap_or(path)
-                    } else {
-                        path
-                    };
-                    match img_cache.read(filename) {
-                        Some(bytes) => {
-                            let mime = glean_core::ImageCache::mime_for(filename);
-                            wry::http::Response::builder()
-                                .status(200)
-                                .header("Content-Type", mime)
-                                .body(bytes.into())
-                                .unwrap()
+                .with_custom_protocol(
+                    glean_core::IMAGE_CUSTOM_SCHEME.into(),
+                    move |_id, request| {
+                        let url = request.url();
+                        // URL is like glean-img://filename or glean-img://host/filename
+                        let path = url.trim_start_matches("glean-img://");
+                        // Strip host part if present (glean-img://host/filename → filename)
+                        let filename = if path.contains('/') {
+                            path.split('/').last().unwrap_or(path)
+                        } else {
+                            path
+                        };
+                        match img_cache.read(filename) {
+                            Some(bytes) => {
+                                let mime = glean_core::ImageCache::mime_for(filename);
+                                wry::http::Response::builder()
+                                    .status(200)
+                                    .header("Content-Type", mime)
+                                    .body(bytes.into())
+                                    .unwrap()
+                            }
+                            None => wry::http::Response::builder()
+                                .status(404)
+                                .body(vec![].into())
+                                .unwrap(),
                         }
-                        None => wry::http::Response::builder()
-                            .status(404)
-                            .body(vec![].into())
-                            .unwrap(),
-                    }
-                })
+                    },
+                )
                 .with_navigation_handler(|uri: String| {
                     if uri.starts_with("http://") || uri.starts_with("https://") {
                         let _ = open_external(&uri);
