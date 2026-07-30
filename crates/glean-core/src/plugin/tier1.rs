@@ -121,6 +121,10 @@ fn fetch_json(http: &HttpClient, url: &str) -> Result<String> {
 }
 
 fn json_path<'a>(root: &'a Value, path: &str) -> Result<&'a Value> {
+    // `$` 或空字符串表示根
+    if path == "$" || path.is_empty() {
+        return Ok(root);
+    }
     let path = path.strip_prefix("$.").unwrap_or(path);
     let mut cur = root;
     for seg in path.split('.') {
@@ -262,6 +266,7 @@ fn fxhash(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feed::HttpClient;
     use crate::plugin::manifest::{
         Capabilities, Compliance, MatchRule, PluginMeta, Tier, Tier1Config, Tier1FieldMap,
     };
@@ -397,5 +402,60 @@ mod tests {
         let m = bilibili_manifest();
         assert_eq!(m.plugin.tier, Tier::Config);
         assert!(m.tier1.is_some());
+    }
+
+    /// 端到端验证：真实 GitHub releases JSON API（匿名，60/h 限速）。
+    /// 手动跑：`cargo test -p glean-core -- --ignored tier1_github_releases_end_to_end`
+    ///
+    /// 选 GitHub releases 是因为：匿名稳定、字段清晰、能测试 URL 模板多段替换
+    /// （`{1}`/`{2}`）+ 域名白名单 + json_path 根数组（`$`）+ 字段映射全链路。
+    #[test]
+    #[ignore = "需联网访问 api.github.com（匿名限速 60/h）"]
+    fn tier1_github_releases_end_to_end() {
+        let manifest = Manifest {
+            plugin: PluginMeta {
+                id: "github-releases".into(),
+                name: "GitHub Releases".into(),
+                version: "0.1".into(),
+                author: "".into(),
+                min_glean_version: "".into(),
+                tier: Tier::Config,
+            },
+            r#match: vec![MatchRule {
+                url_pattern: "github.com/*/*".into(),
+            }],
+            capabilities: Capabilities {
+                feed_fetch: vec!["api.github.com".into()],
+                ..Default::default()
+            },
+            compliance: Compliance::default(),
+            tier1: Some(Tier1Config {
+                request_url_template: "https://api.github.com/repos/{1}/{2}/releases".into(),
+                entries_json_path: "$".into(),
+                fields: Tier1FieldMap {
+                    guid: Some("$.id".into()),
+                    title: Some("$.tag_name".into()),
+                    url: Some("{html_url}".into()),
+                    author: Some("$.author.login".into()),
+                    // GitHub 返回 ISO8601 字符串；当前 value_to_i64 只解析整数/整数字符串，
+                    // 映射失败 → published_at = None。已知限制，后续评估是否扩展。
+                    published_at: Some("$.published_at".into()),
+                    summary: Some("$.body".into()),
+                    content_html_template: None,
+                },
+            }),
+        };
+        let http = HttpClient::default();
+        let feed = run(&manifest, &http, "https://github.com/rust-lang/rust")
+            .expect("tier1 github releases 应成功");
+        assert!(!feed.entries.is_empty(), "应至少拿到 1 个 release");
+        let first = &feed.entries[0];
+        assert!(!first.title.is_empty(), "tag_name 不应为空");
+        assert!(first.title != "(no title)", "title 不应是 fallback");
+        assert!(
+            matches!(first.url.as_deref(), Some(u) if u.starts_with("https://")),
+            "url 应是 https"
+        );
+        assert!(!first.guid.is_empty(), "release id 不应为空");
     }
 }
