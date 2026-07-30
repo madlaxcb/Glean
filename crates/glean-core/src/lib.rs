@@ -4,6 +4,7 @@
 mod command;
 mod error;
 mod event;
+pub mod extract;
 pub mod feed;
 mod model;
 mod opml;
@@ -16,6 +17,10 @@ pub mod store;
 pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
+pub use extract::{
+    extract_content, fetch_article_html, run_extract_task, should_extract, ExtractOutcome,
+    ExtractTask,
+};
 pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
 pub use model::{
     AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,

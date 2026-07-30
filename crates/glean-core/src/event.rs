@@ -1,6 +1,6 @@
 //! Core → UI events. UI projects state from these; do not poll full tables on a timer.
 
-use crate::model::{EntryDetail, EntrySummary, Feed, Folder};
+use crate::model::{EntryDetail, EntryId, EntrySummary, Feed, Folder};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,5 +28,11 @@ pub enum AppEvent {
     },
     OpmlExported {
         xml: String,
+    },
+    /// Emitted when full-text extraction completes. UI should re-open the
+    /// entry (or update the reader if currently visible) to show full body.
+    EntryExtracted {
+        id: EntryId,
+        success: bool,
     },
 }

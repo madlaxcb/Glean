@@ -71,4 +71,9 @@ pub enum AppCommand {
         content: String,
     },
     ExportOpml,
+    /// Manually trigger full-text extraction for an entry (auto-extract can
+    /// be disabled in config). UI may also call prepare/apply for async flow.
+    ExtractEntry {
+        id: EntryId,
+    },
 }

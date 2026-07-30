@@ -3,10 +3,11 @@
 use crate::command::AppCommand;
 use crate::error::{CoreError, Result};
 use crate::event::AppEvent;
+use crate::extract::{ExtractOutcome, ExtractTask};
 use crate::feed::{
     fetch_feed_bytes, parse_feed, FetchResult, HttpClient, RefreshOutcome, RefreshTask,
 };
-use crate::model::{EntryFilter, FeedId};
+use crate::model::{EntryFilter, EntryId, FeedId};
 use crate::opml;
 use crate::store::Store;
 use std::path::Path;
@@ -236,6 +237,22 @@ impl GleanService {
                     },
                 ])
             }
+            AppCommand::ExtractEntry { id } => {
+                // Manual trigger. UI normally uses prepare_extract_task +
+                // apply_extract_outcome for async; this is a sync fallback.
+                let detail = self.store.get_entry(id)?;
+                let url = match detail.summary.url.as_deref() {
+                    Some(u) => u.to_string(),
+                    None => {
+                        return Err(CoreError::Message(
+                            "entry has no URL; cannot extract".into(),
+                        ))
+                    }
+                };
+                let task = ExtractTask { entry_id: id, url };
+                let outcome = crate::extract::run_extract_task(&self.http.inner, &task);
+                Ok(self.apply_extract_outcome_inner(outcome)?)
+            }
         }
     }
 
@@ -349,6 +366,60 @@ impl GleanService {
                     message: format!("源 {} 失败: {error}", feed_id.0),
                 }])
             }
+        }
+    }
+
+    // --- Async extraction: UI calls prepare → thread → apply ---
+
+    /// Build an extraction task for an entry. Returns None if the entry has no
+    /// URL, is already long enough (full feed content), or already extracted.
+    pub fn prepare_extract_task(&self, id: EntryId) -> Result<Option<ExtractTask>> {
+        let entry = self.store.get_entry(id)?;
+        // Skip if already extracted (don't re-extract on every open).
+        if !entry.extracted_html.is_empty() {
+            return Ok(None);
+        }
+        // Skip if the feed content is already substantial.
+        if !crate::extract::should_extract(&entry.content_html, entry.summary.url.as_deref()) {
+            return Ok(None);
+        }
+        match entry.summary.url {
+            Some(u) => Ok(Some(ExtractTask {
+                entry_id: id,
+                url: u,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Apply one background extraction result; returns events to emit.
+    pub fn apply_extract_outcome(&mut self, outcome: ExtractOutcome) -> Vec<AppEvent> {
+        match self.apply_extract_outcome_inner(outcome) {
+            Ok(ev) => ev,
+            Err(e) => vec![AppEvent::Error {
+                message: e.to_string(),
+            }],
+        }
+    }
+
+    fn apply_extract_outcome_inner(&mut self, outcome: ExtractOutcome) -> Result<Vec<AppEvent>> {
+        match outcome {
+            ExtractOutcome::Extracted { entry_id, html } => {
+                self.store.set_extracted_html(entry_id, &html)?;
+                Ok(vec![AppEvent::EntryExtracted {
+                    id: entry_id,
+                    success: true,
+                }])
+            }
+            ExtractOutcome::Failed { entry_id, error } => Ok(vec![
+                AppEvent::EntryExtracted {
+                    id: entry_id,
+                    success: false,
+                },
+                AppEvent::Status {
+                    message: format!("全文抽取失败: {error}"),
+                },
+            ]),
         }
     }
 

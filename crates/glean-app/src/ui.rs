@@ -51,6 +51,9 @@ impl eframe::App for SpikeApp {
         // Poll background refresh every frame.
         self.state.poll_refresh();
 
+        // Poll background full-text extraction.
+        self.state.poll_extract();
+
         // Poll update-check thread.
         self.state.poll_update_check();
 
@@ -101,6 +104,14 @@ impl eframe::App for SpikeApp {
                     {
                         if ui.button("显示图片").clicked() {
                             self.state.show_reader_images();
+                        }
+                    }
+                    // Manual "抽取全文": enabled when an entry is open and no
+                    // extraction is already in flight.
+                    if self.state.open_detail.is_some() && self.state.extract_in_flight().is_none()
+                    {
+                        if ui.button("抽取全文").clicked() {
+                            self.state.extract_current();
                         }
                     }
                     ui.separator();
@@ -670,6 +681,27 @@ impl eframe::App for SpikeApp {
                     });
                     ui.label(
                         RichText::new("每源可在右键菜单单独设置刷新间隔")
+                            .small()
+                            .weak(),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.heading("阅读");
+                    ui.horizontal(|ui| {
+                        let cur = self.state.config.auto_extract;
+                        if ui.selectable_label(cur, "开").clicked() && !cur {
+                            self.state.config.auto_extract = true;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                        if ui.selectable_label(!cur, "关").clicked() && cur {
+                            self.state.config.auto_extract = false;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                    });
+                    ui.label(
+                        RichText::new("自动抽取：打开短摘要文章时后台抓取原文全文（readability）")
                             .small()
                             .weak(),
                     );

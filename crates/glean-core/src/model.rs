@@ -49,6 +49,10 @@ pub struct EntryDetail {
     pub summary: EntrySummary,
     pub author: Option<String>,
     pub content_html: String,
+    /// Full-text extracted from the original article URL via readability.
+    /// Empty if not extracted yet or extraction failed. When non-empty, the
+    /// reader prefers this over `content_html`.
+    pub extracted_html: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -101,6 +105,14 @@ pub struct AppConfig {
     pub image_policy: ImagePolicy,
     /// Global default refresh interval in seconds (0 = manual only).
     pub refresh_interval_secs: i64,
+    /// Auto-extract full text from the original article URL when a feed entry
+    /// only ships a short summary. Default on (dev plan §2.4 P2).
+    #[serde(default = "default_true")]
+    pub auto_extract: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -111,6 +123,7 @@ impl Default for AppConfig {
             list_width: 320.0,
             image_policy: ImagePolicy::Block,
             refresh_interval_secs: 0,
+            auto_extract: true,
         }
     }
 }

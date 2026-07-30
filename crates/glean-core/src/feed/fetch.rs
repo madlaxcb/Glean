@@ -6,7 +6,7 @@ use reqwest::header::{
 use std::time::Duration;
 
 pub struct HttpClient {
-    inner: Client,
+    pub inner: Client,
 }
 
 impl HttpClient {

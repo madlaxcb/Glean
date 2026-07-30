@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub struct Store {
     conn: Connection,
@@ -187,6 +187,18 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 5 {
+            // Full-text extracted from the original article URL (readability).
+            // Empty by default; populated on-demand by the extractor.
+            self.conn.execute_batch(
+                "ALTER TABLE entries ADD COLUMN content_extracted TEXT NOT NULL DEFAULT '';",
+            )?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '5')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -340,28 +352,33 @@ impl Store {
     pub fn list_entries(&self, filter: EntryFilter) -> Result<Vec<EntrySummary>> {
         let sql = match filter {
             EntryFilter::All => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                        (content_html != '' OR content_extracted != '') AS has_content
                  FROM entries ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Unread => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                        (content_html != '' OR content_extracted != '') AS has_content
                  FROM entries WHERE is_read = 0
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Starred => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                        (content_html != '' OR content_extracted != '') AS has_content
                  FROM entries WHERE is_starred = 1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             // Last 24h; fallback to fetched_at when published_at is missing.
             EntryFilter::Today => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                        (content_html != '' OR content_extracted != '') AS has_content
                  FROM entries
                  WHERE COALESCE(published_at, fetched_at) >= ?1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Feed(_) => {
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                        (content_html != '' OR content_extracted != '') AS has_content
                  FROM entries WHERE feed_id = ?1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
@@ -376,7 +393,7 @@ impl Store {
                 published_at: r.get(4)?,
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
-                has_content: !r.get::<_, String>(7)?.is_empty(),
+                has_content: r.get::<_, i64>(7)? != 0,
             })
         };
         let list = match filter {
@@ -401,7 +418,8 @@ impl Store {
         let mut detail = self
             .conn
             .query_row(
-                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, author, content_html
+                "SELECT id, feed_id, title, url, published_at, is_read, is_starred, author,
+                        content_html, content_extracted
                  FROM entries WHERE id = ?1",
                 params![id.0],
                 |r| {
@@ -414,10 +432,12 @@ impl Store {
                             published_at: r.get(4)?,
                             is_read: r.get::<_, i64>(5)? != 0,
                             is_starred: r.get::<_, i64>(6)? != 0,
-                            has_content: !r.get::<_, String>(8)?.is_empty(),
+                            has_content: !r.get::<_, String>(8)?.is_empty()
+                                || !r.get::<_, String>(9)?.is_empty(),
                         },
                         author: r.get(7)?,
                         content_html: r.get(8)?,
+                        extracted_html: r.get(9)?,
                     })
                 },
             )
@@ -444,6 +464,24 @@ impl Store {
         )?;
         if n == 0 {
             return Err(CoreError::NotFound(format!("entry {}", id.0)));
+        }
+        Ok(())
+    }
+
+    /// Store full-text extracted from the original article URL.
+    /// Also writes the extracted HTML to the disk cache so it survives offline.
+    pub fn set_extracted_html(&mut self, id: EntryId, html: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE entries SET content_extracted = ?1 WHERE id = ?2",
+            params![html, id.0],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("entry {}", id.0)));
+        }
+        // Refresh disk cache with the extracted body so offline reads get the
+        // full article, not just the short feed summary.
+        if !html.is_empty() {
+            self.write_entry_cache(id, html);
         }
         Ok(())
     }
@@ -492,7 +530,8 @@ impl Store {
 
     fn search_fts(&self, q: &str, limit: i64) -> Result<Vec<EntrySummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.feed_id, e.title, e.url, e.published_at, e.is_read, e.is_starred, e.content_html
+            "SELECT e.id, e.feed_id, e.title, e.url, e.published_at, e.is_read, e.is_starred,
+                    (e.content_html != '' OR e.content_extracted != '') AS has_content
              FROM entries_fts f
              JOIN entries e ON e.id = f.rowid
              WHERE entries_fts MATCH ?1
@@ -505,7 +544,8 @@ impl Store {
     fn search_like(&self, q: &str, limit: i64) -> Result<Vec<EntrySummary>> {
         let pattern = format!("%{q}%");
         let mut stmt = self.conn.prepare(
-            "SELECT id, feed_id, title, url, published_at, is_read, is_starred, content_html
+            "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
+                    (content_html != '' OR content_extracted != '') AS has_content
              FROM entries
              WHERE title LIKE ?1 OR IFNULL(summary,'') LIKE ?1 OR content_html LIKE ?1
              ORDER BY id DESC LIMIT ?2",
@@ -756,7 +796,7 @@ fn map_summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntrySummary> {
         published_at: r.get(4)?,
         is_read: r.get::<_, i64>(5)? != 0,
         is_starred: r.get::<_, i64>(6)? != 0,
-        has_content: !r.get::<_, String>(7)?.is_empty(),
+        has_content: r.get::<_, i64>(7)? != 0,
     })
 }
 

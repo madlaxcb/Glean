@@ -12,9 +12,10 @@ mod update;
 
 use eframe::egui;
 use glean_core::{
-    default_config_path, default_db_path, run_refresh_task, AppCommand, AppConfig, AppEvent,
-    EntryDetail, EntryFilter, EntrySummary, Feed, Folder, FolderId, GleanService, ImagePolicy,
-    ReaderHostMode, RefreshOutcome, RefreshTask,
+    default_config_path, default_db_path, run_extract_task, run_refresh_task, should_extract,
+    AppCommand, AppConfig, AppEvent, EntryDetail, EntryFilter, EntryId, EntrySummary,
+    ExtractOutcome, ExtractTask, Feed, Folder, FolderId, GleanService, ImagePolicy, ReaderHostMode,
+    RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -166,6 +167,10 @@ pub struct SpikeState {
     update_rx: Option<mpsc::Receiver<UpdateCheckResult>>,
     /// Pending update notification (set when remote version > current).
     pub update_available: Option<UpdateCheckResult>,
+    /// Background full-text extraction receiver.
+    extract_rx: Option<mpsc::Receiver<ExtractOutcome>>,
+    /// Entry currently being extracted (to avoid duplicate tasks).
+    extract_in_flight: Option<EntryId>,
 }
 
 impl SpikeState {
@@ -214,6 +219,8 @@ impl SpikeState {
             tray: Tray::new(),
             update_rx: None,
             update_available: None,
+            extract_rx: None,
+            extract_in_flight: None,
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
@@ -387,18 +394,12 @@ impl SpikeState {
                     // New article: clear the per-article image override.
                     self.reader_show_images = false;
                 }
-                let html = glean_core::reader_document(
-                    &entry.summary.title,
-                    entry.summary.url.as_deref(),
-                    entry.author.as_deref(),
-                    &entry.content_html,
-                    self.dark,
-                    entry.summary.has_content,
-                    self.effective_image_policy(),
-                );
+                let html = render_entry(&entry, self.dark, self.effective_image_policy());
                 self.reader.show_html(&html);
                 self.open_detail = Some(entry);
                 self.refresh_status();
+                // Maybe trigger background full-text extraction.
+                self.maybe_auto_extract();
             }
             AppEvent::UnreadChanged { total } => {
                 self.unread_total = total;
@@ -417,6 +418,13 @@ impl SpikeState {
             }
             AppEvent::OpmlExported { xml } => {
                 self.opml_export = Some(xml);
+            }
+            AppEvent::EntryExtracted { id, success } => {
+                // The poll_extract / dispatch paths already re-open the entry
+                // to refresh the reader; nothing to project here beyond status.
+                if success {
+                    self.status = format!("已抽取全文 (entry {})", id.0);
+                }
             }
         }
     }
@@ -493,15 +501,7 @@ impl SpikeState {
         // disabled (§7.2) there is no live theme-flip; show_html reloads the
         // themed HTML via load_html (NavigateToString — works with JS off).
         if let Some(entry) = self.open_detail.clone() {
-            let html = glean_core::reader_document(
-                &entry.summary.title,
-                entry.summary.url.as_deref(),
-                entry.author.as_deref(),
-                &entry.content_html,
-                self.dark,
-                entry.summary.has_content,
-                self.effective_image_policy(),
-            );
+            let html = render_entry(&entry, self.dark, self.effective_image_policy());
             self.reader.show_html(&html);
         } else {
             // No article open: reload the themed placeholder so the empty
@@ -645,18 +645,94 @@ impl SpikeState {
         }
         self.reader_show_images = true;
         if let Some(entry) = self.open_detail.clone() {
-            let html = glean_core::reader_document(
-                &entry.summary.title,
-                entry.summary.url.as_deref(),
-                entry.author.as_deref(),
-                &entry.content_html,
-                self.dark,
-                entry.summary.has_content,
-                ImagePolicy::Allow,
-            );
+            let html = render_entry(&entry, self.dark, ImagePolicy::Allow);
             self.reader.show_html(&html);
         }
         self.status = "已显示当前文章图片".into();
+    }
+
+    /// Maybe spawn a background full-text extraction for the currently open
+    /// entry, if it has a short summary and an article URL. No-op if auto-
+    /// extract is disabled or an extraction is already in flight.
+    pub fn maybe_auto_extract(&mut self) {
+        if !self.config.auto_extract || self.extract_rx.is_some() {
+            return;
+        }
+        let entry = match &self.open_detail {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        // Skip if already extracted or content is long enough.
+        if !entry.extracted_html.is_empty() {
+            return;
+        }
+        if !should_extract(&entry.content_html, entry.summary.url.as_deref()) {
+            return;
+        }
+        let url = match entry.summary.url.as_deref() {
+            Some(u) => u.to_string(),
+            None => return,
+        };
+        let task = ExtractTask {
+            entry_id: entry.summary.id,
+            url,
+        };
+        let (tx, rx) = mpsc::channel::<ExtractOutcome>();
+        self.extract_rx = Some(rx);
+        self.extract_in_flight = Some(entry.summary.id);
+        self.status = "正在抽取全文…".into();
+        thread::spawn(move || {
+            // Build a throwaway blocking client (glean-core's HttpClient isn't
+            // Send-safely shareable across thread::spawn without an Arc, and
+            // extraction is a one-shot per-article fetch).
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .expect("extract client");
+            let outcome = run_extract_task(&client, &task);
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// Poll the extraction thread (called every frame from update).
+    pub fn poll_extract(&mut self) {
+        let rx = match &self.extract_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        if let Ok(outcome) = rx.try_recv() {
+            self.extract_rx = None;
+            self.extract_in_flight = None;
+            let id = match &outcome {
+                ExtractOutcome::Extracted { entry_id, .. } => *entry_id,
+                ExtractOutcome::Failed { entry_id, .. } => *entry_id,
+            };
+            let events = self.service.apply_extract_outcome(outcome);
+            for ev in events {
+                self.apply_event(ev);
+            }
+            // If the extracted entry is currently open, re-open to refresh reader.
+            if let Some(open) = &self.open_detail {
+                if open.summary.id == id {
+                    self.dispatch(AppCommand::OpenEntry { id });
+                }
+            }
+        }
+    }
+
+    /// Manual "抽取全文" button (always triggers regardless of auto setting).
+    pub fn extract_current(&mut self) {
+        if let Some(entry) = &self.open_detail {
+            self.dispatch(AppCommand::ExtractEntry {
+                id: entry.summary.id,
+            });
+        }
+    }
+
+    /// Entry currently being extracted (for UI button gating).
+    pub fn extract_in_flight(&self) -> Option<EntryId> {
+        self.extract_in_flight
     }
 
     pub fn reset_layout(&mut self) {
@@ -686,6 +762,26 @@ impl SpikeState {
 }
 
 // --- Config load / save helpers ---
+
+/// Render an entry to reader HTML. Prefers `extracted_html` (full-text from
+/// readability) over `content_html` (feed-provided body) when non-empty.
+fn render_entry(entry: &EntryDetail, dark: bool, image_policy: ImagePolicy) -> String {
+    let body = if !entry.extracted_html.is_empty() {
+        &entry.extracted_html
+    } else {
+        &entry.content_html
+    };
+    let has_content = !body.is_empty();
+    glean_core::reader_document(
+        &entry.summary.title,
+        entry.summary.url.as_deref(),
+        entry.author.as_deref(),
+        body,
+        dark,
+        has_content,
+        image_policy,
+    )
+}
 
 fn load_config(path: &std::path::Path) -> AppConfig {
     std::fs::read_to_string(path)

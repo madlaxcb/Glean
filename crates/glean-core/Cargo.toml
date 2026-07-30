@@ -13,3 +13,4 @@ reqwest = { workspace = true }
 feed-rs = { workspace = true }
 ammonia = { workspace = true }
 url = { workspace = true }
+scraper = { workspace = true }
