@@ -208,7 +208,7 @@ mod win {
                 .with_custom_protocol(
                     glean_core::IMAGE_CUSTOM_SCHEME.into(),
                     move |_id, request| {
-                        let url = request.uri();
+                        let url = request.uri().to_string();
                         // URL is like glean-img://filename or glean-img://host/filename
                         let path = url.trim_start_matches("glean-img://");
                         // Strip host part if present (glean-img://host/filename → filename)
