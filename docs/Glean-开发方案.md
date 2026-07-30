@@ -735,71 +735,144 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ## 11.5 插件系统
 
-### 11.5.1 目标与边界
+> **排期声明：本节为路线图设计，排到 M0–M4（能读到第一条真实 feed）之后的 M5/M6 阶段。**
+> 不让它拖慢核心垂直切片的验证。先有能用的阅读器，再谈插件。
 
-| 维度 | 决定 |
-|------|------|
-| **形态** | **配置规则（Tier 1） + Rhai 脚本（Tier 2）**；**不选 Wasm** |
-| **形态选择理由** | 站点适配器瓶颈是 I/O（等网络），不是计算，Wasm 的性能优势用不上；Rhai 是纯 Rust 嵌入式脚本，权限模型是白名单式注册宿主函数（`http_get`/`css_select`/`set_field`），拿不到文件系统/任意 socket/进程调用；单人维护场景下 Rhai 的审计边界比 WASI capability 更直观 |
-| **首批场景** | ① 网站特殊订阅（Pixiv/Twitter/X/GitHub/Bilibili/YouTube/Fantia/Fanbox）② 内容增强（全文抽取、图片代理、视频嵌入、代码高亮）③ AI 翻译/摘要 ④ 过滤/排序 |
-| **何时切换 Wasm** | 当出现「不受信任的第三方作者投稿 + 插件市场」需求时再评估；当前不为想象中的市场提前抽象 |
+### 11.5.1 这不是一个插件系统，是两个
 
-**能力分层：**
+用户用例其实分两类，风险和接口完全不同，**不应共用同一套形态**：
 
-- **Tier 1 — 配置规则（YAML）**：覆盖 80% 场景。URL 匹配 + CSS 选择器 + 字段映射，无脚本。
-- **Tier 2 — Rhai 脚本**：覆盖剩余 20% 的逃生舱。分页游标、签名计算、速率限制重试、复杂 HTML 处理。
+| 类别 | 职责 | 接口形态 | 信任级别 |
+|------|------|---------|---------|
+| **A. 站点适配器** | 把非标准网站（Pixiv/Twitter/Bilibili 等）变成一批 Entry；插在 `glean-feed` 前面 | Tier 0/1/2 分层（见下） | 需要网络 + 可能需凭证，高信任 |
+| **B. 功能增强器（Enhancer）** | Entry 已入库后对字段做修改/追加（翻译、摘要） | 独立小接口，不接触原始网络请求 | 低信任，能力面小 |
 
-### 11.5.2 架构与数据流
+### 11.5.2 站点适配器：分三层，不是一种形态
+
+7 个目标网站情况差异极大，分三层处理：
+
+| 层 | 覆盖对象 | 形态 | 理由 |
+|----|---------|------|------|
+| **Tier 0（内置，不算插件）** | GitHub（`releases.atom`）、YouTube（channel XML） | `glean-feed` 里的 URL 规范化/重写，ship 在核心代码里 | 本来就有官方 RSS，几行代码，不值得设计插件契约 |
+| **Tier 1（纯配置）** | Bilibili 等结构稳定的半公开 JSON API | TOML：URL 匹配 + 请求模板 + JSON/CSS 字段映射 | 结构稳定，配置即可覆盖 |
+| **Tier 2（Rhai 脚本）** | Twitter/X、Pixiv、Fantia、Fanbox | 沙箱脚本，见 §11.5.4 | 需要分页游标、签名计算、Cookie 注入、速率限制重试 |
+
+> **合规声明**：Fantia/Fanbox 是付费创作者平台。适配器只使用**用户自己的登录态**访问**用户自己有权限看到的内容**，不绕过付费墙、不做验证码绕过、不做批量抓取放大攻击风险。这与文档已有的「不绕过验证码」原则一致。
+
+### 11.5.3 形态选择：Rhai，不选 Wasm
+
+- 站点适配器瓶颈是 **I/O**（等网络返回），不是计算，Wasm 的性能优势用不上。
+- **Rhai 是纯 Rust 嵌入式脚本引擎，权限模型是白名单式注册宿主函数**——Host 精确决定脚本能调用哪些 Rust 函数，脚本拿不到文件系统、任意 socket、进程调用。对单人维护者来说，审计边界比 WASI capability 更直观。
+- 当出现「不受信任的第三方作者投稿 + 插件市场」需求时再评估 Wasm；当前不为想象中的市场提前抽象。
+
+### 11.5.4 权限模型：能力原语 + 作用域参数
+
+**核心原则：插件声明意图，Host 执行并强制校验范围。**
+
+> **措辞纠正**：不用「HTTP 拦截/重写」这个词——它暗示「全局中间件能看到所有请求」。
+> 正确模型：**每个 Feed 绑定一个 `adapter_id`，刷新该 Feed 时由该适配器全权代劳，但适配器永远看不到、碰不到其他 Feed 的请求。**
+
+Rhai 的 `Engine` 实例**按插件动态构建**，只注册该插件声明过的 Host 函数。没声明 `credential.use:pixiv_session` 的插件，脚本里写 `get_credential("pixiv_session")` 会直接报「函数不存在」，而不是「权限不足」——能力边界是代码层面强制的。
+
+| 能力原语 | 作用域参数 | 强制校验 |
+|---------|-----------|---------|
+| `feed.fetch` | 域名白名单（如 `app-api.pixiv.net`, `i.pximg.net`） | 域名不在白名单 → Host 拒绝；超时/重试 per-plugin 配额 |
+| `credential.use:<slot>` | 具名凭证槽（如 `pixiv_session`） | **Host 在请求发出前注入 Header，Rhai 脚本永远拿不到明文值** |
+| `content.transform` | 只能写入白名单字段（见 §11.5.6） | 输出**必须回流经过 ammonia 消毒**，不能绕过 |
+| `external.call:<domain>` | 具体服务域名（如 `api.deepl.com`） | **Key 由 Glean 设置持有，Host 调用时注入，插件脚本拿不到 Key** |
+| `css_select` / `json_path` / `regex` | 纯计算，无限制 | 操作数计入上限 |
+
+#### 凭证永远不进插件手里（关键安全决策）
+
+这是对「AI 翻译」「站点适配器」共同适用的红线：
+
+1. 用户在 Glean 设置里粘贴一次 Cookie/API Key
+2. Glean 用 **DPAPI**（`windows` crate 的 `CryptProtectData`，或 `keyring` crate）加密存储到本地
+3. 插件 manifest 声明 `credential.use:pixiv_session`
+4. **Host 在真正发起 `http_request` 之前把 Header 塞进去——Rhai 脚本只写了「请给这个请求附上 pixiv_session 凭证」，从没摸到过明文值**
+
+这样即使适配器脚本被换成恶意版本，它能干的坏事最多是「拿这个凭证发一次它声明过域名范围内的请求」，不可能把 Cookie 整体带出去发给别的服务器。
+
+#### 安装/更新时权限确认 + 执行上限
+
+1. manifest 声明的能力在安装时给用户展示摘要，用户确认才生效。**插件更新时如果能力集合变大（如新版多要了 `external.call`），必须重新弹出确认**——防供应链攻击。
+2. 每个 Rhai 脚本有操作数上限（`engine.set_max_operations()`）和超时上限，防止死循环或卡死刷新流程。
+
+### 11.5.5 内容增强：结构化引用，不直接写 HTML
+
+**B 站嵌入播放器这类需求，插件不能直接往正文塞 `<iframe>`**——那等于绕过 ammonia 消毒关卡。
+
+正确做法：插件产出**结构化引用**，Host 用固定模板渲染：
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Glean Host（Rust）                                       │
-│                                                          │
-│  PluginManager                                           │
-│    ├─ load()   ← 扫描 plugins/，解析 manifest.toml       │
-│    ├─ match(url) → 命中的插件列表                         │
-│    └─ invoke(hook, ctx) → 执行对应 hook                  │
-│                                                          │
-│  PluginRuntime（Rhai Engine）                            │
-│    ├─ 白名单 Host 函数（http_get/css_select/set_field…）  │
-│    ├─ 操作数上限 / 超时 / per-plugin 资源配额             │
-│    └─ 沙箱：无 FS / 无 socket / 无 process               │
-│                                                          │
-│  hooks（切入点）                                          │
-│    ├─ resolve_feed(url) → FeedConfig                     │
-│    ├─ fetch(url, headers) → httpResponse                 │
-│    ├─ parse_feed(rawBytes) → FeedItems                   │
-│    ├─ enhance_entry(entry) → EnhancedEntry               │
-│    ├─ filter_entry(entry) → bool                         │
-│    └─ transform_html(html) → html                        │
-└──────────────────────────────────────────────────────────┘
+embed_ref: { provider: "bilibili", bvid: "BV1xx411c7mD" }
 ```
 
-**数据流（以 Pixiv 为例）：**
+Host 只认几个**预先审核过的 provider**（B 站、YouTube），用固定模板 + 严格 `sandbox` 属性生成 `<iframe>`。插件永远不能自己决定 iframe 的 src 或往里面塞脚本。这与主流阅读器处理 oEmbed 的思路一致。
 
-```text
-用户输入 pixiv.net/user/12345
-  → PluginManager.match("pixiv.net") 命中 pixiv.rhai
-  → resolve_feed(url) 返回 { feed_url: API 端点, headers: { Cookie: stored } }
-  → Host 执行 HTTP fetch（注入 Cookie，走代理）
-  → parse_feed(json) 用 Rhai 把 JSON 转 RSS 模型
-  → enhance_entry(item) 补全图片 URL、作者信息
-  → Host 消毒 + 入库
+翻译/全文抽取同理：插件产出的文本写回 Entry 前**一样过一遍消毒管线**，不能因为「这是认证过的插件」就跳过。
+
+### 11.5.6 Rhai Host 函数清单（Tier 2 站点适配器）
+
+```rust
+// === HTTP（作用域：feed.fetch + 域名白名单）===
+/// 发起请求，Host 注入声明的凭证到 Header（脚本拿不到明文）
+/// credential_slot: 声明过的具名槽，如 "pixiv_session"
+fn http_get(url, headers_map, credential_slot) -> Map;  // {status, headers, body}
+fn http_post(url, body, headers_map, credential_slot) -> Map;
+
+// === 解析（纯计算）===
+fn css_select(html, selector) -> Array;
+fn json_path(json, path) -> Dynamic;
+fn regex_extract(string, pattern) -> Array;
+fn parse_json(string) -> Dynamic;
+
+// === 条目构建（输出必须回流过 ammonia）===
+/// 设置字段（白名单：title/url/author/summary/published_at/embed_ref）
+fn set_field(name, value);
+/// 声明 embed 引用（Host 用固定模板渲染，见 §11.5.5）
+fn set_embed(provider, id);
+
+// === 工具 ===
+fn log(level, message);
+fn now() -> i64;
 ```
 
-### 11.5.3 插件清单（manifest.toml）
+**注意：没有 `get_credential()`。** 凭证由 Host 在 `http_get` 内部注入，脚本无法读取明文。
 
-每个插件目录结构：
+### 11.5.7 功能增强器（Enhancer）——独立小接口
+
+AI 翻译/摘要这类**不需要 Tier 0-2 那套抓取权限**，用更小的独立契约：
+
+```rust
+/// 增强器 trait（Rust 原生或 Rhai 实现）
+trait Enhancer {
+    fn id(&self) -> &str;
+    fn applies_to(&self, entry: &Entry) -> bool;
+    /// 通过 host_api 按需调用外部服务（如翻译），API Key 由 Host 持有
+    fn enhance(&self, entry: &Entry, host: &HostApi) -> Result<EntryPatch>;
+}
+
+/// Host 提供给增强器的受限 API
+trait HostApi {
+    /// 调用翻译服务（Key 由 Glean 设置持有，增强器拿不到）
+    fn call_translation(&self, text: &str, target_lang: &str) -> Result<String>;
+    /// 调用摘要服务
+    fn call_summarize(&self, text: &str) -> Result<String>;
+}
+```
+
+**API Key 不交给插件本身持有**——用户在 Glean 设置里配置好 Key，插件运行时通过 `HostApi` 按需调用。即使第三方插件脚本被换成恶意版本，能造成的伤害也只是「滥用这一次调用」，而不是「把用户的 API Key 整个偷走」。
+
+### 11.5.8 插件清单（manifest.toml）
 
 ```
 plugins/
   pixiv/
     manifest.toml    # 清单（必需）
-    adapter.rhai     # Tier 2 脚本（可选；Tier 1 纯配置时不需要）
-    icon.png         # 16×16 图标（可选）
+    adapter.rhai     # Tier 2 脚本（Tier 1 纯配置时不需要）
+    icon.png         # 16×16（可选）
 ```
-
-`manifest.toml` 示例（Pixiv）：
 
 ```toml
 [plugin]
@@ -807,237 +880,66 @@ id = "pixiv"
 name = "Pixiv 订阅适配器"
 version = "0.1.0"
 author = "Glean"
-description = "将 Pixiv 用户作品页转为 RSS"
-min_glean_version = "0.4.0"
+min_glean_version = "0.5.0"
+tier = 2  # 0=内置 / 1=配置 / 2=脚本 / enhancer=功能增强
 
-# 触发规则：URL 匹配此列表时激活
 [[match]]
 url_pattern = "pixiv.net/users/*"
-# 也可按 feed_url 前缀匹配
-# url_pattern = "https://app-api.pixiv.net/v1/user/works*"
 
-# 权限声明（安装/更新时向用户展示，能力扩大时需重新确认）
-[permissions]
-# HTTP 请求范围（Host 强制校验，超出范围直接拒绝）
-http_domains = ["app-api.pixiv.net", "www.pixiv.net"]
-# 凭证：声明需要的凭证 key，用户在设置里填值
-credentials = ["pixiv_cookie"]
-# 外部服务调用（AI 翻译等）
-external_call = false
-# 内容增强：允许 transform_html 改写正文
-content_rewrite = true
+[capabilities]
+# 能力原语 + 作用域（Host 强制校验）
+feed_fetch = ["app-api.pixiv.net", "i.pximg.net"]
+credential_use = ["pixiv_session"]   # Host 注入，脚本不可读
+content_transform = ["embed_ref"]    # 只能写白名单字段
 
-# Tier 1 配置（简单场景）：如果不需要脚本逻辑，纯配置即可
-[config]
-# 指定 CSS/JSON 选择器抽取字段
-feed_title_selector = "$.user.name"
-item_title_selector = "$.illust.title"
-item_url_template = "https://www.pixiv.net/artworks/{id}"
+[compliance]
+# 合规声明：只访问用户自己有权限的内容
+uses_user_session = true
 ```
 
-### 11.5.4 权限模型
+### 11.5.9 凭证存储：DPAPI 加密
 
-**原则：能力原语 + 作用域参数，由 Host 执行并强制校验范围。**
+凭证（Cookie、API Key）是高度敏感数据，**不能明文扔进 SQLite 或配置文件**。
 
-| 能力 | Host 函数 | 作用域参数 | 强制校验 |
-|------|-----------|-----------|---------|
-| HTTP 请求 | `http_get(url, headers)` / `http_post(url, body, headers)` | `http_domains` 白名单 | 域名不在白名单 → 拒绝；超时/重试按插件单独配额 |
-| 凭证访问 | `get_credential(key)` | `credentials` 声明列表 | key 未声明 → 返回空；值由用户在设置填入，脚本只读 |
-| 内容改写 | `set_field(name, value)` / `transform_html(html)` | `content_rewrite` 布尔 | 未声明 content_rewrite=true → 改写操作被丢弃 |
-| 外部服务 | `external_call(provider, payload)` | `external_call` 布尔 + provider 白名单 | 未声明 → 拒绝；provider 未注册 → 拒绝 |
-| CSS/JSON 提取 | `css_select(html, selector)` / `json_path(json, path)` | 无限制（纯计算） | 操作数计入上限 |
+- Windows 上用 **DPAPI**（`CryptProtectData`）做机器级加密存储
+- `windows` crate 已有依赖，或用 `keyring` crate
+- **任何插件都不能自己读写另一个插件的凭证，凭证由宿主统一加密存储和按需注入**
 
-**安全红线：**
+### 11.5.10 UI 扩展：V1 不做，或仅声明式
 
-1. **安装/更新时权限确认**：manifest 声明的能力在安装时给用户展示摘要（"这个插件将：访问 pixiv.net / 使用你保存的 pixiv 登录凭据"），用户确认才生效。**插件更新时如果声明的能力集合变大（如新版多要了 external_call），必须重新弹出确认**——防止"先申请无害权限过审，后续偷偷加大"的供应链攻击。
-2. **执行上限**：每个 Rhai 脚本有操作数上限（`engine.set_max_operations()`）和超时上限，防止死循环或恶意卡死刷新流程；`http_request` 的超时和重试退避按插件单独算，一个插件卡住不拖慢全局刷新。
-3. **UI 扩展限制**：**不开放"注入任意 JS/CSS 到阅读区"这条路**——它会废掉已定的"WebView 禁用 JS"安全决策。UI 扩展只能用声明式 `action`/`embed` 白名单（如"在条目底部插入翻译按钮"由 Host 渲染，不是插件自由注入脚本）。
+**V1 不开放任意 JS/CSS 注入到阅读区**——它会废掉已定的「WebView 禁用 JS」安全决策。插件 JS 一旦能在 WebView 跑，就有该 WebView 实例能做的一切事。
 
-### 11.5.5 Rhai Host 函数清单（首批 API）
-
-```rust
-// === HTTP（作用域：http_domains） ===
-/// GET 请求，返回 { status, headers, body }
-fn http_get(url, headers_map) -> Map;
-/// POST 请求
-fn http_post(url, body_string, headers_map) -> Map;
-/// URL 编码
-fn url_encode(string) -> String;
-
-// === 解析（纯计算，无限制） ===
-/// CSS 选择器提取，返回匹配元素的文本/HTML
-fn css_select(html_string, selector) -> Array;
-/// JSON Path 提取（$.store.book[0].title）
-fn json_path(json_string, path) -> Dynamic;
-/// 正则提取
-fn regex_extract(string, pattern) -> Array;
-
-// === 凭证（作用域：credentials 声明） ===
-/// 获取用户填写的凭证值（未声明 key 返回空字符串）
-fn get_credential(key) -> String;
-
-// === 条目操作（作用域：content_rewrite / 无限制读取） ===
-/// 设置条目字段（title/url/author/content_html/summary/published_at）
-fn set_field(name, value);
-/// 追加内容到正文
-fn append_html(html_fragment);
-
-// === 外部服务（作用域：external_call + provider 白名单） ===
-/// 调用注册的外部服务（如 translate/summarize）
-fn external_call(provider, payload_map) -> Map;
-
-// === 工具 ===
-fn log(level, message);  // 写入插件日志
-fn now() -> i64;         // Unix 时间戳
-fn hash(string) -> String; // SHA-256
-```
-
-### 11.5.6 Hook 切入点
-
-| Hook | 触发时机 | 签名 | 用途 |
-|------|---------|------|------|
-| `resolve_feed` | 添加订阅时，URL 匹配后 | `fn resolve_feed(url) -> FeedConfig` | 返回真实 feed 端点、所需 headers |
-| `fetch`（Host 执行） | 刷新时 | — | Host 按 `resolve_feed` 返回值执行 HTTP |
-| `parse_feed` | HTTP 响应到达后 | `fn parse_feed(raw_bytes) -> Array<Entry>` | 把非标准格式（JSON API）转成条目列表 |
-| `enhance_entry` | 入库前 | `fn enhance_entry(entry) -> Entry` | 补全图片、作者、标签等 |
-| `transform_html` | 阅读器渲染前 | `fn transform_html(html) -> String` | 代码高亮、图片代理、视频嵌入 |
-| `filter_entry` | 列表渲染前 | `fn filter_entry(entry) -> bool` | 过滤不感兴趣的条目 |
-| `ai_enhance` | 手动/自动触发 | `fn ai_enhance(entry, provider) -> Map` | 翻译/摘要，结果写回 content_extracted |
-
-### 11.5.7 插件示例
-
-#### Pixiv 适配器（Tier 2 Rhai 脚本）
-
-```rhai
-// adapter.rhai
-
-fn resolve_feed(url) {
-    // 从 pixiv.net/users/12345 提取 user_id
-    let m = regex_extract(url, "users/(\\d+)");
-    if m.len() == 0 {
-        log("error", "无法解析 Pixiv 用户 ID");
-        return #{};  // 空表示放弃
-    }
-    let user_id = m[0];
-    let cookie = get_credential("pixiv_cookie");
-    #{
-        feed_url: "https://app-api.pixiv.net/v1/user/works?user_id=" + user_id + "&type=illust",
-        headers: #{
-            "Authorization": "Bearer MHZk...（公开客户端 token）",
-            "Cookie": cookie,
-            "User-Agent": "PixivIOSApp/7.13",
-        },
-    }
-}
-
-fn parse_feed(raw_bytes) {
-    let json = parse_json(raw_bytes.to_string());
-    let items = [];
-    for illust in json.illusts {
-        items.push(#{
-            title: illust.title,
-            url: "https://www.pixiv.net/artworks/" + illust.id,
-            author: illust.user.name,
-            content_html: build_image_html(illust),
-            published_at: parse_date(illust.create_date),
-        });
-    }
-    items
-}
-
-fn build_image_html(illust) {
-    let html = "<div>";
-    for page in illust.meta_pages {
-        let img_url = page.image_urls.original;
-        html += `<img src="${img_url}" />`;
-    }
-    html += "</div>"
-}
-```
-
-#### AI 翻译插件（manifest + 极简脚本）
+如果确实需要「侧栏菜单」「翻译按钮」这类扩展点，改成**声明式**而非代码式：
 
 ```toml
-# manifest.toml
-[plugin]
-id = "ai-translate-deepl"
-name = "DeepL 翻译"
-version = "0.1.0"
-
-[[match]]
-url_pattern = "*"  # 所有条目
-
-[permissions]
-external_call = true
-content_rewrite = true
-credentials = ["deepl_api_key"]
-
-[external_providers]
-deepl = "https://api-free.deepl.com/v2/translate"
+[[ui.actions]]
+label = "翻译为中文"
+on_click = { action = "enhance", enhancer = "deepl-translate" }
 ```
 
-```rhai
-// adapter.rhai
-fn ai_enhance(entry, provider) {
-    if provider != "deepl" {
-        return #{};
-    }
-    let key = get_credential("deepl_api_key");
-    let result = external_call("deepl", #{
-        text: entry.title,
-        target_lang: "ZH",
-        api_key: key,
-    });
-    #{
-        title_translated: result.translated_text,
-    }
-}
-```
+插件只能从 Host 定义好的 action 词汇表里选，真正的 UI 元素由 Glean 渲染。插件描述「要什么」，不执行「怎么做」。
 
-### 11.5.8 存储与分发
+### 11.5.11 实施路线图（M5/M6）
 
-```
-%APPDATA%\Glean\
-  plugins\                    # 用户安装的插件
-    pixiv\
-      manifest.toml
-      adapter.rhai
-    ai-translate-deepl\
-      manifest.toml
-      adapter.rhai
-  plugins_config.json         # 各插件的开关状态、凭证值（加密存储）
-```
+| 阶段 | 内容 |
+|------|------|
+| **M5** | Tier 0 内置：GitHub `releases.atom`、YouTube channel XML 的 URL 规范化 |
+| **M5** | PluginManager 框架 + Rhai runtime + DPAPI 凭证存储 |
+| **M5** | Tier 1 配置 + Tier 2 脚本核心 hook（resolve/parse/enhance） |
+| **M6** | Bilibili 适配器（Tier 1）；验证端到端 |
+| **M6** | Enhancer 接口 + AI 翻译（DeepL/OpenAI）|
+| **M7+** | Twitter/X、Pixiv、Fantia、Fanbox 适配器（需凭证、反爬处理） |
 
-**分发方式（V1）：**
+### 11.5.12 开发规范
 
-- 手动放置目录安装；设置面板里启用/禁用、填凭证
-- 不做插件市场（当前需求不需要；未来若做，需重新评估 Wasm 切换）
-
-**凭证存储：**
-
-- 凭证值（如 Cookie、API Key）由用户在设置面板填入，存入 `plugins_config.json`
-- V1 明文存储（与 config.toml 一致，本地优先软件的取舍）；V2 考虑 DPAPI 加密
-
-### 11.5.9 实施计划
-
-| 阶段 | 内容 | 优先级 |
-|------|------|--------|
-| **P0** | PluginManager 框架：manifest 解析、match、load/unload；Rhai runtime + 白名单 Host 函数；设置面板 UI（列表/启用禁用/凭证填写） | M2 |
-| **P0** | `resolve_feed` + `parse_feed` + `enhance_entry` 三个核心 hook；写一个真实插件验证（建议先做 GitHub Releases，API 标准无需凭证） | M2 |
-| **P1** | Bilibili / YouTube 适配器（需处理 API key 或 RSSHub 中转） | M2 |
-| **P1** | `transform_html` hook（视频嵌入、代码高亮） | M2 |
-| **P2** | Pixiv / Twitter / Fantia / Fanbox 适配器（需凭证管理、反爬处理） | M3 |
-| **P2** | AI 翻译/摘要：`ai_enhance` hook + external_call 机制 + provider 注册 | M3 |
-| **P2** | `filter_entry` hook（过滤/排序） | M3 |
-
-### 11.5.10 开发规范
-
-1. **Tier 1 优先**：能用配置规则解决的场景不写 Rhai 脚本（减少攻击面）
-2. **最小权限**：manifest 只声明必需的能力；`http_domains` 尽可能窄
-3. **幂等性**：所有 hook 必须幂等（同一输入多次调用结果一致），因为刷新可能重试
-4. **不阻塞主循环**：所有 hook 在 worker 线程执行；超时由 Host 强制
-5. **日志隔离**：每个插件有独立日志前缀 `[plugin:id]`，方便排查
-6. **沙箱审计清单**：新增 Host 函数时必须回答三个问题——它能访问什么资源？作用域参数是什么？超出作用域时 Host 如何拒绝？
+1. **Tier 0 优先**：有官方 RSS 的网站（GitHub/YouTube）写进核心，不做成插件
+2. **Tier 1 优先于 Tier 2**：能用配置解决的场景不写脚本，减少攻击面
+3. **最小权限**：manifest 只声明必需能力；`feed_fetch` 域名白名单尽可能窄
+4. **凭证零接触**：插件永远拿不到明文凭证，由 Host 注入
+5. **输出回消毒管线**：插件产出的所有 HTML/文本写回 Entry 前必过 ammonia
+6. **幂等性**：所有 hook 幂等（刷新可能重试）
+7. **不阻塞主循环**：所有 hook 在 worker 线程，超时由 Host 强制
+8. **适配器失效 UI**：目标网站改版导致脚本失效时，明确提示用户而非静默失败
 
 ---
 
