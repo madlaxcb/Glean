@@ -2,8 +2,8 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.3.0 · 日期：2026-07-28  
-> 修订说明：**M1 垂直切片已落地**（HTTP + feed-rs + 消毒入库 + UI 添加/刷新）；下一阶段打磨与持久化
+> 文档版本：0.4.0 · 日期：2026-07-30  
+> 修订说明：**M1 垂直切片已落地**（HTTP + feed-rs + 消毒入库 + UI 添加/刷新）；**§11.5 新增插件系统设计**（Rhai + 配置规则，覆盖站点适配/AI 翻译/内容增强/过滤）
 
 ---
 
@@ -703,7 +703,7 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 1. **领域在 core**；UI 只发 Command、归约 Event  
 2. **M0 未 Pass 不写业务**  
-3. **最小抽象**；不提前插件化  
+3. **最小抽象**；插件系统按 §11.5 规划落地（Tier 1 配置优先，Tier 2 Rhai 兜底）  
 4. **任何 HTML 入阅读器前消毒**；默认关 JS、默认拦远程图  
 5. 密钥与个人 OPML 不进 git  
 6. 字符串早键化  
@@ -730,6 +730,314 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 2. 显示名：`Glean` / `拾光` 组合  
 3. V1 托盘？便携模式？  
 4. 许可证：MIT / Apache-2.0 / 专有  
+
+---
+
+## 11.5 插件系统
+
+### 11.5.1 目标与边界
+
+| 维度 | 决定 |
+|------|------|
+| **形态** | **配置规则（Tier 1） + Rhai 脚本（Tier 2）**；**不选 Wasm** |
+| **形态选择理由** | 站点适配器瓶颈是 I/O（等网络），不是计算，Wasm 的性能优势用不上；Rhai 是纯 Rust 嵌入式脚本，权限模型是白名单式注册宿主函数（`http_get`/`css_select`/`set_field`），拿不到文件系统/任意 socket/进程调用；单人维护场景下 Rhai 的审计边界比 WASI capability 更直观 |
+| **首批场景** | ① 网站特殊订阅（Pixiv/Twitter/X/GitHub/Bilibili/YouTube/Fantia/Fanbox）② 内容增强（全文抽取、图片代理、视频嵌入、代码高亮）③ AI 翻译/摘要 ④ 过滤/排序 |
+| **何时切换 Wasm** | 当出现「不受信任的第三方作者投稿 + 插件市场」需求时再评估；当前不为想象中的市场提前抽象 |
+
+**能力分层：**
+
+- **Tier 1 — 配置规则（YAML）**：覆盖 80% 场景。URL 匹配 + CSS 选择器 + 字段映射，无脚本。
+- **Tier 2 — Rhai 脚本**：覆盖剩余 20% 的逃生舱。分页游标、签名计算、速率限制重试、复杂 HTML 处理。
+
+### 11.5.2 架构与数据流
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Glean Host（Rust）                                       │
+│                                                          │
+│  PluginManager                                           │
+│    ├─ load()   ← 扫描 plugins/，解析 manifest.toml       │
+│    ├─ match(url) → 命中的插件列表                         │
+│    └─ invoke(hook, ctx) → 执行对应 hook                  │
+│                                                          │
+│  PluginRuntime（Rhai Engine）                            │
+│    ├─ 白名单 Host 函数（http_get/css_select/set_field…）  │
+│    ├─ 操作数上限 / 超时 / per-plugin 资源配额             │
+│    └─ 沙箱：无 FS / 无 socket / 无 process               │
+│                                                          │
+│  hooks（切入点）                                          │
+│    ├─ resolve_feed(url) → FeedConfig                     │
+│    ├─ fetch(url, headers) → httpResponse                 │
+│    ├─ parse_feed(rawBytes) → FeedItems                   │
+│    ├─ enhance_entry(entry) → EnhancedEntry               │
+│    ├─ filter_entry(entry) → bool                         │
+│    └─ transform_html(html) → html                        │
+└──────────────────────────────────────────────────────────┘
+```
+
+**数据流（以 Pixiv 为例）：**
+
+```text
+用户输入 pixiv.net/user/12345
+  → PluginManager.match("pixiv.net") 命中 pixiv.rhai
+  → resolve_feed(url) 返回 { feed_url: API 端点, headers: { Cookie: stored } }
+  → Host 执行 HTTP fetch（注入 Cookie，走代理）
+  → parse_feed(json) 用 Rhai 把 JSON 转 RSS 模型
+  → enhance_entry(item) 补全图片 URL、作者信息
+  → Host 消毒 + 入库
+```
+
+### 11.5.3 插件清单（manifest.toml）
+
+每个插件目录结构：
+
+```
+plugins/
+  pixiv/
+    manifest.toml    # 清单（必需）
+    adapter.rhai     # Tier 2 脚本（可选；Tier 1 纯配置时不需要）
+    icon.png         # 16×16 图标（可选）
+```
+
+`manifest.toml` 示例（Pixiv）：
+
+```toml
+[plugin]
+id = "pixiv"
+name = "Pixiv 订阅适配器"
+version = "0.1.0"
+author = "Glean"
+description = "将 Pixiv 用户作品页转为 RSS"
+min_glean_version = "0.4.0"
+
+# 触发规则：URL 匹配此列表时激活
+[[match]]
+url_pattern = "pixiv.net/users/*"
+# 也可按 feed_url 前缀匹配
+# url_pattern = "https://app-api.pixiv.net/v1/user/works*"
+
+# 权限声明（安装/更新时向用户展示，能力扩大时需重新确认）
+[permissions]
+# HTTP 请求范围（Host 强制校验，超出范围直接拒绝）
+http_domains = ["app-api.pixiv.net", "www.pixiv.net"]
+# 凭证：声明需要的凭证 key，用户在设置里填值
+credentials = ["pixiv_cookie"]
+# 外部服务调用（AI 翻译等）
+external_call = false
+# 内容增强：允许 transform_html 改写正文
+content_rewrite = true
+
+# Tier 1 配置（简单场景）：如果不需要脚本逻辑，纯配置即可
+[config]
+# 指定 CSS/JSON 选择器抽取字段
+feed_title_selector = "$.user.name"
+item_title_selector = "$.illust.title"
+item_url_template = "https://www.pixiv.net/artworks/{id}"
+```
+
+### 11.5.4 权限模型
+
+**原则：能力原语 + 作用域参数，由 Host 执行并强制校验范围。**
+
+| 能力 | Host 函数 | 作用域参数 | 强制校验 |
+|------|-----------|-----------|---------|
+| HTTP 请求 | `http_get(url, headers)` / `http_post(url, body, headers)` | `http_domains` 白名单 | 域名不在白名单 → 拒绝；超时/重试按插件单独配额 |
+| 凭证访问 | `get_credential(key)` | `credentials` 声明列表 | key 未声明 → 返回空；值由用户在设置填入，脚本只读 |
+| 内容改写 | `set_field(name, value)` / `transform_html(html)` | `content_rewrite` 布尔 | 未声明 content_rewrite=true → 改写操作被丢弃 |
+| 外部服务 | `external_call(provider, payload)` | `external_call` 布尔 + provider 白名单 | 未声明 → 拒绝；provider 未注册 → 拒绝 |
+| CSS/JSON 提取 | `css_select(html, selector)` / `json_path(json, path)` | 无限制（纯计算） | 操作数计入上限 |
+
+**安全红线：**
+
+1. **安装/更新时权限确认**：manifest 声明的能力在安装时给用户展示摘要（"这个插件将：访问 pixiv.net / 使用你保存的 pixiv 登录凭据"），用户确认才生效。**插件更新时如果声明的能力集合变大（如新版多要了 external_call），必须重新弹出确认**——防止"先申请无害权限过审，后续偷偷加大"的供应链攻击。
+2. **执行上限**：每个 Rhai 脚本有操作数上限（`engine.set_max_operations()`）和超时上限，防止死循环或恶意卡死刷新流程；`http_request` 的超时和重试退避按插件单独算，一个插件卡住不拖慢全局刷新。
+3. **UI 扩展限制**：**不开放"注入任意 JS/CSS 到阅读区"这条路**——它会废掉已定的"WebView 禁用 JS"安全决策。UI 扩展只能用声明式 `action`/`embed` 白名单（如"在条目底部插入翻译按钮"由 Host 渲染，不是插件自由注入脚本）。
+
+### 11.5.5 Rhai Host 函数清单（首批 API）
+
+```rust
+// === HTTP（作用域：http_domains） ===
+/// GET 请求，返回 { status, headers, body }
+fn http_get(url, headers_map) -> Map;
+/// POST 请求
+fn http_post(url, body_string, headers_map) -> Map;
+/// URL 编码
+fn url_encode(string) -> String;
+
+// === 解析（纯计算，无限制） ===
+/// CSS 选择器提取，返回匹配元素的文本/HTML
+fn css_select(html_string, selector) -> Array;
+/// JSON Path 提取（$.store.book[0].title）
+fn json_path(json_string, path) -> Dynamic;
+/// 正则提取
+fn regex_extract(string, pattern) -> Array;
+
+// === 凭证（作用域：credentials 声明） ===
+/// 获取用户填写的凭证值（未声明 key 返回空字符串）
+fn get_credential(key) -> String;
+
+// === 条目操作（作用域：content_rewrite / 无限制读取） ===
+/// 设置条目字段（title/url/author/content_html/summary/published_at）
+fn set_field(name, value);
+/// 追加内容到正文
+fn append_html(html_fragment);
+
+// === 外部服务（作用域：external_call + provider 白名单） ===
+/// 调用注册的外部服务（如 translate/summarize）
+fn external_call(provider, payload_map) -> Map;
+
+// === 工具 ===
+fn log(level, message);  // 写入插件日志
+fn now() -> i64;         // Unix 时间戳
+fn hash(string) -> String; // SHA-256
+```
+
+### 11.5.6 Hook 切入点
+
+| Hook | 触发时机 | 签名 | 用途 |
+|------|---------|------|------|
+| `resolve_feed` | 添加订阅时，URL 匹配后 | `fn resolve_feed(url) -> FeedConfig` | 返回真实 feed 端点、所需 headers |
+| `fetch`（Host 执行） | 刷新时 | — | Host 按 `resolve_feed` 返回值执行 HTTP |
+| `parse_feed` | HTTP 响应到达后 | `fn parse_feed(raw_bytes) -> Array<Entry>` | 把非标准格式（JSON API）转成条目列表 |
+| `enhance_entry` | 入库前 | `fn enhance_entry(entry) -> Entry` | 补全图片、作者、标签等 |
+| `transform_html` | 阅读器渲染前 | `fn transform_html(html) -> String` | 代码高亮、图片代理、视频嵌入 |
+| `filter_entry` | 列表渲染前 | `fn filter_entry(entry) -> bool` | 过滤不感兴趣的条目 |
+| `ai_enhance` | 手动/自动触发 | `fn ai_enhance(entry, provider) -> Map` | 翻译/摘要，结果写回 content_extracted |
+
+### 11.5.7 插件示例
+
+#### Pixiv 适配器（Tier 2 Rhai 脚本）
+
+```rhai
+// adapter.rhai
+
+fn resolve_feed(url) {
+    // 从 pixiv.net/users/12345 提取 user_id
+    let m = regex_extract(url, "users/(\\d+)");
+    if m.len() == 0 {
+        log("error", "无法解析 Pixiv 用户 ID");
+        return #{};  // 空表示放弃
+    }
+    let user_id = m[0];
+    let cookie = get_credential("pixiv_cookie");
+    #{
+        feed_url: "https://app-api.pixiv.net/v1/user/works?user_id=" + user_id + "&type=illust",
+        headers: #{
+            "Authorization": "Bearer MHZk...（公开客户端 token）",
+            "Cookie": cookie,
+            "User-Agent": "PixivIOSApp/7.13",
+        },
+    }
+}
+
+fn parse_feed(raw_bytes) {
+    let json = parse_json(raw_bytes.to_string());
+    let items = [];
+    for illust in json.illusts {
+        items.push(#{
+            title: illust.title,
+            url: "https://www.pixiv.net/artworks/" + illust.id,
+            author: illust.user.name,
+            content_html: build_image_html(illust),
+            published_at: parse_date(illust.create_date),
+        });
+    }
+    items
+}
+
+fn build_image_html(illust) {
+    let html = "<div>";
+    for page in illust.meta_pages {
+        let img_url = page.image_urls.original;
+        html += `<img src="${img_url}" />`;
+    }
+    html += "</div>"
+}
+```
+
+#### AI 翻译插件（manifest + 极简脚本）
+
+```toml
+# manifest.toml
+[plugin]
+id = "ai-translate-deepl"
+name = "DeepL 翻译"
+version = "0.1.0"
+
+[[match]]
+url_pattern = "*"  # 所有条目
+
+[permissions]
+external_call = true
+content_rewrite = true
+credentials = ["deepl_api_key"]
+
+[external_providers]
+deepl = "https://api-free.deepl.com/v2/translate"
+```
+
+```rhai
+// adapter.rhai
+fn ai_enhance(entry, provider) {
+    if provider != "deepl" {
+        return #{};
+    }
+    let key = get_credential("deepl_api_key");
+    let result = external_call("deepl", #{
+        text: entry.title,
+        target_lang: "ZH",
+        api_key: key,
+    });
+    #{
+        title_translated: result.translated_text,
+    }
+}
+```
+
+### 11.5.8 存储与分发
+
+```
+%APPDATA%\Glean\
+  plugins\                    # 用户安装的插件
+    pixiv\
+      manifest.toml
+      adapter.rhai
+    ai-translate-deepl\
+      manifest.toml
+      adapter.rhai
+  plugins_config.json         # 各插件的开关状态、凭证值（加密存储）
+```
+
+**分发方式（V1）：**
+
+- 手动放置目录安装；设置面板里启用/禁用、填凭证
+- 不做插件市场（当前需求不需要；未来若做，需重新评估 Wasm 切换）
+
+**凭证存储：**
+
+- 凭证值（如 Cookie、API Key）由用户在设置面板填入，存入 `plugins_config.json`
+- V1 明文存储（与 config.toml 一致，本地优先软件的取舍）；V2 考虑 DPAPI 加密
+
+### 11.5.9 实施计划
+
+| 阶段 | 内容 | 优先级 |
+|------|------|--------|
+| **P0** | PluginManager 框架：manifest 解析、match、load/unload；Rhai runtime + 白名单 Host 函数；设置面板 UI（列表/启用禁用/凭证填写） | M2 |
+| **P0** | `resolve_feed` + `parse_feed` + `enhance_entry` 三个核心 hook；写一个真实插件验证（建议先做 GitHub Releases，API 标准无需凭证） | M2 |
+| **P1** | Bilibili / YouTube 适配器（需处理 API key 或 RSSHub 中转） | M2 |
+| **P1** | `transform_html` hook（视频嵌入、代码高亮） | M2 |
+| **P2** | Pixiv / Twitter / Fantia / Fanbox 适配器（需凭证管理、反爬处理） | M3 |
+| **P2** | AI 翻译/摘要：`ai_enhance` hook + external_call 机制 + provider 注册 | M3 |
+| **P2** | `filter_entry` hook（过滤/排序） | M3 |
+
+### 11.5.10 开发规范
+
+1. **Tier 1 优先**：能用配置规则解决的场景不写 Rhai 脚本（减少攻击面）
+2. **最小权限**：manifest 只声明必需的能力；`http_domains` 尽可能窄
+3. **幂等性**：所有 hook 必须幂等（同一输入多次调用结果一致），因为刷新可能重试
+4. **不阻塞主循环**：所有 hook 在 worker 线程执行；超时由 Host 强制
+5. **日志隔离**：每个插件有独立日志前缀 `[plugin:id]`，方便排查
+6. **沙箱审计清单**：新增 Host 函数时必须回答三个问题——它能访问什么资源？作用域参数是什么？超出作用域时 Host 如何拒绝？
 
 ---
 
