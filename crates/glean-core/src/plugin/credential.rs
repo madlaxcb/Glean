@@ -177,20 +177,27 @@ fn decrypt(blob: &EncryptedBlob) -> Result<String> {
     }
 }
 
+// DPAPI 输出 buffer 必须用 `LocalFree` 释放（Win32 规范）。
+// windows crate 0.58 移除了 `LocalFree` 符号，这里直接 FFI 声明
+// （kernel32.dll 永远导出，签名固定）。
+#[cfg(windows)]
+extern "system" {
+    fn LocalFree(hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
 #[cfg(windows)]
 fn encrypt_dpapi(plaintext: &str) -> Result<EncryptedBlob> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, DATA_BLOB,
+        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows::Win32::System::Memory::LocalFree;
 
     let bytes = plaintext.as_bytes();
-    let mut in_blob = DATA_BLOB {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
         pbData: bytes.as_ptr() as *mut u8,
     };
-    let mut out_blob = DATA_BLOB {
+    let mut out_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
     };
@@ -207,7 +214,7 @@ fn encrypt_dpapi(plaintext: &str) -> Result<EncryptedBlob> {
         .map_err(|e| CoreError::Message(format!("CryptProtectData: {e}")))?;
         let cipher = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
         let b64 = STANDARD.encode(cipher);
-        LocalFree(out_blob.pbData as *mut _).ok();
+        let _ = LocalFree(out_blob.pbData as *mut std::ffi::c_void);
         Ok(EncryptedBlob {
             scheme: "dpapi".into(),
             data: b64,
@@ -219,18 +226,17 @@ fn encrypt_dpapi(plaintext: &str) -> Result<EncryptedBlob> {
 fn decrypt_dpapi(data_b64: &str) -> Result<String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use windows::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, DATA_BLOB,
+        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows::Win32::System::Memory::LocalFree;
 
     let cipher = STANDARD
         .decode(data_b64)
         .map_err(|e| CoreError::Message(format!("dpapi base64 decode: {e}")))?;
-    let mut in_blob = DATA_BLOB {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: cipher.len() as u32,
         pbData: cipher.as_ptr() as *mut u8,
     };
-    let mut out_blob = DATA_BLOB {
+    let mut out_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
     };
@@ -246,7 +252,7 @@ fn decrypt_dpapi(data_b64: &str) -> Result<String> {
         )
         .map_err(|e| CoreError::Message(format!("CryptUnprotectData: {e}")))?;
         let plain = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
-        LocalFree(out_blob.pbData as *mut _).ok();
+        let _ = LocalFree(out_blob.pbData as *mut std::ffi::c_void);
         String::from_utf8(plain)
             .map_err(|e| CoreError::Message(format!("dpapi plaintext utf8: {e}")))
     }
