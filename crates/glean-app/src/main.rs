@@ -158,6 +158,10 @@ pub struct SpikeState {
     /// Persistent buffer for the refresh-interval TextEdit in settings.
     /// Must outlive the frame so user typing isn't overwritten each frame.
     pub refresh_interval_input: String,
+    /// Buffer for font size input in settings.
+    pub font_size_input: String,
+    /// Buffer for line width input in settings.
+    pub line_width_input: String,
     /// Per-article one-shot override: when true, reader renders with Allow
     /// regardless of config.image_policy. Reset on entry switch.
     pub reader_show_images: bool,
@@ -222,6 +226,8 @@ impl SpikeState {
             errors: Vec::new(),
             new_folder_input: String::new(),
             refresh_interval_input: config.refresh_interval_secs.to_string(),
+            font_size_input: config.font_size_px.to_string(),
+            line_width_input: config.line_width_rem.to_string(),
             config,
             config_path,
             auto_refresh_timer: 0.0,
