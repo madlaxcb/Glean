@@ -205,7 +205,7 @@ mod win {
                 // Custom protocol for locally-cached images (dev plan §2.5.2).
                 // The WebView rewrites <img src> to glean-img://<filename>; this
                 // handler reads the file from the image cache dir.
-                .with_custom_protocol(glean_core::IMAGE_CUSTOM_SCHEME.into(), move |request| {
+                .with_custom_protocol(glean_core::IMAGE_CUSTOM_SCHEME.into(), move |_id, request| {
                     let url = request.url();
                     // URL is like glean-img://filename or glean-img://host/filename
                     let path = url.trim_start_matches("glean-img://");
