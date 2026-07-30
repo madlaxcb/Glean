@@ -182,13 +182,17 @@ pub struct SpikeState {
 impl SpikeState {
     pub fn new() -> Self {
         let db = default_db_path();
-        let service = GleanService::open_path(&db).unwrap_or_else(|e| {
-            eprintln!("glean: open db {:?}: {e}; falling back to memory", db);
-            GleanService::open_in_memory().expect("memory store")
-        });
-
         let config_path = default_config_path();
         let config = load_config(&config_path);
+        let proxy = if config.proxy_url.is_empty() {
+            None
+        } else {
+            Some(config.proxy_url.as_str())
+        };
+        let service = GleanService::open_path_with_proxy(&db, proxy).unwrap_or_else(|e| {
+            eprintln!("glean: open db {:?}: {e}; falling back to memory", db);
+            GleanService::open_in_memory_with_proxy(proxy).expect("memory store")
+        });
 
         let mut s = Self {
             service,

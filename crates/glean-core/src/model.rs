@@ -125,6 +125,9 @@ pub struct AppConfig {
     /// Reader line width in rem (default 42).
     #[serde(default = "default_line_width")]
     pub line_width_rem: u16,
+    /// HTTP proxy URL (e.g., "http://127.0.0.1:7890", "socks5://…"). Empty = no proxy.
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 fn default_true() -> bool {
@@ -151,6 +154,7 @@ impl Default for AppConfig {
             cache_images: false,
             font_size_px: 16,
             line_width_rem: 42,
+            proxy_url: String::new(),
         }
     }
 }

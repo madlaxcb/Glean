@@ -762,16 +762,44 @@ impl eframe::App for SpikeApp {
                     );
 
                     ui.add_space(8.0);
+                    ui.heading("网络");
+                    ui.horizontal(|ui| {
+                        ui.label("HTTP 代理");
+                        let te = egui::TextEdit::singleline(&mut self.state.config.proxy_url)
+                            .id(egui::Id::new("proxy_url_input"))
+                            .desired_width(200.0)
+                            .hint_text("http://127.0.0.1:7890");
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                        if resp.lost_focus() {
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                    });
+                    ui.label(
+                        RichText::new("支持 http/socks5 代理，重启后生效")
+                            .small()
+                            .weak(),
+                    );
+
+                    ui.add_space(8.0);
                     ui.heading("排版");
                     ui.horizontal(|ui| {
                         ui.label("字体大小 (px)");
-                        let mut size = self.state.config.font_size_px;
-                        let te = egui::TextEdit::singleline(&mut size.to_string())
-                            .id(egui::Id::new("font_size_input"))
+                        let id = egui::Id::new("font_size_input");
+                        let cur = self.state.config.font_size_px.to_string();
+                        let mut buf = ctx.memory(|m| {
+                            m.data.get_temp::<String>(id).unwrap_or_else(|| cur.clone())
+                        });
+                        let te = egui::TextEdit::singleline(&mut buf)
+                            .id(id)
                             .desired_width(50.0);
                         let resp = ui.add(te);
                         if resp.lost_focus() {
-                            if let Ok(v) = resp.text().parse::<u16>() {
+                            if let Ok(v) = buf.parse::<u16>() {
                                 if v >= 10 && v <= 32 {
                                     self.state.config.font_size_px = v;
                                     self.state.sync_config();
@@ -782,13 +810,17 @@ impl eframe::App for SpikeApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label("行宽 (rem)");
-                        let mut width = self.state.config.line_width_rem;
-                        let te = egui::TextEdit::singleline(&mut width.to_string())
-                            .id(egui::Id::new("line_width_input"))
+                        let id = egui::Id::new("line_width_input");
+                        let cur = self.state.config.line_width_rem.to_string();
+                        let mut buf = ctx.memory(|m| {
+                            m.data.get_temp::<String>(id).unwrap_or_else(|| cur.clone())
+                        });
+                        let te = egui::TextEdit::singleline(&mut buf)
+                            .id(id)
                             .desired_width(50.0);
                         let resp = ui.add(te);
                         if resp.lost_focus() {
-                            if let Ok(v) = resp.text().parse::<u16>() {
+                            if let Ok(v) = buf.parse::<u16>() {
                                 if v >= 20 && v <= 80 {
                                     self.state.config.line_width_rem = v;
                                     self.state.sync_config();

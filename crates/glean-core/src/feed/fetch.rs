@@ -11,9 +11,23 @@ pub struct HttpClient {
 
 impl HttpClient {
     pub fn new() -> Result<Self> {
-        let inner = Client::builder()
+        Self::with_proxy(None)
+    }
+
+    /// Create an HTTP client with an optional proxy URL.
+    /// Proxy format: "http://host:port" or "socks5://host:port".
+    pub fn with_proxy(proxy_url: Option<&str>) -> Result<Self> {
+        let mut builder = Client::builder()
             .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(reqwest::redirect::Policy::limited(5));
+        if let Some(proxy) = proxy_url {
+            if !proxy.is_empty() {
+                let parsed = reqwest::Proxy::all(proxy)
+                    .map_err(|e| CoreError::Http(format!("invalid proxy: {e}")))?;
+                builder = builder.proxy(parsed);
+            }
+        }
+        let inner = builder
             .build()
             .map_err(|e| CoreError::Http(e.to_string()))?;
         Ok(Self { inner })

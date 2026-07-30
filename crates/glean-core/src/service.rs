@@ -22,20 +22,28 @@ pub struct GleanService {
 
 impl GleanService {
     pub fn open_in_memory() -> Result<Self> {
+        Self::open_in_memory_with_proxy(None)
+    }
+
+    pub fn open_in_memory_with_proxy(proxy_url: Option<&str>) -> Result<Self> {
         Ok(Self {
             store: Store::open_in_memory()?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: HttpClient::new()?,
+            http: HttpClient::with_proxy(proxy_url)?,
         })
     }
 
     pub fn open_path(path: &Path) -> Result<Self> {
+        Self::open_path_with_proxy(path, None)
+    }
+
+    pub fn open_path_with_proxy(path: &Path, proxy_url: Option<&str>) -> Result<Self> {
         Ok(Self {
             store: Store::open_path(path)?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: HttpClient::new()?,
+            http: HttpClient::with_proxy(proxy_url)?,
         })
     }
 
