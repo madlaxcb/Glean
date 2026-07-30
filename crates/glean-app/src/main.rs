@@ -14,8 +14,8 @@ use eframe::egui;
 use glean_core::{
     default_config_path, default_db_path, run_extract_task, run_refresh_task, should_extract,
     AppCommand, AppConfig, AppEvent, EntryDetail, EntryFilter, EntryId, EntrySummary,
-    ExtractOutcome, ExtractTask, Feed, Folder, FolderId, GleanService, ImagePolicy, ReaderHostMode,
-    RefreshOutcome, RefreshTask,
+    ExtractOutcome, ExtractTask, FaviconCache, Feed, FeedId, Folder, FolderId, GleanService,
+    ImagePolicy, ReaderHostMode, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -173,6 +173,10 @@ pub struct SpikeState {
     extract_in_flight: Option<EntryId>,
     /// Background image-cache receiver: (rewritten_html, dark, image_policy).
     img_cache_rx: Option<mpsc::Receiver<(String, bool, ImagePolicy)>>,
+    /// Background favicon download receiver: (feed_id, rgba_bytes, width, height).
+    favicon_rx: Option<mpsc::Receiver<(FeedId, Vec<u8>, u32, u32)>>,
+    /// Set of feed IDs whose favicon download is already in flight.
+    favicon_pending: std::collections::HashSet<FeedId>,
 }
 
 impl SpikeState {
@@ -224,6 +228,8 @@ impl SpikeState {
             extract_rx: None,
             extract_in_flight: None,
             img_cache_rx: None,
+            favicon_rx: None,
+            favicon_pending: std::collections::HashSet::new(),
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
@@ -279,6 +285,8 @@ impl SpikeState {
         if self.refresh_pending == 0 {
             self.refresh_rx = None;
             self.status = "刷新完成".into();
+            // Trigger favicon downloads for feeds with favicon_url.
+            self.maybe_download_favicons();
         } else if got > 0 {
             self.status = format!("刷新中… 剩余 {} 个源", self.refresh_pending);
         }
@@ -818,6 +826,112 @@ impl SpikeState {
                 self.reader.show_html(&html);
             }
         }
+    }
+
+    /// Spawn background favicon download for feeds that have a favicon_url
+    /// but no cached icon yet. Called after feed refresh.
+    pub fn maybe_download_favicons(&mut self) {
+        let favicon_dir = glean_core::cache_favicons_dir();
+        let cache = FaviconCache::new(favicon_dir);
+        if !cache.enabled() {
+            return;
+        }
+        for feed in &self.feeds {
+            let Some(url) = feed.favicon_url.as_deref() else {
+                continue;
+            };
+            if url.is_empty() {
+                continue;
+            }
+            if self.favicon_pending.contains(&feed.id) {
+                continue;
+            }
+            if cache.is_cached(feed.id) {
+                continue;
+            }
+            // Spawn download.
+            let fid = feed.id;
+            let url = url.to_string();
+            let (tx, rx) = mpsc::channel::<(FeedId, Vec<u8>, u32, u32)>();
+            self.favicon_rx = Some(rx);
+            self.favicon_pending.insert(fid);
+            thread::spawn(move || {
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .redirect(reqwest::redirect::Policy::limited(3))
+                    .build()
+                    .expect("favicon client");
+                let favicon_dir = glean_core::cache_favicons_dir();
+                let fc = FaviconCache::new(favicon_dir);
+                // Download to disk.
+                if let Err(e) = fc.download(fid, &url, &client) {
+                    eprintln!("glean: favicon download failed for {url}: {e}");
+                    let _ = tx.send((fid, Vec::new(), 0, 0));
+                    return;
+                }
+                // Read back and decode to RGBA.
+                if let Some(bytes) = fc.read(fid) {
+                    match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            let _ = tx.send((fid, rgba.into_raw(), w, h));
+                        }
+                        Err(e) => {
+                            eprintln!("glean: favicon decode failed: {e}");
+                            let _ = tx.send((fid, Vec::new(), 0, 0));
+                        }
+                    }
+                } else {
+                    let _ = tx.send((fid, Vec::new(), 0, 0));
+                }
+            });
+        }
+    }
+
+    /// Poll background favicon download thread. Returns decoded favicon data
+    /// (feed_id, rgba_pixels, width, height) for the UI to create textures.
+    pub fn poll_favicon_cache(&mut self) -> Option<(FeedId, Vec<u8>, u32, u32)> {
+        let rx = match &self.favicon_rx {
+            Some(rx) => rx,
+            None => return None,
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.favicon_pending.remove(&result.0);
+                // If this was the last pending download, clear the receiver.
+                if result.2 == 0 {
+                    return None; // decode failed, skip
+                }
+                Some(result)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.favicon_rx = None;
+                None
+            }
+        }
+    }
+
+    /// Try to load cached favicons from disk into RGBA data at startup.
+    /// Returns (feed_id, rgba_pixels, width, height) pairs.
+    pub fn load_cached_favicons(&self) -> Vec<(FeedId, Vec<u8>, u32, u32)> {
+        let favicon_dir = glean_core::cache_favicons_dir();
+        let cache = FaviconCache::new(favicon_dir);
+        if !cache.enabled() {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        for feed in &self.feeds {
+            if let Some(bytes) = cache.read(feed.id) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    result.push((feed.id, rgba.into_raw(), w, h));
+                }
+            }
+        }
+        result
     }
 
     /// Entry currently being extracted (for UI button gating).

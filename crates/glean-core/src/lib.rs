@@ -5,6 +5,7 @@ mod command;
 mod error;
 mod event;
 pub mod extract;
+pub mod favicon_cache;
 pub mod feed;
 mod image_cache;
 mod model;
@@ -22,6 +23,7 @@ pub use extract::{
     extract_content, fetch_article_html, run_extract_task, should_extract, ExtractOutcome,
     ExtractTask,
 };
+pub use favicon_cache::FaviconCache;
 pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
 pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{

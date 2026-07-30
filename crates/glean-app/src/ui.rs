@@ -10,6 +10,7 @@ const NAV_MAX: f32 = 360.0;
 const LIST_MIN: f32 = 180.0;
 const LIST_MAX: f32 = 520.0;
 const READER_MIN: f32 = 240.0;
+const FAVICON_SIZE: f32 = 14.0;
 
 pub struct SpikeApp {
     state: SpikeState,
@@ -20,6 +21,8 @@ pub struct SpikeApp {
     show_errors: bool,
     /// Show settings popup.
     show_settings: bool,
+    /// Cached favicon textures keyed by FeedId.
+    favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
 }
 
 impl SpikeApp {
@@ -38,6 +41,7 @@ impl SpikeApp {
             show_opml_import: false,
             show_errors: false,
             show_settings: false,
+            favicons: std::collections::HashMap::new(),
         }
     }
 }
@@ -56,6 +60,32 @@ impl eframe::App for SpikeApp {
 
         // Poll background image caching.
         self.state.poll_img_cache();
+
+        // Poll background favicon downloads.
+        while let Some((fid, rgba, w, h)) = self.state.poll_favicon_cache() {
+            let size = [w as usize, h as usize];
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+            let tex = ctx.load_texture(
+                format!("favicon_{}", fid.0),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.favicons.insert(fid, tex);
+        }
+
+        // Load cached favicons on first frame (after Bootstrap).
+        if !self.primed {
+            for (fid, rgba, w, h) in self.state.load_cached_favicons() {
+                let size = [w as usize, h as usize];
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                let tex = ctx.load_texture(
+                    format!("favicon_{}", fid.0),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.favicons.insert(fid, tex);
+            }
+        }
 
         // Poll update-check thread.
         self.state.poll_update_check();
@@ -931,11 +961,19 @@ impl SpikeApp {
                 ""
             };
             let mute_mark = if feed.muted { "🔇" } else { "" };
-            let favicon_mark = if feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty()) {
-                "🌐"
-            } else {
-                ""
-            };
+            let has_favicon_tex = self.favicons.contains_key(&feed.id);
+            if has_favicon_tex {
+                let tex = self.favicons.get(&feed.id).unwrap();
+                ui.add(
+                    egui::Image::new(tex).fit_to_exact_size(egui::vec2(FAVICON_SIZE, FAVICON_SIZE)),
+                );
+            }
+            let favicon_mark =
+                if !has_favicon_tex && feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty()) {
+                    "🌐"
+                } else {
+                    ""
+                };
             let label = format!("{mute_mark}{favicon_mark}{}{error_mark}", feed.title);
             let resp = ui.selectable_label(sel, &label);
             if resp.clicked() {
@@ -977,7 +1015,22 @@ impl SpikeApp {
                     ""
                 };
                 let mute_mark = if feed.muted { "🔇" } else { "" };
-                let label = format!("  {mute_mark}{}{error_mark}", feed.title);
+                let has_favicon_tex = self.favicons.contains_key(&feed.id);
+                if has_favicon_tex {
+                    let tex = self.favicons.get(&feed.id).unwrap();
+                    ui.add(
+                        egui::Image::new(tex)
+                            .fit_to_exact_size(egui::vec2(FAVICON_SIZE, FAVICON_SIZE)),
+                    );
+                }
+                let favicon_mark = if !has_favicon_tex
+                    && feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty())
+                {
+                    "🌐"
+                } else {
+                    ""
+                };
+                let label = format!("  {mute_mark}{favicon_mark}{}{error_mark}", feed.title);
                 let resp = ui.selectable_label(sel, &label);
                 if resp.clicked() {
                     feed_click = Some(feed.id);
