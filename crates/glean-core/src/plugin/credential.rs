@@ -6,10 +6,9 @@
 //!
 //! 加密方案（`EncryptedBlob.scheme`）：
 //! - `dpapi` (Windows): `CryptProtectData` / `CryptUnprotectData`，密文 base64
-//! - `keyring-aes-gcm` (Linux): master key 存 `keyring` (secret-service)，
-//!   AES-256-GCM 加密 blob，`data = base64(nonce || ct)`
-//! - `plaintext-stub`: 旧版兼容读 + Linux 无 secret-service 时的 fallback（带 warn）
+//! - `plaintext-stub`: 非 Windows 开发期占位 + 旧版文件兼容读
 //!
+//! 项目目标平台为 Windows；非 Windows 分支仅为开发环境能编译跑测试而保留。
 //! 调用方接口（`CredentialStore::open/flush/get/set/remove`）不随 scheme 变化。
 
 use crate::error::{CoreError, Result};
@@ -136,7 +135,7 @@ fn key(plugin_id: &str, slot: &str) -> String {
 /// 当前平台 scheme 重写。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedBlob {
-    /// `plaintext-stub` | `dpapi` | `keyring-aes-gcm`
+    /// `plaintext-stub` | `dpapi`
     scheme: String,
     /// base64 编码的密文；`plaintext-stub` 时为明文 UTF-8。
     data: String,
@@ -149,21 +148,11 @@ fn encrypt(plaintext: &str) -> Result<EncryptedBlob> {
     }
     #[cfg(not(windows))]
     {
-        match encrypt_keyring(plaintext) {
-            Ok(blob) => Ok(blob),
-            Err(e) => {
-                eprintln!(
-                    "warning: Glean keyring encryption unavailable ({}); falling back to \
-                     plaintext-stub. Install a secret-service daemon (e.g. gnome-keyring) \
-                     to enable secure storage.",
-                    e
-                );
-                Ok(EncryptedBlob {
-                    scheme: "plaintext-stub".into(),
-                    data: plaintext.to_string(),
-                })
-            }
-        }
+        // 非 Windows 开发期占位：明文存储，仅用于让开发环境能编译跑测试。
+        Ok(EncryptedBlob {
+            scheme: "plaintext-stub".into(),
+            data: plaintext.to_string(),
+        })
     }
 }
 
@@ -180,18 +169,6 @@ fn decrypt(blob: &EncryptedBlob) -> Result<String> {
                 Err(CoreError::Message(
                     "credential scheme 'dpapi' requires Windows".into(),
                 ))
-            }
-        }
-        "keyring-aes-gcm" => {
-            #[cfg(windows)]
-            {
-                Err(CoreError::Message(
-                    "credential scheme 'keyring-aes-gcm' requires Linux".into(),
-                ))
-            }
-            #[cfg(not(windows))]
-            {
-                decrypt_keyring(&blob.data)
             }
         }
         other => Err(CoreError::Message(format!(
@@ -275,109 +252,6 @@ fn decrypt_dpapi(data_b64: &str) -> Result<String> {
     }
 }
 
-#[cfg(not(windows))]
-fn encrypt_keyring(plaintext: &str) -> Result<EncryptedBlob> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    let key = get_or_create_master_key()?;
-    let ct = aes_gcm_encrypt(&key, plaintext.as_bytes())?;
-    let b64 = STANDARD.encode(ct);
-    Ok(EncryptedBlob {
-        scheme: "keyring-aes-gcm".into(),
-        data: b64,
-    })
-}
-
-#[cfg(not(windows))]
-fn decrypt_keyring(data_b64: &str) -> Result<String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    let data = STANDARD
-        .decode(data_b64)
-        .map_err(|e| CoreError::Message(format!("keyring base64 decode: {e}")))?;
-    let key = get_or_create_master_key()?;
-    let plain = aes_gcm_decrypt(&key, &data)?;
-    String::from_utf8(plain).map_err(|e| CoreError::Message(format!("keyring plaintext utf8: {e}")))
-}
-
-/// 从 Linux keyring 取（或首次创建）AES-256 master key。
-///
-/// 失败时返回 `Err`，由 `encrypt` 上层 fallback 到 `plaintext-stub`。
-#[cfg(not(windows))]
-fn get_or_create_master_key() -> Result<[u8; 32]> {
-    use base64::Engine;
-    use keyring::Entry;
-    const SERVICE: &str = "Glean";
-    const USER: &str = "credentials-master-key";
-
-    let entry =
-        Entry::new(SERVICE, USER).map_err(|e| CoreError::Message(format!("keyring entry: {e}")))?;
-    match entry.get_password() {
-        Ok(b64) => {
-            let raw = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| CoreError::Message(format!("master key b64 decode: {e}")))?;
-            if raw.len() != 32 {
-                return Err(CoreError::Message(format!(
-                    "master key length {} != 32",
-                    raw.len()
-                )));
-            }
-            let mut k = [0u8; 32];
-            k.copy_from_slice(&raw);
-            Ok(k)
-        }
-        Err(keyring::Error::NoEntry) => {
-            let mut k = [0u8; 32];
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut k);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(k);
-            entry
-                .set_password(&b64)
-                .map_err(|e| CoreError::Message(format!("keyring set_password: {e}")))?;
-            Ok(k)
-        }
-        Err(e) => Err(CoreError::Message(format!("keyring get_password: {e}"))),
-    }
-}
-
-/// AES-256-GCM 加密。输出 = `nonce(12) || ct`。
-#[cfg(not(windows))]
-fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
-    use aes_gcm::aead::{Aead, KeyInit};
-    use aes_gcm::{Aes256Gcm, Nonce};
-    use rand::RngCore;
-
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| CoreError::Message(format!("aes-gcm key init: {e}")))?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct: Vec<u8> = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|e| CoreError::Message(format!("aes-gcm encrypt: {e}")))?;
-    let mut out = Vec::with_capacity(12 + ct.len());
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ct);
-    Ok(out)
-}
-
-/// AES-256-GCM 解密。输入 = `nonce(12) || ct`。
-#[cfg(not(windows))]
-fn aes_gcm_decrypt(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
-    use aes_gcm::aead::{Aead, KeyInit};
-    use aes_gcm::{Aes256Gcm, Nonce};
-
-    if data.len() < 12 {
-        return Err(CoreError::Message("aes-gcm data too short".into()));
-    }
-    let (nonce_bytes, ct) = data.split_at(12);
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| CoreError::Message(format!("aes-gcm key init: {e}")))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher
-        .decrypt(nonce, ct)
-        .map_err(|e| CoreError::Message(format!("aes-gcm decrypt: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,8 +290,7 @@ mod tests {
 
     #[test]
     fn roundtrip_default_scheme() {
-        // 平台无关：Windows 走 dpapi；Linux 有 keyring 走 keyring-aes-gcm；
-        // Linux 无 keyring fallback 到 plaintext-stub。任一路径都要 roundtrip。
+        // Windows 走 dpapi；非 Windows 走 plaintext-stub 占位。任一路径都要 roundtrip。
         let blob = encrypt("hello world").unwrap();
         let back = decrypt(&blob).unwrap();
         assert_eq!(back, "hello world");
@@ -431,18 +304,6 @@ mod tests {
             data: "legacy-secret".into(),
         };
         assert_eq!(decrypt(&blob).unwrap(), "legacy-secret");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    #[ignore = "requires secret-service daemon (gnome-keyring/kwallet) on Linux"]
-    fn roundtrip_keyring_aes_gcm_explicit() {
-        // 直接调 keyring 路径，不走 fallback；本机无 secret-service 时跳过。
-        let plaintext = "keyring-secret";
-        let blob = encrypt_keyring(plaintext).expect("keyring encryption");
-        assert_eq!(blob.scheme, "keyring-aes-gcm");
-        let back = decrypt_keyring(&blob.data).expect("keyring decryption");
-        assert_eq!(back, plaintext);
     }
 
     #[test]

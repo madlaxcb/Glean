@@ -25,8 +25,3 @@ windows = { version = "0.58", features = [
     "Win32_Security_Cryptography",
     "Win32_System_Memory",
 ] }
-
-[target.'cfg(not(windows))'.dependencies]
-keyring = { version = "3", default-features = false, features = ["sync-secret-service"] }
-aes-gcm = "0.10"
-rand = "0.8"
