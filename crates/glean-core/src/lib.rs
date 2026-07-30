@@ -122,6 +122,8 @@ mod tests {
             false,
             true,
             ImagePolicy::Block,
+            16,
+            42,
         );
         assert!(!doc.to_lowercase().contains("<script"));
     }

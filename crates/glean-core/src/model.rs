@@ -119,10 +119,24 @@ pub struct AppConfig {
     /// (bandwidth + privacy tradeoff: first load still hits the source).
     #[serde(default)]
     pub cache_images: bool,
+    /// Reader font size in pixels (default 16).
+    #[serde(default = "default_font_size")]
+    pub font_size_px: u16,
+    /// Reader line width in rem (default 42).
+    #[serde(default = "default_line_width")]
+    pub line_width_rem: u16,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_font_size() -> u16 {
+    16
+}
+
+fn default_line_width() -> u16 {
+    42
 }
 
 impl Default for AppConfig {
@@ -135,6 +149,8 @@ impl Default for AppConfig {
             refresh_interval_secs: 0,
             auto_extract: true,
             cache_images: false,
+            font_size_px: 16,
+            line_width_rem: 42,
         }
     }
 }

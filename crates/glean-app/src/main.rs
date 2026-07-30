@@ -405,7 +405,13 @@ impl SpikeState {
                     // New article: clear the per-article image override.
                     self.reader_show_images = false;
                 }
-                let html = render_entry(&entry, self.dark, self.effective_image_policy());
+                let html = render_entry(
+                    &entry,
+                    self.dark,
+                    self.effective_image_policy(),
+                    self.config.font_size_px,
+                    self.config.line_width_rem,
+                );
                 self.reader.show_html(&html);
                 self.open_detail = Some(entry);
                 self.refresh_status();
@@ -514,7 +520,13 @@ impl SpikeState {
         // disabled (§7.2) there is no live theme-flip; show_html reloads the
         // themed HTML via load_html (NavigateToString — works with JS off).
         if let Some(entry) = self.open_detail.clone() {
-            let html = render_entry(&entry, self.dark, self.effective_image_policy());
+            let html = render_entry(
+                &entry,
+                self.dark,
+                self.effective_image_policy(),
+                self.config.font_size_px,
+                self.config.line_width_rem,
+            );
             self.reader.show_html(&html);
         } else {
             // No article open: reload the themed placeholder so the empty
@@ -658,7 +670,13 @@ impl SpikeState {
         }
         self.reader_show_images = true;
         if let Some(entry) = self.open_detail.clone() {
-            let html = render_entry(&entry, self.dark, ImagePolicy::Allow);
+            let html = render_entry(
+                &entry,
+                self.dark,
+                ImagePolicy::Allow,
+                self.config.font_size_px,
+                self.config.line_width_rem,
+            );
             self.reader.show_html(&html);
         }
         self.status = "已显示当前文章图片".into();
@@ -768,6 +786,8 @@ impl SpikeState {
         }
         let dark = self.dark;
         let policy = self.effective_image_policy();
+        let font_size_px = self.config.font_size_px;
+        let line_width_rem = self.config.line_width_rem;
         let (tx, rx) = mpsc::channel::<(String, bool, ImagePolicy)>();
         self.img_cache_rx = Some(rx);
         thread::spawn(move || {
@@ -782,7 +802,14 @@ impl SpikeState {
             // Re-render the full document with the rewritten body.
             let html = glean_core::reader_document(
                 "", // title not needed; we only care about the body rewrite
-                None, None, &rewritten, dark, true, policy,
+                None,
+                None,
+                &rewritten,
+                dark,
+                true,
+                policy,
+                font_size_px,
+                line_width_rem,
             );
             let _ = tx.send((html, dark, policy));
         });
@@ -822,6 +849,8 @@ impl SpikeState {
                     dark,
                     true,
                     policy,
+                    self.config.font_size_px,
+                    self.config.line_width_rem,
                 );
                 self.reader.show_html(&html);
             }
@@ -969,7 +998,13 @@ impl SpikeState {
 
 /// Render an entry to reader HTML. Prefers `extracted_html` (full-text from
 /// readability) over `content_html` (feed-provided body) when non-empty.
-fn render_entry(entry: &EntryDetail, dark: bool, image_policy: ImagePolicy) -> String {
+fn render_entry(
+    entry: &EntryDetail,
+    dark: bool,
+    image_policy: ImagePolicy,
+    font_size_px: u16,
+    line_width_rem: u16,
+) -> String {
     let body = if !entry.extracted_html.is_empty() {
         &entry.extracted_html
     } else {
@@ -984,6 +1019,8 @@ fn render_entry(entry: &EntryDetail, dark: bool, image_policy: ImagePolicy) -> S
         dark,
         has_content,
         image_policy,
+        font_size_px,
+        line_width_rem,
     )
 }
 
@@ -997,8 +1034,20 @@ fn render_entry_body(
     dark: bool,
     has_content: bool,
     image_policy: ImagePolicy,
+    font_size_px: u16,
+    line_width_rem: u16,
 ) -> String {
-    glean_core::reader_document(title, url, author, body, dark, has_content, image_policy)
+    glean_core::reader_document(
+        title,
+        url,
+        author,
+        body,
+        dark,
+        has_content,
+        image_policy,
+        font_size_px,
+        line_width_rem,
+    )
 }
 
 fn load_config(path: &std::path::Path) -> AppConfig {

@@ -17,6 +17,8 @@ pub fn reader_document(
     dark: bool,
     has_content: bool,
     image_policy: ImagePolicy,
+    font_size_px: u16,
+    line_width_rem: u16,
 ) -> String {
     let theme_attr = if dark { "dark" } else { "light" };
 
@@ -70,14 +72,15 @@ pub fn reader_document(
   html[data-theme="dark"]  {{ --bg: #1C1C1E; --fg: #F2F2F7; --muted: #8E8E93; --link: #64D2FF; }}
   html, body {{ margin: 0; padding: 0; background: var(--bg); color: var(--fg);
     font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; line-height: 1.65;
+    font-size: {font_size_px}px;
     transition: background-color 0.15s, color 0.15s; }}
-  main {{ max-width: 42rem; margin: 0 auto; padding: 1.25rem 1.5rem 2.5rem; }}
+  main {{ max-width: {line_width_rem}rem; margin: 0 auto; padding: 1.25rem 1.5rem 2.5rem; }}
   h1 {{ font-size: 1.45rem; font-weight: 650; margin: 0 0 0.5rem; line-height: 1.35; }}
   .meta {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 0.75rem; }}
   .orig {{ margin: 0 0 1.25rem; font-size: 0.92rem; }}
   .orig a {{ color: var(--link); }}
   .empty {{ color: var(--muted); }}
-  p, li {{ font-size: 1rem; }}
+  p, li {{ font-size: inherit; }}
   a {{ color: var(--link); }}
   img {{ max-width: 100%; height: auto; }}
 </style>
@@ -98,6 +101,8 @@ pub fn reader_document(
         link_html = link_html,
         body = body,
         img_src = img_src,
+        font_size_px = font_size_px,
+        line_width_rem = line_width_rem,
     )
 }
 
@@ -122,6 +127,8 @@ mod tests {
             false,
             true,
             ImagePolicy::Block,
+            16,
+            42,
         );
         assert!(doc.contains("<h1>Hello</h1>"));
         assert!(doc.contains("https://ex.com/a"));
@@ -131,19 +138,49 @@ mod tests {
 
     #[test]
     fn has_data_theme_dark() {
-        let doc = reader_document("t", None, None, "<p>x</p>", true, true, ImagePolicy::Block);
+        let doc = reader_document(
+            "t",
+            None,
+            None,
+            "<p>x</p>",
+            true,
+            true,
+            ImagePolicy::Block,
+            16,
+            42,
+        );
         assert!(doc.contains(r#"data-theme="dark""#));
     }
 
     #[test]
     fn has_data_theme_light() {
-        let doc = reader_document("t", None, None, "<p>x</p>", false, true, ImagePolicy::Block);
+        let doc = reader_document(
+            "t",
+            None,
+            None,
+            "<p>x</p>",
+            false,
+            true,
+            ImagePolicy::Block,
+            16,
+            42,
+        );
         assert!(doc.contains(r#"data-theme="light""#));
     }
 
     #[test]
     fn has_css_variables() {
-        let doc = reader_document("t", None, None, "<p>x</p>", false, true, ImagePolicy::Block);
+        let doc = reader_document(
+            "t",
+            None,
+            None,
+            "<p>x</p>",
+            false,
+            true,
+            ImagePolicy::Block,
+            16,
+            42,
+        );
         assert!(doc.contains("--bg"));
         assert!(doc.contains("--fg"));
         assert!(doc.contains("var(--bg)"));

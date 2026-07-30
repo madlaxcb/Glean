@@ -762,6 +762,44 @@ impl eframe::App for SpikeApp {
                     );
 
                     ui.add_space(8.0);
+                    ui.heading("排版");
+                    ui.horizontal(|ui| {
+                        ui.label("字体大小 (px)");
+                        let mut size = self.state.config.font_size_px;
+                        let te = egui::TextEdit::singleline(&mut size.to_string())
+                            .id(egui::Id::new("font_size_input"))
+                            .desired_width(50.0);
+                        let resp = ui.add(te);
+                        if resp.lost_focus() {
+                            if let Ok(v) = resp.text().parse::<u16>() {
+                                if v >= 10 && v <= 32 {
+                                    self.state.config.font_size_px = v;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("行宽 (rem)");
+                        let mut width = self.state.config.line_width_rem;
+                        let te = egui::TextEdit::singleline(&mut width.to_string())
+                            .id(egui::Id::new("line_width_input"))
+                            .desired_width(50.0);
+                        let resp = ui.add(te);
+                        if resp.lost_focus() {
+                            if let Ok(v) = resp.text().parse::<u16>() {
+                                if v >= 20 && v <= 80 {
+                                    self.state.config.line_width_rem = v;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            }
+                        }
+                    });
+                    ui.label(RichText::new("修改后重新打开文章生效").small().weak());
+
+                    ui.add_space(8.0);
                     ui.heading("存储");
                     if ui.button("清除所有缓存").clicked() {
                         let removed = glean_core::clear_all_cache();
