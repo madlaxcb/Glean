@@ -315,9 +315,20 @@ mod win {
         }
     }
 
-    /// Force non-client area repaint via SetWindowPos(SWP_FRAMECHANGED).
+    /// Force non-client area repaint so the DWM title bar picks up the new
+    /// dark/light attribute immediately. `SetWindowPos(SWP_FRAMECHANGED)` alone
+    /// is insufficient — it sends `WM_NCCALCSIZE` but doesn't always trigger a
+    /// DWM title-bar redraw. `RedrawWindow(RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW)`
+    /// invalidates the window frame and repaints immediately.
     fn trigger_nc_repaint(hwnd: HWND) {
-        let result = unsafe {
+        use windows::Win32::Graphics::Gdi::{
+            RedrawWindow, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+        };
+        let rdw_result = unsafe {
+            RedrawWindow(hwnd, None, None, RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW)
+        };
+        // Also send SWP_FRAMECHANGED as belt-and-suspenders.
+        let swp_result = unsafe {
             SetWindowPos(
                 hwnd,
                 HWND_TOP,
@@ -330,8 +341,8 @@ mod win {
         };
         let title = window_title(hwnd);
         dwm_log(&format!(
-            "trigger_nc_repaint hwnd={:?} title=\"{}\" -> {:?}",
-            hwnd.0, title, result,
+            "trigger_nc_repaint hwnd={:?} title=\"{}\" rdw={:?} swp={:?}",
+            hwnd.0, title, rdw_result, swp_result,
         ));
     }
 
@@ -354,7 +365,7 @@ mod win {
         w.saturating_mul(h)
     }
 
-    fn find_glean_main_hwnd() -> Option<HWND> {
+    pub fn find_glean_main_hwnd() -> Option<HWND> {
         struct State {
             pid: u32,
             console: HWND,
