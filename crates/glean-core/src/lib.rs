@@ -37,12 +37,13 @@ pub use paths::{
     default_config_path, default_db_path, plugins_dir,
 };
 pub use plugin::{
-    Capabilities, Compliance, Credential, CredentialStore, LoadedPlugin, Manifest, MatchRule,
-    PluginManager, PluginMeta, Runtime, Tier, Tier1Config, Tier1FieldMap,
+    Capabilities, Compliance, Credential, CredentialStore, Enhancer, EntryPatch, HostApi,
+    LoadedPlugin, Manifest, MatchRule, PluginManager, PluginMeta, Runtime, Tier, Tier1Config,
+    Tier1FieldMap,
 };
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};
-pub use service::GleanService;
+pub use service::{run_refresh_task_with_ctx, GleanService, RefreshCtx};
 pub use store::Store;
 
 /// Host mode for the WebView reader (spike / hybrid path).

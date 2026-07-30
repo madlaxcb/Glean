@@ -5,8 +5,8 @@ use crate::error::{CoreError, Result};
 use crate::event::AppEvent;
 use crate::extract::{ExtractOutcome, ExtractTask};
 use crate::feed::{
-    discover_feed_urls, fetch_feed_bytes, parse_feed, FetchResult, HttpClient, RefreshOutcome,
-    RefreshTask,
+    discover_feed_urls, fetch_feed_bytes, parse_feed, FetchResult, HttpClient, ParsedFeed,
+    RefreshOutcome, RefreshTask,
 };
 use crate::model::{EntryFilter, EntryId, FeedId};
 use crate::opml;
@@ -14,15 +14,19 @@ use crate::paths;
 use crate::plugin::{CredentialStore, PluginManager};
 use crate::store::Store;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct GleanService {
     store: Store,
     filter: EntryFilter,
     search_query: String,
-    http: HttpClient,
+    /// `Arc` 便于把同一个 HTTP 客户端（含代理配置）共享给刷新 worker 线程。
+    http: Arc<HttpClient>,
     /// §11.5 插件管理器。`None` 表示 in-memory 模式（测试用），不加载磁盘插件。
-    plugin_mgr: Option<PluginManager>,
-    /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。
+    /// `Arc` 共享给 worker 线程做 URL→插件路由（加载后只读）。
+    plugin_mgr: Option<Arc<PluginManager>>,
+    /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。owned 在此负责可变写入 + 落盘；
+    /// worker 线程通过 `Clone` 取快照。
     credentials: Option<CredentialStore>,
 }
 
@@ -36,7 +40,7 @@ impl GleanService {
             store: Store::open_in_memory()?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: HttpClient::with_proxy(proxy_url)?,
+            http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr: None,
             credentials: None,
         })
@@ -49,21 +53,23 @@ impl GleanService {
     pub fn open_path_with_proxy(path: &Path, proxy_url: Option<&str>) -> Result<Self> {
         // §11.5.8 / §11.5.9 加载插件目录 + 凭证存储。失败不阻塞核心功能：
         // 插件系统是扩展层，DB/HTTP/订阅主线必须能独立工作。
-        let plugin_mgr = paths::plugins_dir().and_then(|d| PluginManager::new(d).ok());
+        let plugin_mgr = paths::plugins_dir()
+            .and_then(|d| PluginManager::new(d).ok())
+            .map(Arc::new);
         let credentials = paths::credentials_path().and_then(|p| CredentialStore::open(p).ok());
         Ok(Self {
             store: Store::open_path(path)?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: HttpClient::with_proxy(proxy_url)?,
+            http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr,
             credentials,
         })
     }
 
-    /// 访问插件管理器（§11.5）。M5 仅完成框架加载；Tier 1/2 端到端接入排到 M6。
+    /// 访问插件管理器（§11.5）。
     pub fn plugins(&self) -> Option<&PluginManager> {
-        self.plugin_mgr.as_ref()
+        self.plugin_mgr.as_deref()
     }
 
     /// 访问凭证存储（§11.5.9）。
@@ -74,6 +80,35 @@ impl GleanService {
     /// 可变访问凭证存储——设置 UI 输入凭证后调用。
     pub fn credentials_mut(&mut self) -> Option<&mut CredentialStore> {
         self.credentials.as_mut()
+    }
+
+    /// 共享 HTTP 客户端（含代理配置）给 worker 线程。
+    pub fn http(&self) -> Arc<HttpClient> {
+        Arc::clone(&self.http)
+    }
+
+    /// 构建一份刷新上下文快照供 worker 线程使用：共享 `PluginManager`/`HttpClient`，
+    /// 克隆 `CredentialStore`（凭证集很小）。`None` 字段表示该能力不可用，worker 走默认 RSS。
+    pub fn refresh_ctx(&self) -> RefreshCtx {
+        RefreshCtx {
+            plugin_mgr: self.plugin_mgr.clone(),
+            http: Arc::clone(&self.http),
+            credentials: self.credentials.clone(),
+        }
+    }
+
+    /// §11.5 刷新时的插件路由：URL 命中已加载插件则走 Tier 1/2，否则返回 `None`
+    /// 让调用方走默认 RSS。返回 `Some(Err)` 表示插件命中但执行失败。
+    fn fetch_via_plugin(&self, url: &str) -> Option<Result<ParsedFeed>> {
+        let mgr = self.plugin_mgr.as_deref()?;
+        // Tier 1：纯配置驱动，无需凭证。
+        if let Some(res) = mgr.run_tier1_for_url(url, &self.http).transpose() {
+            return Some(res);
+        }
+        // Tier 2：Rhai 脚本，需要凭证快照（如有）。
+        let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
+        mgr.run_tier2_for_url(url, Arc::clone(&self.http), creds)
+            .transpose()
     }
 
     pub fn handle(&mut self, cmd: AppCommand) -> Vec<AppEvent> {
@@ -485,6 +520,22 @@ impl GleanService {
 
     fn refresh_one_sync(&mut self, id: FeedId) -> Option<RefreshOutcome> {
         let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id).ok()?;
+        // §11.5 刷新时先做插件路由：URL 命中已加载插件则走 Tier 1/2，
+        // 跳过 RSS fetch（插件不做条件请求，每次拉新）。未命中走默认 RSS。
+        if let Some(res) = self.fetch_via_plugin(&url) {
+            return Some(match res {
+                Ok(parsed) => RefreshOutcome::Updated {
+                    feed_id: id,
+                    parsed,
+                    etag: None,
+                    last_modified: None,
+                },
+                Err(e) => RefreshOutcome::Error {
+                    feed_id: id,
+                    error: e.to_string(),
+                },
+            });
+        }
         match fetch_feed_bytes(&self.http, &url, etag.as_deref(), last_modified.as_deref()) {
             Ok(FetchResult::NotModified) => Some(RefreshOutcome::NotModified { feed_id: id }),
             Ok(FetchResult::Body {
@@ -531,6 +582,13 @@ impl GleanService {
             return Ok(ev);
         }
 
+        // Try 0: §11.5 插件路由——URL 命中已加载插件则走 Tier 1/2，跳过 RSS。
+        match self.try_add_via_plugin(&url) {
+            Ok(Some(events)) => return Ok(events),
+            Ok(None) => {} // 未命中插件，继续 RSS 路径。
+            Err(e) => return Err(e),
+        }
+
         // Try 1: parse URL directly as a feed.
         match self.try_add_as_feed(&url) {
             Ok(Some(events)) => return Ok(events),
@@ -563,6 +621,31 @@ impl GleanService {
             Ok(p) => p,
             Err(_) => return Ok(None), // Not a feed.
         };
+        let ev = self.ingest_new_feed(url, parsed, etag, last_modified)?;
+        Ok(Some(ev))
+    }
+
+    /// §11.5 订阅时的插件路由：URL 命中已加载插件则用 Tier 1/2 产出的 feed 入库。
+    /// 返回 `Ok(None)` 表示未命中插件（调用方走 RSS 发现）；`Err` 表示插件命中但失败。
+    fn try_add_via_plugin(&mut self, url: &str) -> Result<Option<Vec<AppEvent>>> {
+        let parsed = match self.fetch_via_plugin(url) {
+            None => return Ok(None),
+            Some(Err(e)) => return Err(e),
+            Some(Ok(p)) => p,
+        };
+        let ev = self.ingest_new_feed(url, parsed, None, None)?;
+        Ok(Some(ev))
+    }
+
+    /// 把一个已解析的 feed 入库：建 feed、写 meta、upsert entries、emit 事件。
+    /// 供 RSS 路径 (`try_add_as_feed`) 与插件路径 (`try_add_via_plugin`) 共用。
+    fn ingest_new_feed(
+        &mut self,
+        url: &str,
+        parsed: ParsedFeed,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    ) -> Result<Vec<AppEvent>> {
         let id = self.store.add_feed(&parsed.title, url, None)?;
         self.store.update_feed_after_fetch(
             id,
@@ -599,7 +682,7 @@ impl GleanService {
         ev.push(AppEvent::Status {
             message: format!("已订阅「{}」· 新文章 {} 篇", parsed.title, new_items),
         });
-        Ok(Some(ev))
+        Ok(ev)
     }
 
     /// Fetch the URL as HTML, discover feed links, and subscribe to the first one.
@@ -679,5 +762,88 @@ impl GleanService {
             self.store.search_entries(q, 500)?
         };
         Ok(vec![AppEvent::EntriesUpdated { entries }])
+    }
+}
+
+/// §11.5 worker 线程的刷新上下文快照：共享 `PluginManager`/`HttpClient`，
+/// 克隆 `CredentialStore`。`None` 字段表示该能力不可用，worker 走默认 RSS。
+///
+/// 由 `GleanService::refresh_ctx()` 构造，传给 `run_refresh_task_with_ctx`。
+#[derive(Clone)]
+pub struct RefreshCtx {
+    pub plugin_mgr: Option<Arc<PluginManager>>,
+    pub http: Arc<HttpClient>,
+    pub credentials: Option<CredentialStore>,
+}
+
+/// 在 worker 线程执行一次刷新。逻辑与 `GleanService::refresh_one_sync` 对齐：
+/// 先做插件路由（Tier 1/2），未命中走默认 RSS（fetch + parse）。
+/// 插件不做条件请求，命中即拉新；RSS 路径保留 etag/last_modified。
+pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> RefreshOutcome {
+    if let Some(mgr) = ctx.plugin_mgr.as_deref() {
+        if let Some(res) = mgr.run_tier1_for_url(&task.url, &ctx.http).transpose() {
+            return match res {
+                Ok(parsed) => RefreshOutcome::Updated {
+                    feed_id: task.feed_id,
+                    parsed,
+                    etag: None,
+                    last_modified: None,
+                },
+                Err(e) => RefreshOutcome::Error {
+                    feed_id: task.feed_id,
+                    error: e.to_string(),
+                },
+            };
+        }
+        let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
+        if let Some(res) = mgr
+            .run_tier2_for_url(&task.url, Arc::clone(&ctx.http), creds)
+            .transpose()
+        {
+            return match res {
+                Ok(parsed) => RefreshOutcome::Updated {
+                    feed_id: task.feed_id,
+                    parsed,
+                    etag: None,
+                    last_modified: None,
+                },
+                Err(e) => RefreshOutcome::Error {
+                    feed_id: task.feed_id,
+                    error: e.to_string(),
+                },
+            };
+        }
+    }
+    // 默认 RSS 路径
+    match fetch_feed_bytes(
+        &ctx.http,
+        &task.url,
+        task.etag.as_deref(),
+        task.last_modified.as_deref(),
+    ) {
+        Ok(FetchResult::NotModified) => RefreshOutcome::NotModified {
+            feed_id: task.feed_id,
+        },
+        Ok(FetchResult::Body {
+            bytes,
+            etag,
+            last_modified,
+            ..
+        }) => match parse_feed(&bytes) {
+            Ok(parsed) => RefreshOutcome::Updated {
+                feed_id: task.feed_id,
+                parsed,
+                etag,
+                last_modified,
+            },
+            Err(e) => RefreshOutcome::Error {
+                feed_id: task.feed_id,
+                error: e.to_string(),
+            },
+        },
+        Err(e) => RefreshOutcome::Error {
+            feed_id: task.feed_id,
+            error: e.to_string(),
+        },
     }
 }

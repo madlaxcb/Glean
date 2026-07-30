@@ -146,13 +146,15 @@ impl PluginManager {
 
     /// 执行 Tier 2 适配器（如果 URL 命中的是 Tier 2 插件）。
     ///
-    /// M5：构建 Runtime + 加载脚本并执行；Entry 收集器接入排到 M6。
-    /// 当前返回 `Ok(None)` 表示"框架已就绪但 Entry 收集尚未接入"。
+    /// M6：构建 Runtime + 加载脚本 + EntryCollector 接入。`run_script` 直接
+    /// 返回 `ParsedFeed`。`credentials = None` 表示无凭证存储（in-memory
+    /// 模式），Tier 2 插件得到空 CredentialStore——声明了 credential_use 的
+    /// 插件会因 slot 找不到而拿到 status=0 响应。
     pub fn run_tier2_for_url(
         &self,
         url: &str,
         http: Arc<HttpClient>,
-        credentials: Arc<CredentialStore>,
+        credentials: Option<Arc<CredentialStore>>,
     ) -> Result<Option<ParsedFeed>> {
         let Some(plugin) = self.find_for_url(url) else {
             return Ok(None);
@@ -171,10 +173,10 @@ impl PluginManager {
         };
         let script = std::fs::read_to_string(script_path)
             .map_err(|e| CoreError::Message(format!("read adapter.rhai: {e}")))?;
-        let rt = Runtime::build(plugin.manifest.clone(), http, credentials);
-        // M5：执行脚本但不接入 Entry 收集器；M6 会用 EntryCollector 替换。
-        let _ = rt.run_script(&script)?;
-        Ok(None)
+        let creds = credentials.unwrap_or_else(|| Arc::new(CredentialStore::in_memory()));
+        let rt = Runtime::build(plugin.manifest.clone(), http, creds);
+        let parsed = rt.run_script(&script)?;
+        Ok(Some(parsed))
     }
 }
 

@@ -15,12 +15,14 @@
 //! 5. **不阻塞主循环**：所有 hook 在 worker 线程，超时由 Host 强制
 
 pub mod credential;
+pub mod enhancer;
 pub mod manager;
 pub mod manifest;
 pub mod runtime;
 pub mod tier1;
 
 pub use credential::{Credential, CredentialStore};
+pub use enhancer::{Enhancer, EntryPatch, HostApi};
 pub use manager::{LoadedPlugin, PluginManager};
 pub use manifest::{
     Capabilities, Compliance, Manifest, MatchRule, PluginMeta, Tier, Tier1Config, Tier1FieldMap,

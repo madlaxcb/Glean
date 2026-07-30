@@ -924,6 +924,88 @@ impl eframe::App for SpikeApp {
                             .weak(),
                     );
 
+                    ui.add_space(8.0);
+                    ui.heading("插件");
+                    let plugins: Vec<&glean_core::LoadedPlugin> = self
+                        .state
+                        .service
+                        .plugins()
+                        .map(|m| m.list().iter().collect())
+                        .unwrap_or_default();
+                    if plugins.is_empty() {
+                        ui.label(
+                            RichText::new("未加载任何插件（在数据目录 plugins/ 下放置插件目录）")
+                                .small()
+                                .weak(),
+                        );
+                    } else {
+                        for p in plugins {
+                            let tier_label = match p.manifest.plugin.tier {
+                                glean_core::Tier::Config => "Tier 1 配置",
+                                glean_core::Tier::Script => "Tier 2 脚本",
+                                glean_core::Tier::Builtin => "内置",
+                            };
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} v{} [{}]  id={}",
+                                    p.manifest.plugin.name,
+                                    p.manifest.plugin.version,
+                                    tier_label,
+                                    p.manifest.plugin.id,
+                                ))
+                                .strong(),
+                            );
+                            let patterns = p
+                                .manifest
+                                .r#match
+                                .iter()
+                                .map(|r| r.url_pattern.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            ui.label(
+                                RichText::new(format!("URL 匹配: {patterns}"))
+                                    .small()
+                                    .weak(),
+                            );
+                            let caps = &p.manifest.capabilities;
+                            let mut cap_bits = Vec::new();
+                            if !caps.feed_fetch.is_empty() {
+                                cap_bits.push(format!("fetch=[{}]", caps.feed_fetch.join(", ")));
+                            }
+                            if !caps.credential_use.is_empty() {
+                                cap_bits
+                                    .push(format!("creds=[{}]", caps.credential_use.join(", ")));
+                            }
+                            if !caps.content_transform.is_empty() {
+                                cap_bits.push(format!(
+                                    "transform=[{}]",
+                                    caps.content_transform.join(", ")
+                                ));
+                            }
+                            if !caps.external_call.is_empty() {
+                                cap_bits
+                                    .push(format!("external=[{}]", caps.external_call.join(", ")));
+                            }
+                            if !cap_bits.is_empty() {
+                                ui.label(
+                                    RichText::new(format!("能力: {}", cap_bits.join(" · ")))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                            if p.manifest.compliance.uses_user_session {
+                                ui.label(
+                                    RichText::new(
+                                        "合规: 使用用户会话（凭证 Host 注入，插件不可见）",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                        }
+                    }
+
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

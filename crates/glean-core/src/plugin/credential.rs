@@ -32,6 +32,10 @@ pub struct Credential {
 }
 
 /// 凭证存储：按 plugin_id + slot 索引。
+///
+/// `Clone` 用于刷新时给 worker 线程一份快照（凭证集很小，克隆成本可忽略）。
+/// 主副本留在 `GleanService` 中负责可变写入 + 落盘。
+#[derive(Clone)]
 pub struct CredentialStore {
     path: PathBuf,
     /// 内存中的明文缓存；落盘时加密。

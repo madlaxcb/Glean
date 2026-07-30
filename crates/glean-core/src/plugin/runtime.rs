@@ -13,11 +13,12 @@
 //!    （见 `service.rs` 的 upsert_entry 路径）。
 
 use crate::error::{CoreError, Result};
+use crate::feed::parse::{ParsedEntry, ParsedFeed};
 use crate::feed::HttpClient;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Capabilities, Manifest, Tier};
 use rhai::{Dynamic, Engine, Map};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// 单次 Rhai 脚本执行的最大操作数（防止死循环）。
 const MAX_OPERATIONS: u64 = 200_000;
@@ -34,6 +35,8 @@ pub struct Runtime {
     pub http: Arc<HttpClient>,
     #[allow(dead_code)]
     pub credentials: Arc<CredentialStore>,
+    /// Tier 2 脚本的 entry 收集器；非 Script 插件为 `None`。
+    collector: Option<Arc<Mutex<EntryCollector>>>,
 }
 
 impl Runtime {
@@ -45,6 +48,7 @@ impl Runtime {
     ) -> Self {
         let plugin_id = manifest.plugin.id.clone();
         let caps = manifest.capabilities.clone();
+        let is_tier2 = matches!(manifest.plugin.tier, Tier::Script);
         let mut engine = Engine::new();
         engine.set_max_operations(MAX_OPERATIONS);
         engine.set_max_call_levels(MAX_CALL_LEVELS);
@@ -68,26 +72,51 @@ impl Runtime {
                 credentials.clone(),
             );
         }
-        if !caps.content_transform.is_empty() {
-            register_content_fns(&mut engine);
-        }
+        // Tier 2 脚本插件注册 entry 收集函数（不再以 content_transform 为 gate）。
+        let collector = if is_tier2 {
+            let c = Arc::new(Mutex::new(EntryCollector::default()));
+            register_entry_fns(&mut engine, c.clone());
+            Some(c)
+        } else {
+            None
+        };
 
         Self {
             engine,
             manifest,
             http,
             credentials,
+            collector,
         }
     }
 
-    /// 执行 Tier 2 适配器脚本。
-    ///
-    /// M5：本方法仅完成 Engine 构建 + 脚本执行；Entry 收集器 (`EntryCollector`)
-    /// 的接入排到 M6（§11.5.11）。
-    pub fn run_script(&self, script: &str) -> Result<Dynamic> {
-        self.engine
+    /// 执行 Tier 2 适配器脚本，返回脚本通过 `set_field`/`add_entry` 收集到的
+    /// `ParsedFeed`。脚本结束未 commit 的 current entry 自动 commit。
+    pub fn run_script(&self, script: &str) -> Result<ParsedFeed> {
+        let _ = self
+            .engine
             .eval::<Dynamic>(script)
-            .map_err(|e| CoreError::Message(format!("rhai eval: {e}")))
+            .map_err(|e| CoreError::Message(format!("rhai eval: {e}")))?;
+        let collector = self
+            .collector
+            .as_ref()
+            .ok_or_else(|| CoreError::Message("run_script called on non-Tier-2 runtime".into()))?;
+        let mut g = collector.lock().unwrap();
+        // 自动 commit 未提交的 current entry（脚本忘记调 add_entry 时不丢数据）。
+        if !g.current.title.is_empty()
+            || !g.current.content_html.is_empty()
+            || g.current.url.is_some()
+            || g.current.guid.is_some()
+        {
+            g.commit_current();
+        }
+        let entries = std::mem::take(&mut g.entries);
+        Ok(ParsedFeed {
+            title: self.manifest.plugin.name.clone(),
+            site_url: None,
+            favicon_url: None,
+            entries,
+        })
     }
 
     /// 配置的脚本软超时（worker 线程之外的硬超时由调用方实施）。
@@ -174,13 +203,86 @@ fn register_http_fns(
     );
 }
 
-/// 注册内容构建 host 函数（仅当 manifest 声明 `content_transform` 时）。
-/// §11.5.6：`set_field` / `set_embed`，输出在入库前必过 ammonia。
-fn register_content_fns(engine: &mut Engine) {
-    // M5 占位：实际 Entry 收集器接入排到 M6。这里先注册一个 no-op，
-    // 让脚本可以调用 `set_field("title", "...")` 不报"函数不存在"。
-    engine.register_fn("set_field", |_name: String, _value: Dynamic| {});
-    engine.register_fn("set_embed", |_provider: String, _id: String| {});
+/// Tier 2 entry 收集器：脚本通过 `set_field` 写 current，`add_entry` 提交。
+/// §11.5.6：所有产出 HTML 在 service 层 upsert 前必过 ammonia。
+#[derive(Default)]
+struct EntryCollector {
+    entries: Vec<ParsedEntry>,
+    current: CurrentEntry,
+}
+
+#[derive(Default)]
+struct CurrentEntry {
+    title: String,
+    url: Option<String>,
+    author: Option<String>,
+    guid: Option<String>,
+    summary: Option<String>,
+    content_html: String,
+    published_at: Option<i64>,
+}
+
+impl EntryCollector {
+    /// 把 current 提交到 entries，并重置 current。
+    fn commit_current(&mut self) {
+        let cur = std::mem::take(&mut self.current);
+        let guid = cur
+            .guid
+            .unwrap_or_else(|| format!("anon-{}", self.entries.len()));
+        self.entries.push(ParsedEntry {
+            guid,
+            title: cur.title,
+            url: cur.url,
+            author: cur.author,
+            published_at: cur.published_at,
+            summary: cur.summary,
+            content_html: cur.content_html,
+        });
+    }
+}
+
+/// 注册 entry 收集 host 函数（Tier 2 脚本插件专用）。§11.5.6
+///
+/// - `set_field(name, value)`：写 current 的某个字段。`name` ∈ title/url/
+///   author/guid/summary/content_html/published_at。`published_at` 接受 i64
+///   或可解析为 i64 的字符串。
+/// - `add_entry()`：提交 current 到 entries，重置 current。
+/// - `set_embed(provider, id)`：把 current.content_html 设为 `provider:id`
+///   占位（M7+ 再考虑 iframe 渲染策略）。
+fn register_entry_fns(engine: &mut Engine, collector: Arc<Mutex<EntryCollector>>) {
+    let c1 = collector.clone();
+    engine.register_fn("set_field", move |name: String, value: Dynamic| {
+        let mut g = c1.lock().unwrap();
+        let s = value.clone().into_string().unwrap_or_default();
+        match name.as_str() {
+            "title" => g.current.title = s,
+            "url" => g.current.url = Some(s),
+            "author" => g.current.author = Some(s),
+            "guid" => g.current.guid = Some(s),
+            "summary" => g.current.summary = Some(s),
+            "content_html" => g.current.content_html = s,
+            "published_at" => {
+                g.current.published_at = if let Ok(i) = value.as_int() {
+                    Some(i)
+                } else {
+                    s.parse::<i64>().ok()
+                };
+            }
+            _ => {} // 未知字段忽略，脚本兼容性。
+        }
+    });
+
+    let c2 = collector.clone();
+    engine.register_fn("add_entry", move || {
+        let mut g = c2.lock().unwrap();
+        g.commit_current();
+    });
+
+    let c3 = collector;
+    engine.register_fn("set_embed", move |provider: String, id: String| {
+        let mut g = c3.lock().unwrap();
+        g.current.content_html = format!("{provider}:{id}");
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -413,7 +515,7 @@ mod tests {
             Ok(m) => {
                 let status = m.get("status").and_then(|v| v.as_int().ok()).unwrap_or(-1);
                 assert_eq!(status, 0);
-                assert!(m.get("error").is_some());
+                assert!(m.contains_key("error"));
             }
             Err(_) => { /* 网络超时也接受 */ }
         }
@@ -476,5 +578,53 @@ mod tests {
         let d = json_to_dynamic(json);
         let v = json_path_lookup(&d, "$.a.b[0]").unwrap();
         assert_eq!(v.as_int().unwrap(), 10);
+    }
+
+    /// Tier 2 EntryCollector 端到端：set_field + add_entry → run_script 返回 ParsedFeed。
+    #[test]
+    fn tier2_run_script_collects_entries() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            set_field("title", "T");
+            set_field("guid", "g1");
+            set_field("url", "https://example.com/1");
+            set_field("published_at", 1700000000);
+            add_entry();
+            set_field("title", "T2");
+            set_field("guid", "g2");
+            set_field("published_at", "1700000001");
+            add_entry();
+        "#;
+        let parsed = rt.run_script(script).expect("run_script");
+        assert_eq!(parsed.title, "T");
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].title, "T");
+        assert_eq!(parsed.entries[0].guid, "g1");
+        assert_eq!(
+            parsed.entries[0].url.as_deref(),
+            Some("https://example.com/1")
+        );
+        assert_eq!(parsed.entries[0].published_at, Some(1700000000));
+        assert_eq!(parsed.entries[1].title, "T2");
+        assert_eq!(parsed.entries[1].published_at, Some(1700000001));
+    }
+
+    /// 脚本忘记调 add_entry 时，run_script 自动 commit current。
+    #[test]
+    fn tier2_auto_commits_uncommitted_current() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            set_field("title", "Only");
+            set_field("guid", "g1");
+        "#;
+        let parsed = rt.run_script(script).expect("run_script");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].title, "Only");
     }
 }

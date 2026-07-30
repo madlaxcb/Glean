@@ -12,10 +12,10 @@ mod update;
 
 use eframe::egui;
 use glean_core::{
-    default_config_path, default_db_path, run_extract_task, run_refresh_task, should_extract,
-    AppCommand, AppConfig, AppEvent, EntryDetail, EntryFilter, EntryId, EntrySummary,
-    ExtractOutcome, ExtractTask, FaviconCache, Feed, FeedId, Folder, FolderId, GleanService,
-    ImagePolicy, ReaderHostMode, RefreshOutcome, RefreshTask,
+    default_config_path, default_db_path, run_extract_task, run_refresh_task_with_ctx,
+    should_extract, AppCommand, AppConfig, AppEvent, EntryDetail, EntryFilter, EntryId,
+    EntrySummary, ExtractOutcome, ExtractTask, FaviconCache, Feed, FeedId, Folder, FolderId,
+    GleanService, ImagePolicy, ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -104,7 +104,11 @@ const REFRESH_WORKERS: usize = 6;
 /// Spawn bounded worker threads that fetch+parse in parallel, sending each
 /// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;
 /// the receiver sees disconnect only after all workers finish.
-fn spawn_refresh_workers(tasks: Vec<RefreshTask>, tx: mpsc::Sender<RefreshOutcome>) {
+fn spawn_refresh_workers(
+    tasks: Vec<RefreshTask>,
+    ctx: RefreshCtx,
+    tx: mpsc::Sender<RefreshOutcome>,
+) {
     let n = tasks.len();
     if n == 0 {
         return;
@@ -120,9 +124,10 @@ fn spawn_refresh_workers(tasks: Vec<RefreshTask>, tx: mpsc::Sender<RefreshOutcom
             continue;
         }
         let tx = tx.clone();
+        let ctx = ctx.clone();
         thread::spawn(move || {
             for task in chunk {
-                let outcome = run_refresh_task(task);
+                let outcome = run_refresh_task_with_ctx(task, &ctx);
                 let _ = tx.send(outcome);
             }
         });
@@ -346,7 +351,8 @@ impl SpikeState {
             self.refresh_pending = tasks.len();
             let workers = REFRESH_WORKERS.min(tasks.len());
             self.status = format!("自动刷新中… {} 个源（{} 并发）", tasks.len(), workers);
-            spawn_refresh_workers(tasks, tx);
+            let ctx = self.service.refresh_ctx();
+            spawn_refresh_workers(tasks, ctx, tx);
         }
     }
 
@@ -619,7 +625,8 @@ impl SpikeState {
         self.refresh_pending = tasks.len();
         let workers = REFRESH_WORKERS.min(tasks.len());
         self.status = format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers);
-        spawn_refresh_workers(tasks, tx);
+        let ctx = self.service.refresh_ctx();
+        spawn_refresh_workers(tasks, ctx, tx);
     }
 
     pub fn delete_feed(&mut self, id: glean_core::FeedId) {
