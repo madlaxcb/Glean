@@ -34,11 +34,25 @@ fn main() -> eframe::Result<()> {
         }
     };
 
+    // Load persisted config to restore window geometry (dev plan §9 M3).
+    let config = load_config(&default_config_path());
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_title("Glean / 拾光");
+    if let (Some(x), Some(y)) = (config.window_x, config.window_y) {
+        viewport = viewport.with_position([x, y]);
+    }
+    if let (Some(w), Some(h)) = (config.window_w, config.window_h) {
+        viewport = viewport.with_inner_size([w, h]);
+    }
+    if config.window_maximized {
+        viewport = viewport.with_maximized(true);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_title("Glean / 拾光"),
+        viewport,
         ..Default::default()
     };
 

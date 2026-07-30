@@ -128,6 +128,20 @@ pub struct AppConfig {
     /// HTTP proxy URL (e.g., "http://127.0.0.1:7890", "socks5://…"). Empty = no proxy.
     #[serde(default)]
     pub proxy_url: String,
+    /// Persisted window outer position (screen coords, egui points).
+    /// None = let OS decide (first launch).
+    #[serde(default)]
+    pub window_x: Option<f32>,
+    #[serde(default)]
+    pub window_y: Option<f32>,
+    /// Persisted window inner size (egui points).
+    #[serde(default)]
+    pub window_w: Option<f32>,
+    #[serde(default)]
+    pub window_h: Option<f32>,
+    /// Persisted window maximized state.
+    #[serde(default)]
+    pub window_maximized: bool,
 }
 
 fn default_true() -> bool {
@@ -155,6 +169,11 @@ impl Default for AppConfig {
             font_size_px: 16,
             line_width_rem: 42,
             proxy_url: String::new(),
+            window_x: None,
+            window_y: None,
+            window_w: None,
+            window_h: None,
+            window_maximized: false,
         }
     }
 }

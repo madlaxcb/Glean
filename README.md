@@ -2,8 +2,8 @@
 
 Windows 本地优先的现代化 RSS / 信息流聚合阅读器。
 
-> **当前阶段：M1 订阅垂直切片**
-> HTTP + feed-rs 入库；阅读区 WebView2；路径 A（egui Hybrid）。
+> **当前阶段：M3 打磨（部分完成）**
+> M1–M2 已落地（订阅/阅读/组织/FTS 搜索/离线缓存）；M3 主题·快捷键·并发刷新·图片三档·设置页·布局记忆已做，性能指标待测。路径 A（egui Hybrid）。
 
 - 开发方案：[`docs/Glean-开发方案.md`](docs/Glean-开发方案.md)
 - M0 Spike：[`docs/spike-ui.md`](docs/spike-ui.md)

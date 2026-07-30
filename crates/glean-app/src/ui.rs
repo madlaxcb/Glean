@@ -23,6 +23,8 @@ pub struct SpikeApp {
     show_settings: bool,
     /// Cached favicon textures keyed by FeedId.
     favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
+    /// Accumulator for periodic window-geometry persistence (§9 M3).
+    geometry_timer: f32,
 }
 
 impl SpikeApp {
@@ -42,6 +44,7 @@ impl SpikeApp {
             show_errors: false,
             show_settings: false,
             favicons: std::collections::HashMap::new(),
+            geometry_timer: 0.0,
         }
     }
 }
@@ -51,6 +54,32 @@ impl eframe::App for SpikeApp {
         // Auto-refresh timer.
         let dt = ctx.input(|i| i.stable_dt);
         self.state.tick_auto_refresh(dt);
+
+        // Persist window geometry (§9 M3). Read current viewport info into
+        // config every frame (cheap), flush to disk every few seconds.
+        let (outer, inner, maximized, minimized) = ctx.input(|i| {
+            let vp = i.viewport();
+            (vp.outer_rect, vp.inner_rect, vp.maximized, vp.minimized)
+        });
+        let is_maximized = maximized.unwrap_or(false);
+        let is_minimized = minimized.unwrap_or(false);
+        if !is_maximized && !is_minimized {
+            if let Some(r) = outer {
+                self.state.config.window_x = Some(r.left());
+                self.state.config.window_y = Some(r.top());
+            }
+            if let Some(r) = inner {
+                self.state.config.window_w = Some(r.width());
+                self.state.config.window_h = Some(r.height());
+            }
+        }
+        self.state.config.window_maximized = is_maximized;
+        self.geometry_timer += dt;
+        if self.geometry_timer > 3.0 {
+            self.geometry_timer = 0.0;
+            self.state.sync_config();
+            self.state.save_config();
+        }
 
         // Poll background refresh every frame.
         self.state.poll_refresh();
