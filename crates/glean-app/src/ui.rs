@@ -26,8 +26,14 @@ impl SpikeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::fonts::install(&cc.egui_ctx);
         apply_style(&cc.egui_ctx, false);
+        let state = SpikeState::new();
+        // Give the tray an egui::Context clone so tray event callbacks can
+        // directly drive viewport commands and repaints. This is essential
+        // for restoring from tray: ctx.request_repaint() alone is a no-op
+        // for hidden windows, so callbacks must also call Win32 ShowWindow.
+        state.tray.set_egui_ctx(cc.egui_ctx.clone());
         Self {
-            state: SpikeState::new(),
+            state,
             primed: false,
             show_opml_import: false,
             show_errors: false,

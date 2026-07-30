@@ -17,11 +17,8 @@ use glean_core::{
     ReaderHostMode, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 use tray::Tray;
 use ui::SpikeApp;
 use update::{check_for_update, UpdateCheckResult, APPCAST_URL};
@@ -165,11 +162,6 @@ pub struct SpikeState {
     pub reader_show_images: bool,
     /// System tray (Windows only; None on Linux stub).
     pub tray: Tray,
-    /// Stop flag for the tray repaint ticker (see `hide_to_tray`).
-    tray_repaint_stop: Arc<AtomicBool>,
-    /// Handle to the background repaint ticker keeping the event loop alive
-    /// while the main window is hidden to the tray. `None` when not running.
-    tray_repaint_thread: Option<thread::JoinHandle<()>>,
     /// Background update-check receiver (once, on startup).
     update_rx: Option<mpsc::Receiver<UpdateCheckResult>>,
     /// Pending update notification (set when remote version > current).
@@ -220,8 +212,6 @@ impl SpikeState {
             auto_refresh_timer: 0.0,
             reader_show_images: false,
             tray: Tray::new(),
-            tray_repaint_stop: Arc::new(AtomicBool::new(false)),
-            tray_repaint_thread: None,
             update_rx: None,
             update_available: None,
         };
@@ -352,30 +342,14 @@ impl SpikeState {
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         self.status = "已最小化到托盘".into();
-        // A hidden window stops receiving winit events, so the egui event loop
-        // no longer calls `update()` — which is where `tray.poll()` runs.
-        // Tray clicks arrive on tray-icon's own thread and would never wake
-        // the main loop. Spawn a lightweight ticker that nudges
-        // `ctx.request_repaint()` until the window is restored, keeping
-        // `update()` (and tray polling) alive while hidden.
-        if self.tray_repaint_thread.is_none() {
-            self.tray_repaint_stop.store(true, Ordering::SeqCst);
-            let ctx_clone = ctx.clone();
-            let stop = self.tray_repaint_stop.clone();
-            self.tray_repaint_thread = Some(thread::spawn(move || {
-                while stop.load(Ordering::SeqCst) {
-                    ctx_clone.request_repaint();
-                    thread::sleep(Duration::from_millis(250));
-                }
-            }));
-        }
+        // Note: no repaint ticker needed. Tray callbacks directly call
+        // Win32 ShowWindow(SW_RESTORE) to wake the event loop, because
+        // ctx.request_repaint() is a no-op for hidden windows
+        // (RedrawWindow(RDW_INTERNALPAINT) is ignored for invisible windows).
     }
 
     /// Restore the main window from the tray.
     pub fn show_from_tray(&mut self, ctx: &egui::Context) {
-        // Stop the repaint ticker (detaches the thread; it exits on its own).
-        self.tray_repaint_stop.store(false, Ordering::SeqCst);
-        self.tray_repaint_thread = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
             egui::UserAttentionType::Critical,
@@ -517,7 +491,7 @@ impl SpikeState {
         self.reader.set_titlebar_dark(self.dark);
         // Reload the reader document with the new theme baked in. With JS
         // disabled (§7.2) there is no live theme-flip; show_html reloads the
-        // themed HTML via load_html. apply_theme just records the intent.
+        // themed HTML via load_html (NavigateToString — works with JS off).
         if let Some(entry) = self.open_detail.clone() {
             let html = glean_core::reader_document(
                 &entry.summary.title,
@@ -529,6 +503,10 @@ impl SpikeState {
                 self.effective_image_policy(),
             );
             self.reader.show_html(&html);
+        } else {
+            // No article open: reload the themed placeholder so the empty
+            // reader area follows the theme switch.
+            self.reader.show_placeholder(self.dark);
         }
         self.reader.apply_theme(self.dark);
         self.sync_config();

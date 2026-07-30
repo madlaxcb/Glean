@@ -1,8 +1,17 @@
 //! System tray icon (Windows only).
 //!
 //! Provides minimize-to-tray UX: a toolbar button hides the main window;
-//! the tray icon's left-click and "显示" menu item restore it. Right-click
-//! menu also offers 刷新 and 退出.
+//! the tray icon's left-click, double-click and "显示" menu item restore it.
+//! Right-click menu also offers 刷新 and 退出.
+//!
+//! Critical: when the main window is hidden, `ctx.request_repaint()` is a
+//! no-op because winit's `request_redraw` calls `RedrawWindow(RDW_INTERNALPAINT)`
+//! which is **ignored for invisible windows** (per MSDN). So the egui event
+//! loop never calls `update()`, and channel-based tray polling can't work.
+//!
+//! Fix: tray event callbacks directly call Win32 `ShowWindow(SW_RESTORE)` (for
+//! Show/Refresh) or `PostMessage(WM_CLOSE)` (for Quit) to wake the event loop.
+//! They also hold an `egui::Context` clone to sync viewport visibility state.
 //!
 //! Linux is stubbed (`Tray::new` returns `None`) to keep `cargo check` free
 //! of GTK/AppIndicator deps.
@@ -18,17 +27,19 @@ pub enum TrayAction {
 #[cfg(windows)]
 mod imp {
     use super::TrayAction;
-    use std::sync::mpsc::Sender;
-    use std::sync::{Arc, Mutex};
+    use crate::reader;
+    use std::sync::{mpsc::Sender, Arc, Mutex};
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-    use tray_icon::{
-        Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
-    };
+    use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+    /// Cell holding the egui context, set after app creation.
+    type CtxCell = Arc<Mutex<Option<egui::Context>>>;
 
     pub struct TrayInner {
         /// Keep the tray icon alive for the process lifetime.
         _tray: TrayIcon,
         rx: std::sync::mpsc::Receiver<TrayAction>,
+        ctx_cell: CtxCell,
     }
 
     impl TrayInner {
@@ -50,36 +61,72 @@ mod imp {
 
             let (tx, rx) = std::sync::mpsc::channel::<TrayAction>();
             let shared: Arc<Mutex<Sender<TrayAction>>> = Arc::new(Mutex::new(tx));
+            let ctx_cell: CtxCell = Arc::new(Mutex::new(None));
 
-            // Menu clicks → channel.
+            // Menu clicks → restore window + channel.
             let menu_tx = Arc::clone(&shared);
+            let menu_ctx = Arc::clone(&ctx_cell);
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-                let action = if event.id == show_id {
-                    TrayAction::Show
+                let (action, is_quit) = if event.id == show_id {
+                    (TrayAction::Show, false)
                 } else if event.id == refresh_id {
-                    TrayAction::Refresh
+                    (TrayAction::Refresh, false)
                 } else if event.id == quit_id {
-                    TrayAction::Quit
+                    (TrayAction::Quit, true)
                 } else {
                     return;
                 };
-                if let Ok(s) = menu_tx.lock() {
-                    let _ = s.send(action);
+                if is_quit {
+                    // PostMessage(WM_CLOSE) works for hidden windows (unlike
+                    // RedrawWindow which is ignored). Triggers CloseRequested
+                    // → eframe on_exit → save config + shutdown.
+                    post_close_to_main_window();
+                    if let Some(ctx) = menu_ctx.lock().unwrap().as_ref() {
+                        ctx.request_repaint();
+                    }
+                } else {
+                    // Show/Refresh: must make window visible to wake the loop.
+                    restore_main_window();
+                    if let Some(ctx) = menu_ctx.lock().unwrap().as_ref() {
+                        if action == TrayAction::Show {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        }
+                        ctx.request_repaint();
+                    }
+                    if let Ok(s) = menu_tx.lock() {
+                        let _ = s.send(action);
+                    }
                 }
             }));
 
-            // Tray left-click → Show.
+            // Tray click/double-click → Show.
             let tray_tx = Arc::clone(&shared);
+            let tray_ctx = Arc::clone(&ctx_cell);
             TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-                if let TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } = event
-                {
-                    if let Ok(s) = tray_tx.lock() {
-                        let _ = s.send(TrayAction::Show);
-                    }
+                let is_show = match &event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        ..
+                    } => true,
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => true,
+                    _ => false,
+                };
+                if !is_show {
+                    return;
+                }
+                // Restore window directly via Win32 (bypasses the broken
+                // request_repaint path for hidden windows).
+                restore_main_window();
+                if let Some(ctx) = tray_ctx.lock().unwrap().as_ref() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.request_repaint();
+                }
+                if let Ok(s) = tray_tx.lock() {
+                    let _ = s.send(TrayAction::Show);
                 }
             }));
 
@@ -90,11 +137,49 @@ mod imp {
                 .build()
                 .ok()?;
 
-            Some(Self { _tray: tray, rx })
+            Some(Self {
+                _tray: tray,
+                rx,
+                ctx_cell,
+            })
         }
 
         pub fn poll(&self) -> Option<TrayAction> {
             self.rx.try_recv().ok()
+        }
+
+        pub fn set_egui_ctx(&self, ctx: egui::Context) {
+            *self.ctx_cell.lock().unwrap() = Some(ctx);
+        }
+    }
+
+    /// Find the main Glean window and restore it from hidden/minimized state.
+    /// This generates Win32 events that wake the winit event loop, allowing
+    /// `update()` to run (which `ctx.request_repaint()` cannot do for hidden
+    /// windows because `RedrawWindow(RDW_INTERNALPAINT)` is ignored).
+    fn restore_main_window() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+        if let Some(hwnd) = reader::find_main_hwnd() {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = SetForegroundWindow(hwnd);
+            }
+        }
+    }
+
+    /// Post WM_CLOSE to the main window. This works for hidden windows (unlike
+    /// repaint-based wakeups) and triggers the normal close flow:
+    /// winit CloseRequested → eframe on_exit → save + shutdown.
+    fn post_close_to_main_window() {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+        const WM_CLOSE: u32 = 0x0010;
+        if let Some(hwnd) = reader::find_main_hwnd() {
+            unsafe {
+                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
         }
     }
 
@@ -115,13 +200,10 @@ mod imp {
                 let dist = (dx * dx + dy * dy).sqrt();
                 let idx = ((y * size + x) * 4) as usize;
                 if dist > r_outer {
-                    // transparent
                     rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
                 } else if dist >= r_inner {
-                    // white ring
                     rgba[idx..idx + 4].copy_from_slice(&[245, 245, 245, 255]);
                 } else {
-                    // blue center
                     rgba[idx..idx + 4].copy_from_slice(&[60, 130, 210, 255]);
                 }
             }
@@ -144,6 +226,8 @@ mod imp {
         pub fn poll(&self) -> Option<TrayAction> {
             None
         }
+
+        pub fn set_egui_ctx(&self, _ctx: egui::Context) {}
     }
 }
 
@@ -162,6 +246,15 @@ impl Tray {
 
     pub fn poll(&self) -> Option<TrayAction> {
         self.inner.as_ref().and_then(|t| t.poll())
+    }
+
+    /// Set the egui context so tray callbacks can directly drive viewport
+    /// commands and request repaints. Must be called after `SpikeApp::new`
+    /// receives the creation context.
+    pub fn set_egui_ctx(&self, ctx: egui::Context) {
+        if let Some(inner) = self.inner.as_ref() {
+            inner.set_egui_ctx(ctx);
+        }
     }
 
     /// Whether the tray is active (used to show/hide the "最小化到托盘" button).

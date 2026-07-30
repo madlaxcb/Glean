@@ -22,8 +22,8 @@ mod win {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClientRect, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, SetWindowPos, GW_OWNER, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNORMAL,
+        SetWindowPos, GW_OWNER, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SW_SHOWNORMAL,
     };
     use wry::{
         dpi::{LogicalPosition, LogicalSize, Position, Size},
@@ -172,8 +172,7 @@ mod win {
             };
 
             let html = if self.last_html.is_empty() {
-                "<!DOCTYPE html><html><body style=\"font-family:sans-serif;padding:1rem\">Glean reader</body></html>"
-                    .to_string()
+                themed_placeholder(self.dark_title)
             } else {
                 self.last_html.clone()
             };
@@ -375,9 +374,11 @@ mod win {
             if wnd_pid != state.pid {
                 return TRUE;
             }
-            if !IsWindowVisible(hwnd).as_bool() {
-                return TRUE;
-            }
+            // Note: intentionally NOT skipping hidden windows here.
+            // When the main window is hidden to the tray (ShowWindow(SW_HIDE)),
+            // IsWindowVisible returns false. The tray callback needs to find the
+            // HWND to restore it. Other filters (no owner, large client area,
+            // title match) are sufficient to identify the main window.
             if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
                 let HWND(p) = owner;
                 if !p.is_null() {
@@ -452,6 +453,28 @@ mod win {
         }
     }
 
+    /// Minimal themed placeholder shown before any article is opened.
+    /// Uses the same `data-theme` + CSS variable approach as `reader_document`.
+    pub fn themed_placeholder(dark: bool) -> String {
+        let theme_attr = if dark { "dark" } else { "light" };
+        format!(
+            r#"<!DOCTYPE html>
+<html lang="zh-CN" data-theme="{theme_attr}">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+  html[data-theme="light"] {{ --bg: #F7F7F5; --fg: #1C1C1E; --muted: #6C6C70; }}
+  html[data-theme="dark"]  {{ --bg: #1C1C1E; --fg: #F2F2F7; --muted: #8E8E93; }}
+  html, body {{ margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }}
+  main {{ max-width: 42rem; margin: 0 auto; padding: 1.25rem 1.5rem; }}
+  .hint {{ color: var(--muted); font-size: 0.92rem; }}
+</style></head>
+<body><main><p class="hint">Glean · 选择一篇文章开始阅读</p></main></body>
+</html>"#,
+            theme_attr = theme_attr,
+        )
+    }
+
     /// Open https links without spawning a visible cmd.exe (unlike `cmd /C start`).
     fn open_external(uri: &str) -> windows::core::Result<()> {
         let mut wide: Vec<u16> = uri.encode_utf16().collect();
@@ -504,6 +527,13 @@ impl ReaderHost {
         self.inner.show_html(html);
     }
 
+    /// Reload the reader with a themed placeholder (used when no article is
+    /// open but the theme changed, so the empty reader area follows the theme).
+    pub fn show_placeholder(&mut self, dark: bool) {
+        let html = win::themed_placeholder(dark);
+        self.inner.show_html(&html);
+    }
+
     pub fn set_titlebar_dark(&mut self, dark: bool) {
         self.inner.set_titlebar_dark(dark);
     }
@@ -536,6 +566,15 @@ impl ReaderHost {
     }
 }
 
+/// Find the main Glean window's HWND (Windows only).
+/// Used by the tray to restore the window directly via Win32 API,
+/// bypassing the egui event loop (which doesn't wake for hidden windows
+/// because `RedrawWindow(RDW_INTERNALPAINT)` is ignored for invisible windows).
+#[cfg(windows)]
+pub fn find_main_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    win::find_glean_main_hwnd()
+}
+
 #[cfg(not(windows))]
 pub struct ReaderHost;
 
@@ -547,6 +586,7 @@ impl ReaderHost {
     pub fn set_mode(&mut self, _mode: ReaderHostMode) {}
     pub fn shutdown(&mut self) {}
     pub fn show_html(&mut self, _html: &str) {}
+    pub fn show_placeholder(&mut self, _dark: bool) {}
     pub fn set_titlebar_dark(&mut self, _dark: bool) {}
     pub fn set_dark_title(&mut self, _dark: bool) {}
     pub fn apply_theme(&mut self, _dark: bool) {}
