@@ -177,6 +177,14 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::EditFeedUrl { id, feed_url } => {
+                self.store.set_feed_url(id, &feed_url)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: "已更新订阅 URL".into(),
+                });
+                Ok(ev)
+            }
             AppCommand::MoveFeedToFolder { feed_id, folder_id } => {
                 self.store.move_feed_to_folder(feed_id, folder_id)?;
                 let mut ev = self.emit_nav()?;
@@ -437,6 +445,15 @@ impl GleanService {
         }
     }
 
+    /// Query unread count per feed (lightweight, for badge updates).
+    pub fn unread_counts_per_feed(&self) -> std::collections::HashMap<FeedId, u64> {
+        self.store
+            .unread_counts_per_feed()
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
     fn refresh_one_sync(&mut self, id: FeedId) -> Option<RefreshOutcome> {
         let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id).ok()?;
         match fetch_feed_bytes(&self.http, &url, etag.as_deref(), last_modified.as_deref()) {
@@ -612,10 +629,13 @@ impl GleanService {
     }
 
     fn emit_nav(&self) -> Result<Vec<AppEvent>> {
+        let pairs = self.store.unread_counts_per_feed()?;
+        let unread_per_feed: std::collections::HashMap<FeedId, u64> = pairs.into_iter().collect();
         Ok(vec![AppEvent::NavUpdated {
             folders: self.store.list_folders()?,
             feeds: self.store.list_feeds()?,
             unread_total: self.store.unread_count_excluding_muted()?,
+            unread_per_feed,
         }])
     }
 

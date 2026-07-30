@@ -15,6 +15,7 @@ glean-core = { workspace = true }
 eframe = { version = "0.31", default-features = true }
 egui = "0.31"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
+open = "5"
 raw-window-handle = "0.6"
 rfd = "0.14"
 serde = { workspace = true }

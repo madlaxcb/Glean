@@ -1,7 +1,8 @@
 //! Core → UI events. UI projects state from these; do not poll full tables on a timer.
 
-use crate::model::{EntryDetail, EntryId, EntrySummary, Feed, Folder};
+use crate::model::{EntryDetail, EntryId, EntrySummary, Feed, FeedId, Folder};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppEvent {
@@ -10,6 +11,7 @@ pub enum AppEvent {
         folders: Vec<Folder>,
         feeds: Vec<Feed>,
         unread_total: u64,
+        unread_per_feed: HashMap<FeedId, u64>,
     },
     EntriesUpdated {
         entries: Vec<EntrySummary>,

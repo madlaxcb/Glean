@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub struct Store {
     conn: Connection,
@@ -221,6 +221,45 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 8 {
+            // Allow entries.feed_id to be NULL so starred entries survive feed
+            // deletion. Also change ON DELETE CASCADE → SET NULL so deleting
+            // a feed preserves starred entries (their feed_id becomes NULL).
+            self.conn.execute_batch(
+                "
+                CREATE TABLE entries_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    feed_id INTEGER REFERENCES feeds(id) ON DELETE SET NULL,
+                    guid TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT,
+                    author TEXT,
+                    published_at INTEGER,
+                    summary TEXT,
+                    content_html TEXT NOT NULL DEFAULT '',
+                    content_extracted TEXT NOT NULL DEFAULT '',
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    is_starred INTEGER NOT NULL DEFAULT 0,
+                    fetched_at INTEGER NOT NULL,
+                    UNIQUE(feed_id, guid)
+                );
+                INSERT INTO entries_new
+                    SELECT id, feed_id, guid, title, url, author,
+                           published_at, summary, content_html, content_extracted,
+                           is_read, is_starred, fetched_at
+                    FROM entries;
+                DROP TABLE entries;
+                ALTER TABLE entries_new RENAME TO entries;
+                CREATE INDEX idx_entries_feed_pub ON entries(feed_id, published_at DESC);
+                CREATE INDEX idx_entries_unread ON entries(is_read, published_at DESC);
+                ",
+            )?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '8')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -411,7 +450,7 @@ impl Store {
         let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<EntrySummary> {
             Ok(EntrySummary {
                 id: EntryId(r.get(0)?),
-                feed_id: FeedId(r.get(1)?),
+                feed_id: r.get::<_, Option<i64>>(1)?.map(FeedId),
                 title: r.get(2)?,
                 url: r.get(3)?,
                 published_at: r.get(4)?,
@@ -450,7 +489,7 @@ impl Store {
                     Ok(EntryDetail {
                         summary: EntrySummary {
                             id: EntryId(r.get(0)?),
-                            feed_id: FeedId(r.get(1)?),
+                            feed_id: r.get::<_, Option<i64>>(1)?.map(FeedId),
                             title: r.get(2)?,
                             url: r.get(3)?,
                             published_at: r.get(4)?,
@@ -535,6 +574,17 @@ impl Store {
                     r.get(0)
                 })?;
         Ok(n as u64)
+    }
+
+    /// Unread count per feed, returned as (FeedId, count) pairs.
+    pub fn unread_counts_per_feed(&self) -> Result<Vec<(FeedId, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT feed_id, COUNT(*) FROM entries WHERE is_read = 0 GROUP BY feed_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((FeedId(r.get::<_, i64>(0)?), r.get::<_, i64>(1)? as u64))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// Store the favicon URL for a feed (discovered during refresh).
@@ -693,6 +743,22 @@ impl Store {
     }
 
     pub fn delete_feed(&mut self, id: FeedId) -> Result<()> {
+        // Delete non-starred entries first (starred entries survive via
+        // ON DELETE SET NULL — their feed_id becomes NULL).
+        // 1. Remove FTS rows for non-starred entries.
+        self.conn.execute(
+            "DELETE FROM entries_fts WHERE rowid IN (
+                SELECT id FROM entries WHERE feed_id = ?1 AND is_starred = 0
+            )",
+            params![id.0],
+        )?;
+        // 2. Remove non-starred entry rows.
+        self.conn.execute(
+            "DELETE FROM entries WHERE feed_id = ?1 AND is_starred = 0",
+            params![id.0],
+        )?;
+        // 3. Delete the feed; remaining starred entries get feed_id = NULL
+        //    via ON DELETE SET NULL.
         let n = self
             .conn
             .execute("DELETE FROM feeds WHERE id = ?1", params![id.0])?;
@@ -706,6 +772,17 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE feeds SET title = ?1 WHERE id = ?2",
             params![title, id.0],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("feed {}", id.0)));
+        }
+        Ok(())
+    }
+
+    pub fn set_feed_url(&mut self, id: FeedId, feed_url: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE feeds SET feed_url = ?1, etag = NULL, last_modified = NULL, consecutive_failures = 0 WHERE id = ?2",
+            params![feed_url, id.0],
         )?;
         if n == 0 {
             return Err(CoreError::NotFound(format!("feed {}", id.0)));
@@ -824,7 +901,7 @@ impl Store {
 fn map_summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntrySummary> {
     Ok(EntrySummary {
         id: EntryId(r.get(0)?),
-        feed_id: FeedId(r.get(1)?),
+        feed_id: r.get::<_, Option<i64>>(1)?.map(FeedId),
         title: r.get(2)?,
         url: r.get(3)?,
         published_at: r.get(4)?,

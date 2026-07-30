@@ -49,6 +49,10 @@ pub enum AppCommand {
         id: FeedId,
         title: String,
     },
+    EditFeedUrl {
+        id: FeedId,
+        feed_url: String,
+    },
     RefreshFeeds {
         feed_id: Option<FeedId>,
     },

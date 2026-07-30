@@ -39,7 +39,7 @@ pub struct Feed {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrySummary {
     pub id: EntryId,
-    pub feed_id: FeedId,
+    pub feed_id: Option<FeedId>,
     pub title: String,
     pub url: Option<String>,
     pub published_at: Option<i64>,

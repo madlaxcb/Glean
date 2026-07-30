@@ -122,6 +122,8 @@ pub struct SpikeState {
     pub feeds: Vec<Feed>,
     pub entries: Vec<EntrySummary>,
     pub unread_total: u64,
+    /// Unread count per feed (FeedId -> count).
+    pub unread_per_feed: std::collections::HashMap<glean_core::FeedId, u64>,
     pub selected: Option<usize>,
     pub open_detail: Option<EntryDetail>,
     pub filter: EntryFilter,
@@ -145,6 +147,8 @@ pub struct SpikeState {
     pub opml_import_input: String,
     /// Feed being renamed (id + current title for editing).
     pub rename_feed: Option<(glean_core::FeedId, String)>,
+    /// Feed URL being edited (id + current feed_url).
+    pub edit_feed_url: Option<(glean_core::FeedId, String)>,
     /// Recent error messages for notification popup.
     pub errors: Vec<String>,
     /// New folder name input.
@@ -204,6 +208,7 @@ impl SpikeState {
             feeds: Vec::new(),
             entries: Vec::new(),
             unread_total: 0,
+            unread_per_feed: std::collections::HashMap::new(),
             selected: None,
             open_detail: None,
             filter: EntryFilter::All,
@@ -223,6 +228,7 @@ impl SpikeState {
             opml_export: None,
             opml_import_input: String::new(),
             rename_feed: None,
+            edit_feed_url: None,
             errors: Vec::new(),
             new_folder_input: String::new(),
             refresh_interval_input: config.refresh_interval_secs.to_string(),
@@ -391,10 +397,12 @@ impl SpikeState {
                 folders,
                 feeds,
                 unread_total,
+                unread_per_feed,
             } => {
                 self.folders = folders;
                 self.feeds = feeds;
                 self.unread_total = unread_total;
+                self.unread_per_feed = unread_per_feed;
             }
             AppEvent::EntriesUpdated { entries } => {
                 self.entries = entries;
@@ -432,6 +440,7 @@ impl SpikeState {
             }
             AppEvent::UnreadChanged { total } => {
                 self.unread_total = total;
+                self.unread_per_feed = self.service.unread_counts_per_feed();
                 self.refresh_status();
             }
             AppEvent::Status { message } => {
@@ -639,6 +648,10 @@ impl SpikeState {
 
     pub fn rename_feed(&mut self, id: glean_core::FeedId, title: String) {
         self.dispatch(AppCommand::RenameFeed { id, title });
+    }
+
+    pub fn edit_feed_url(&mut self, id: glean_core::FeedId, feed_url: String) {
+        self.dispatch(AppCommand::EditFeedUrl { id, feed_url });
     }
 
     pub fn move_feed_to_folder(

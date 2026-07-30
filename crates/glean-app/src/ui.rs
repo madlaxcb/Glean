@@ -2,7 +2,7 @@ use crate::tray::TrayAction;
 use crate::update;
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::{EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
+use glean_core::{AppCommand, EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -270,7 +270,7 @@ impl eframe::App for SpikeApp {
         // --- Keyboard shortcuts ---
         let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
         let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
-        let rename_focused = self.state.rename_feed.is_some();
+        let rename_focused = self.state.rename_feed.is_some() || self.state.edit_feed_url.is_some();
         if !search_focused && !feed_focused && !rename_focused {
             if ctx.input(|i| i.key_pressed(egui::Key::J)) {
                 self.state.next();
@@ -295,6 +295,8 @@ impl eframe::App for SpikeApp {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.state.rename_feed.is_some() {
                 self.state.rename_feed = None;
+            } else if self.state.edit_feed_url.is_some() {
+                self.state.edit_feed_url = None;
             } else if self.show_errors {
                 self.show_errors = false;
             } else if self.show_opml_import {
@@ -407,6 +409,7 @@ impl eframe::App for SpikeApp {
         let has_popup = self.state.opml_export.is_some()
             || self.show_opml_import
             || self.state.rename_feed.is_some()
+            || self.state.edit_feed_url.is_some()
             || self.show_errors
             || self.show_settings
             || self.state.update_available.is_some();
@@ -571,6 +574,49 @@ impl eframe::App for SpikeApp {
             }
             if close {
                 self.state.rename_feed = None;
+            }
+        }
+
+        // Edit feed URL popup
+        if let Some((feed_id, ref mut url)) = self.state.edit_feed_url {
+            let mut do_save = false;
+            let mut close = false;
+            egui::Window::new("编辑订阅 URL")
+                .resizable(false)
+                .default_width(420.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("URL");
+                        let te = egui::TextEdit::singleline(url)
+                            .id(egui::Id::new("edit_feed_url_input"))
+                            .desired_width(f32::INFINITY);
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            do_save = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("保存").clicked() {
+                            do_save = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if do_save {
+                let u = url.clone();
+                self.state.edit_feed_url(feed_id, u);
+                self.state.edit_feed_url = None;
+            }
+            if close {
+                self.state.edit_feed_url = None;
             }
         }
 
@@ -1008,6 +1054,7 @@ impl SpikeApp {
         let mut feed_delete = None;
         let mut feed_mark_read = None;
         let mut feed_rename = None;
+        let mut feed_edit_url = None;
         let mut feed_move_folder = None;
         let mut feed_toggle_mute = None;
         let mut do_create_folder = false;
@@ -1066,7 +1113,9 @@ impl SpikeApp {
                 } else {
                     ""
                 };
-            let label = format!("{mute_mark}{favicon_mark}{}{error_mark}", feed.title);
+            let unread = self.state.unread_per_feed.get(&feed.id).copied().unwrap_or(0);
+            let unread_mark = if unread > 0 { format!(" ({unread})") } else { String::new() };
+            let label = format!("{mute_mark}{favicon_mark}{}{error_mark}{unread_mark}", feed.title);
             let resp = ui.selectable_label(sel, &label);
             if resp.clicked() {
                 feed_click = Some(feed.id);
@@ -1078,6 +1127,7 @@ impl SpikeApp {
                 &folders,
                 &mut feed_delete,
                 &mut feed_rename,
+                &mut feed_edit_url,
                 &mut feed_mark_read,
                 &mut feed_move_folder,
                 &mut feed_toggle_mute,
@@ -1126,7 +1176,9 @@ impl SpikeApp {
                 } else {
                     ""
                 };
-                let label = format!("  {mute_mark}{favicon_mark}{}{error_mark}", feed.title);
+                let unread = self.state.unread_per_feed.get(&feed.id).copied().unwrap_or(0);
+                let unread_mark = if unread > 0 { format!(" ({unread})") } else { String::new() };
+                let label = format!("  {mute_mark}{favicon_mark}{}{error_mark}{unread_mark}", feed.title);
                 let resp = ui.selectable_label(sel, &label);
                 if resp.clicked() {
                     feed_click = Some(feed.id);
@@ -1138,6 +1190,7 @@ impl SpikeApp {
                     &folders,
                     &mut feed_delete,
                     &mut feed_rename,
+                    &mut feed_edit_url,
                     &mut feed_mark_read,
                     &mut feed_move_folder,
                     &mut feed_toggle_mute,
@@ -1155,6 +1208,11 @@ impl SpikeApp {
         if let Some(id) = feed_rename {
             if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
                 self.state.rename_feed = Some((id, f.title.clone()));
+            }
+        }
+        if let Some(id) = feed_edit_url {
+            if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
+                self.state.edit_feed_url = Some((id, f.feed_url.clone()));
             }
         }
         if let Some((feed_id, folder_id)) = feed_move_folder {
@@ -1183,6 +1241,7 @@ impl SpikeApp {
         folders: &[glean_core::Folder],
         feed_delete: &mut Option<glean_core::FeedId>,
         feed_rename: &mut Option<glean_core::FeedId>,
+        feed_edit_url: &mut Option<glean_core::FeedId>,
         feed_mark_read: &mut Option<glean_core::FeedId>,
         feed_move_folder: &mut Option<(glean_core::FeedId, Option<FolderId>)>,
         feed_toggle_mute: &mut Option<glean_core::FeedId>,
@@ -1190,6 +1249,10 @@ impl SpikeApp {
         resp.context_menu(|ui| {
             if ui.button("重命名").clicked() {
                 *feed_rename = Some(feed.id);
+                ui.close_menu();
+            }
+            if ui.button("编辑 URL").clicked() {
+                *feed_edit_url = Some(feed.id);
                 ui.close_menu();
             }
             let mute_label = if feed.muted { "取消静音" } else { "静音" };
@@ -1289,9 +1352,46 @@ impl SpikeApp {
                     } else {
                         RichText::new(label).strong()
                     };
-                    if ui.selectable_label(Some(i) == current, rich).clicked() {
+                    let resp = ui.selectable_label(Some(i) == current, rich);
+                    if resp.clicked() {
                         clicked = Some(i);
                     }
+                    // Capture entry data for context menu (avoids borrow conflict).
+                    let eid = entry.id;
+                    let is_read = entry.is_read;
+                    let is_starred = entry.is_starred;
+                    let url = entry.url.clone();
+                    // Right-click context menu.
+                    resp.context_menu(|ui| {
+                        if is_read {
+                            if ui.button("标记为未读").clicked() {
+                                self.state.dispatch(AppCommand::MarkRead { id: eid, read: false });
+                                ui.close_menu();
+                            }
+                        } else {
+                            if ui.button("标记为已读").clicked() {
+                                self.state.dispatch(AppCommand::MarkRead { id: eid, read: true });
+                                ui.close_menu();
+                            }
+                        }
+                        if is_starred {
+                            if ui.button("取消星标").clicked() {
+                                self.state.dispatch(AppCommand::ToggleStar { id: eid });
+                                ui.close_menu();
+                            }
+                        } else {
+                            if ui.button("加星标").clicked() {
+                                self.state.dispatch(AppCommand::ToggleStar { id: eid });
+                                ui.close_menu();
+                            }
+                        }
+                        if let Some(url) = url.as_deref() {
+                            if ui.button("在浏览器中打开").clicked() {
+                                let _ = open::that(url);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 }
                 if let Some(i) = clicked {
                     self.state.select_index(i);
