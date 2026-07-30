@@ -6,6 +6,7 @@ mod error;
 mod event;
 pub mod extract;
 pub mod feed;
+mod image_cache;
 mod model;
 mod opml;
 mod paths;
@@ -22,12 +23,15 @@ pub use extract::{
     ExtractTask,
 };
 pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
+pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
     AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,
     ImagePolicy,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
-pub use paths::{cache_entries_dir, default_config_path, default_db_path};
+pub use paths::{
+    cache_entries_dir, cache_favicons_dir, cache_images_dir, default_config_path, default_db_path,
+};
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};
 pub use service::GleanService;

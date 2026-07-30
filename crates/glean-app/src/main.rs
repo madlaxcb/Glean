@@ -171,6 +171,8 @@ pub struct SpikeState {
     extract_rx: Option<mpsc::Receiver<ExtractOutcome>>,
     /// Entry currently being extracted (to avoid duplicate tasks).
     extract_in_flight: Option<EntryId>,
+    /// Background image-cache receiver: (rewritten_html, dark, image_policy).
+    img_cache_rx: Option<mpsc::Receiver<(String, bool, ImagePolicy)>>,
 }
 
 impl SpikeState {
@@ -221,6 +223,7 @@ impl SpikeState {
             update_available: None,
             extract_rx: None,
             extract_in_flight: None,
+            img_cache_rx: None,
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
@@ -400,6 +403,8 @@ impl SpikeState {
                 self.refresh_status();
                 // Maybe trigger background full-text extraction.
                 self.maybe_auto_extract();
+                // Maybe trigger background image caching.
+                self.maybe_cache_images();
             }
             AppEvent::UnreadChanged { total } => {
                 self.unread_total = total;
@@ -730,6 +735,91 @@ impl SpikeState {
         }
     }
 
+    /// Maybe spawn background image caching for the current entry.
+    /// Only when cache_images is on and images are being shown (Allow or
+    /// LoadOnDemand+override) and no caching task is already in flight.
+    pub fn maybe_cache_images(&mut self) {
+        if !self.config.cache_images || self.img_cache_rx.is_some() {
+            return;
+        }
+        let entry = match &self.open_detail {
+            Some(e) => e,
+            None => return,
+        };
+        let showing_images = self.effective_image_policy() == ImagePolicy::Allow;
+        if !showing_images {
+            return;
+        }
+        let body = if !entry.extracted_html.is_empty() {
+            entry.extracted_html.clone()
+        } else {
+            entry.content_html.clone()
+        };
+        if body.is_empty() {
+            return;
+        }
+        let dark = self.dark;
+        let policy = self.effective_image_policy();
+        let (tx, rx) = mpsc::channel::<(String, bool, ImagePolicy)>();
+        self.img_cache_rx = Some(rx);
+        thread::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .expect("img cache client");
+            let img_dir = glean_core::cache_images_dir();
+            let cache = glean_core::ImageCache::new(img_dir);
+            let (rewritten, _fetched) = cache.cache_images_in_html(&body, &client);
+            // Re-render the full document with the rewritten body.
+            let html = glean_core::reader_document(
+                "", // title not needed; we only care about the body rewrite
+                None, None, &rewritten, dark, true, policy,
+            );
+            let _ = tx.send((html, dark, policy));
+        });
+    }
+
+    /// Poll background image-caching thread.
+    pub fn poll_img_cache(&mut self) {
+        let rx = match &self.img_cache_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        if let Ok((_html, _dark, _policy)) = rx.try_recv() {
+            self.img_cache_rx = None;
+            // Reload reader with the rewritten HTML (images now point to local cache).
+            // We need to re-render the entry with the cached images.
+            // Since we don't have the rewritten HTML stored, re-trigger the cache
+            // flow by re-rendering — but the images are already on disk, so
+            // cache_images_in_html will just rewrite src without downloading.
+            if let Some(entry) = &self.open_detail {
+                let body = if !entry.extracted_html.is_empty() {
+                    entry.extracted_html.clone()
+                } else {
+                    entry.content_html.clone()
+                };
+                let dark = self.dark;
+                let policy = self.effective_image_policy();
+                // Synchronous rewrite (images already cached locally → no network).
+                let img_dir = glean_core::cache_images_dir();
+                let cache = glean_core::ImageCache::new(img_dir);
+                let client = reqwest::blocking::Client::new();
+                let (rewritten, _) = cache.cache_images_in_html(&body, &client);
+                let html = render_entry_body(
+                    &entry.summary.title,
+                    entry.summary.url.as_deref(),
+                    entry.author.as_deref(),
+                    &rewritten,
+                    dark,
+                    true,
+                    policy,
+                );
+                self.reader.show_html(&html);
+            }
+        }
+    }
+
     /// Entry currently being extracted (for UI button gating).
     pub fn extract_in_flight(&self) -> Option<EntryId> {
         self.extract_in_flight
@@ -772,7 +862,7 @@ fn render_entry(entry: &EntryDetail, dark: bool, image_policy: ImagePolicy) -> S
         &entry.content_html
     };
     let has_content = !body.is_empty();
-    glean_core::reader_document(
+    render_entry_body(
         &entry.summary.title,
         entry.summary.url.as_deref(),
         entry.author.as_deref(),
@@ -781,6 +871,20 @@ fn render_entry(entry: &EntryDetail, dark: bool, image_policy: ImagePolicy) -> S
         has_content,
         image_policy,
     )
+}
+
+/// Render a reader document with explicit body content (used for image-cache
+/// rewrite where the body has been modified but metadata comes from the entry).
+fn render_entry_body(
+    title: &str,
+    url: Option<&str>,
+    author: Option<&str>,
+    body: &str,
+    dark: bool,
+    has_content: bool,
+    image_policy: ImagePolicy,
+) -> String {
+    glean_core::reader_document(title, url, author, body, dark, has_content, image_policy)
 }
 
 fn load_config(path: &std::path::Path) -> AppConfig {

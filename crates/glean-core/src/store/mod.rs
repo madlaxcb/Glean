@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub struct Store {
     conn: Connection,
@@ -199,6 +199,17 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 6 {
+            // Favicon URL for each feed (discovered from HTML <link rel="icon">
+            // or feed-rs icon field). Populated during refresh.
+            self.conn
+                .execute_batch("ALTER TABLE feeds ADD COLUMN favicon_url TEXT;")?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '6')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -332,7 +343,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url FROM feeds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -344,6 +355,7 @@ impl Store {
                 last_error: r.get(5)?,
                 muted: r.get::<_, i64>(6)? != 0,
                 refresh_interval_secs: r.get(7)?,
+                favicon_url: r.get(8)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -511,6 +523,15 @@ impl Store {
                     r.get(0)
                 })?;
         Ok(n as u64)
+    }
+
+    /// Store the favicon URL for a feed (discovered during refresh).
+    pub fn set_favicon_url(&mut self, id: FeedId, url: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE feeds SET favicon_url = ?1 WHERE id = ?2",
+            params![url, id.0],
+        )?;
+        Ok(())
     }
 
     /// Substring search: try FTS5, then LIKE (M0b guarantees Chinese substring via LIKE).

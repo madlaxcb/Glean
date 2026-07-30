@@ -29,6 +29,9 @@ pub struct Feed {
     pub muted: bool,
     /// Refresh interval in seconds; 0 = use global default.
     pub refresh_interval_secs: i64,
+    /// Favicon URL (discovered from feed or site HTML). None if not yet
+    /// resolved; Some("") if resolution attempted but no icon found.
+    pub favicon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +112,11 @@ pub struct AppConfig {
     /// only ships a short summary. Default on (dev plan §2.4 P2).
     #[serde(default = "default_true")]
     pub auto_extract: bool,
+    /// Download and locally cache remote images (dev plan §2.5.2). When on,
+    /// img src is rewritten to the glean-img:// custom scheme. Default off
+    /// (bandwidth + privacy tradeoff: first load still hits the source).
+    #[serde(default)]
+    pub cache_images: bool,
 }
 
 fn default_true() -> bool {
@@ -124,6 +132,7 @@ impl Default for AppConfig {
             image_policy: ImagePolicy::Block,
             refresh_interval_secs: 0,
             auto_extract: true,
+            cache_images: false,
         }
     }
 }

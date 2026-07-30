@@ -52,6 +52,17 @@ pub fn cache_entries_dir() -> Option<PathBuf> {
     data_base_dir().map(|b| b.join("cache").join("entries"))
 }
 
+/// Disk cache dir for downloaded images (dev plan §2.5.2): `<data_dir>/cache/images/`.
+/// Returns `None` when no base data dir can be resolved.
+pub fn cache_images_dir() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("cache").join("images"))
+}
+
+/// Disk cache dir for favicons: `<data_dir>/cache/favicons/`.
+pub fn cache_favicons_dir() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("cache").join("favicons"))
+}
+
 /// `config.json` next to the DB file.
 pub fn default_config_path() -> PathBuf {
     default_db_path()

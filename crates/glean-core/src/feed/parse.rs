@@ -8,6 +8,8 @@ use feed_rs::parser;
 pub struct ParsedFeed {
     pub title: String,
     pub site_url: Option<String>,
+    /// Favicon/logo URL from the feed (Atom <icon>, RSS <image>, etc.).
+    pub favicon_url: Option<String>,
     pub entries: Vec<ParsedEntry>,
 }
 
@@ -36,6 +38,13 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed> {
         .find(|l| l.rel == Some("alternate".into()) || l.rel.is_none())
         .map(|l| l.href.clone())
         .or_else(|| feed.links.first().map(|l| l.href.clone()));
+    // Favicon: feed-rs exposes it via the `icon` field (Atom <icon>) or
+    // `logo` (Atom <logo>). RSS feeds use <image> which feed-rs maps to `logo`.
+    let favicon_url = feed
+        .icon
+        .as_ref()
+        .map(|i| i.uri.clone())
+        .or_else(|| feed.logo.as_ref().map(|l| l.uri.clone()));
 
     let mut entries = Vec::with_capacity(feed.entries.len());
     for (i, e) in feed.entries.iter().enumerate() {
@@ -73,6 +82,7 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed> {
     Ok(ParsedFeed {
         title,
         site_url,
+        favicon_url,
         entries,
     })
 }

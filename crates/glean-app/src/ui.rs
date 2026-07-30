@@ -54,6 +54,9 @@ impl eframe::App for SpikeApp {
         // Poll background full-text extraction.
         self.state.poll_extract();
 
+        // Poll background image caching.
+        self.state.poll_img_cache();
+
         // Poll update-check thread.
         self.state.poll_update_check();
 
@@ -706,6 +709,28 @@ impl eframe::App for SpikeApp {
                             .weak(),
                     );
 
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let cur = self.state.config.cache_images;
+                        if ui.selectable_label(cur, "开").clicked() && !cur {
+                            self.state.config.cache_images = true;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                        if ui.selectable_label(!cur, "关").clicked() && cur {
+                            self.state.config.cache_images = false;
+                            self.state.sync_config();
+                            self.state.save_config();
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "缓存图片：显示图片时下载到本地，改写 src 指向本地缓存（离线可看）",
+                        )
+                        .small()
+                        .weak(),
+                    );
+
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -906,7 +931,12 @@ impl SpikeApp {
                 ""
             };
             let mute_mark = if feed.muted { "🔇" } else { "" };
-            let label = format!("{mute_mark}{}{error_mark}", feed.title);
+            let favicon_mark = if feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty()) {
+                "🌐"
+            } else {
+                ""
+            };
+            let label = format!("{mute_mark}{favicon_mark}{}{error_mark}", feed.title);
             let resp = ui.selectable_label(sel, &label);
             if resp.clicked() {
                 feed_click = Some(feed.id);
@@ -1089,13 +1119,18 @@ impl SpikeApp {
     }
 
     fn draw_list_contents(&mut self, ui: &mut Ui) {
+        // Virtual scrolling: only render visible rows.  Each row is ~20px
+        // (selectable_label default height). show_rows handles the offset.
+        let row_height = 20.0_f32;
+        let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
             .max_height(ui.available_height())
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;
-                for (i, entry) in self.state.entries.iter().enumerate() {
+                for i in row_range {
+                    let entry = &self.state.entries[i];
                     let read_mark = if entry.is_read { "已读" } else { "未读" };
                     let star = if entry.is_starred { "★" } else { "" };
                     let cache = if entry.has_content { "" } else { " ⇊" };

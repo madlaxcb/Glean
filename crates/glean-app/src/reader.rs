@@ -67,10 +67,13 @@ mod win {
         hidden: bool,
         last_rect: Option<Rect>,
         last_ppp: f32,
+        /// Image cache shared with the WebView custom protocol handler.
+        image_cache: std::sync::Arc<glean_core::ImageCache>,
     }
 
     impl ReaderHostInner {
         pub fn new() -> Self {
+            let img_dir = glean_core::cache_images_dir();
             Self {
                 webview: None,
                 last_html: String::new(),
@@ -82,6 +85,7 @@ mod win {
                 hidden: false,
                 last_rect: None,
                 last_ppp: 1.0,
+                image_cache: std::sync::Arc::new(glean_core::ImageCache::new(img_dir)),
             }
         }
 
@@ -187,6 +191,9 @@ mod win {
             };
             let parent_wrap = ParentHwnd(parent);
 
+            // Image cache: clone the Arc so the protocol handler can read files.
+            let img_cache = self.image_cache.clone();
+
             let webview = WebViewBuilder::new()
                 .with_html(&html)
                 .with_bounds(bounds)
@@ -195,6 +202,34 @@ mod win {
                 // is baked into the document via `reader_document(dark=…)` and
                 // applied by `load_html`, so no scripting is needed.
                 .with_javascript_disabled()
+                // Custom protocol for locally-cached images (dev plan §2.5.2).
+                // The WebView rewrites <img src> to glean-img://<filename>; this
+                // handler reads the file from the image cache dir.
+                .with_custom_protocol(glean_core::IMAGE_CUSTOM_SCHEME.into(), move |request| {
+                    let url = request.url();
+                    // URL is like glean-img://filename or glean-img://host/filename
+                    let path = url.trim_start_matches("glean-img://");
+                    // Strip host part if present (glean-img://host/filename → filename)
+                    let filename = if path.contains('/') {
+                        path.split('/').last().unwrap_or(path)
+                    } else {
+                        path
+                    };
+                    match img_cache.read(filename) {
+                        Some(bytes) => {
+                            let mime = glean_core::ImageCache::mime_for(filename);
+                            wry::http::Response::builder()
+                                .status(200)
+                                .header("Content-Type", mime)
+                                .body(bytes.into())
+                                .unwrap()
+                        }
+                        None => wry::http::Response::builder()
+                            .status(404)
+                            .body(vec![].into())
+                            .unwrap(),
+                    }
+                })
                 .with_navigation_handler(|uri: String| {
                     if uri.starts_with("http://") || uri.starts_with("https://") {
                         let _ = open_external(&uri);
@@ -202,6 +237,7 @@ mod win {
                     } else if uri.starts_with("data:")
                         || uri.starts_with("about:")
                         || uri.starts_with("file:")
+                        || uri.starts_with("glean-img://")
                     {
                         true
                     } else {

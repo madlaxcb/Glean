@@ -334,6 +334,11 @@ impl GleanService {
                     last_modified.as_deref(),
                     None,
                 )?;
+                // Persist favicon URL if the feed provides one.
+                if parsed.favicon_url.is_some() {
+                    self.store
+                        .set_favicon_url(feed_id, parsed.favicon_url.as_deref())?;
+                }
                 let mut new_items = 0u32;
                 for e in &parsed.entries {
                     if self.store.upsert_entry(
