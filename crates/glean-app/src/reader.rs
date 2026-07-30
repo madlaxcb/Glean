@@ -324,9 +324,8 @@ mod win {
         use windows::Win32::Graphics::Gdi::{
             RedrawWindow, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
         };
-        let rdw_result = unsafe {
-            RedrawWindow(hwnd, None, None, RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW)
-        };
+        let rdw_result =
+            unsafe { RedrawWindow(hwnd, None, None, RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW) };
         // Also send SWP_FRAMECHANGED as belt-and-suspenders.
         let swp_result = unsafe {
             SetWindowPos(
