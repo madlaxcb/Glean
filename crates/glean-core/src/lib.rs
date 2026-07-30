@@ -24,7 +24,7 @@ pub use extract::{
     ExtractTask,
 };
 pub use favicon_cache::FaviconCache;
-pub use feed::{run_refresh_task, RefreshOutcome, RefreshTask};
+pub use feed::{discover_feed_urls, run_refresh_task, RefreshOutcome, RefreshTask};
 pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
     AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,

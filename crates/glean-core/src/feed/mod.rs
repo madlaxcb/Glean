@@ -1,8 +1,10 @@
 //! HTTP fetch + RSS/Atom/JSON Feed parse (M1).
 
+mod discover;
 mod fetch;
 pub mod parse;
 
+pub use discover::discover_feed_urls;
 pub use fetch::{fetch_feed_bytes, FetchResult, HttpClient};
 pub use parse::{parse_feed, ParsedEntry, ParsedFeed};
 

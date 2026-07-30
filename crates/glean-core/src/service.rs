@@ -5,7 +5,8 @@ use crate::error::{CoreError, Result};
 use crate::event::AppEvent;
 use crate::extract::{ExtractOutcome, ExtractTask};
 use crate::feed::{
-    fetch_feed_bytes, parse_feed, FetchResult, HttpClient, RefreshOutcome, RefreshTask,
+    discover_feed_urls, fetch_feed_bytes, parse_feed, FetchResult, HttpClient, RefreshOutcome,
+    RefreshTask,
 };
 use crate::model::{EntryFilter, EntryId, FeedId};
 use crate::opml;
@@ -473,7 +474,23 @@ impl GleanService {
             return Ok(ev);
         }
 
-        let fetched = fetch_feed_bytes(&self.http, url, None, None)?;
+        // Try 1: parse URL directly as a feed.
+        match self.try_add_as_feed(url) {
+            Ok(Some(events)) => return Ok(events),
+            Ok(None) => {} // Not a feed, fall through to discovery.
+            Err(e) => return Err(e),
+        }
+
+        // Try 2: fetch as HTML and discover feed links.
+        self.try_discover_and_add(url)
+    }
+
+    /// Try to add the URL as a feed. Returns Ok(None) if it's not a feed.
+    fn try_add_as_feed(&mut self, url: &str) -> Result<Option<Vec<AppEvent>>> {
+        let fetched = match fetch_feed_bytes(&self.http, url, None, None) {
+            Ok(r) => r,
+            Err(_) => return Ok(None), // Network error — not a feed.
+        };
         let (bytes, etag, last_modified, _final_url) = match fetched {
             FetchResult::NotModified => {
                 return Err(CoreError::Http("unexpected 304 on first fetch".into()));
@@ -485,7 +502,10 @@ impl GleanService {
                 final_url,
             } => (bytes, etag, last_modified, final_url),
         };
-        let parsed = parse_feed(&bytes)?;
+        let parsed = match parse_feed(&bytes) {
+            Ok(p) => p,
+            Err(_) => return Ok(None), // Not a feed.
+        };
         let id = self.store.add_feed(&parsed.title, url, None)?;
         self.store.update_feed_after_fetch(
             id,
@@ -495,6 +515,10 @@ impl GleanService {
             last_modified.as_deref(),
             None,
         )?;
+        if parsed.favicon_url.is_some() {
+            self.store
+                .set_favicon_url(id, parsed.favicon_url.as_deref())?;
+        }
         let mut new_items = 0u32;
         for e in &parsed.entries {
             if self.store.upsert_entry(
@@ -518,7 +542,44 @@ impl GleanService {
         ev.push(AppEvent::Status {
             message: format!("已订阅「{}」· 新文章 {} 篇", parsed.title, new_items),
         });
-        Ok(ev)
+        Ok(Some(ev))
+    }
+
+    /// Fetch the URL as HTML, discover feed links, and subscribe to the first one.
+    fn try_discover_and_add(&mut self, url: &str) -> Result<Vec<AppEvent>> {
+        let fetched = fetch_feed_bytes(&self.http, url, None, None)?;
+        let bytes = match fetched {
+            FetchResult::Body { bytes, .. } => bytes,
+            FetchResult::NotModified => {
+                return Err(CoreError::Http("unexpected 304 on first fetch".into()));
+            }
+        };
+        let html = String::from_utf8_lossy(&bytes);
+        let feeds = discover_feed_urls(&html, url);
+        if feeds.is_empty() {
+            return Err(CoreError::Message(format!(
+                "无法识别为 feed，也未在页面中发现 feed 链接: {url}"
+            )));
+        }
+
+        // Subscribe to the first discovered feed.
+        let (feed_url, feed_title) = &feeds[0];
+        let title = feed_title.as_deref().unwrap_or_else(|| feed_url.as_str());
+        match self.try_add_as_feed(feed_url) {
+            Ok(Some(mut events)) => {
+                // Patch status message to mention discovery.
+                for ev in &mut events {
+                    if let AppEvent::Status { message } = ev {
+                        *message = format!("自动发现并订阅「{title}」\n{message}");
+                    }
+                }
+                Ok(events)
+            }
+            Ok(None) => Err(CoreError::Message(format!(
+                "发现 feed 链接但订阅失败: {feed_url}"
+            ))),
+            Err(e) => Err(e),
+        }
     }
 
     fn import_opml(&mut self, content: &str) -> Result<Vec<AppEvent>> {
