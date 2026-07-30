@@ -696,6 +696,7 @@ impl Store {
     }
 
     /// Insert or ignore by (feed_id, guid). Returns true if a new row was inserted.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_entry(
         &mut self,
         feed_id: FeedId,

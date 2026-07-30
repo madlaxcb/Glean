@@ -621,7 +621,7 @@ impl GleanService {
 
         // Subscribe to the first discovered feed.
         let (feed_url, feed_title) = &feeds[0];
-        let title = feed_title.as_deref().unwrap_or_else(|| feed_url.as_str());
+        let title = feed_title.as_deref().unwrap_or(feed_url.as_str());
         match self.try_add_as_feed(feed_url) {
             Ok(Some(mut events)) => {
                 // Patch status message to mention discovery.

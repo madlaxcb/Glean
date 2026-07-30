@@ -197,7 +197,7 @@ fn matches(url: &str, rule: &MatchRule) -> bool {
     let target = target.trim_start_matches("www.");
 
     let pattern = rule.url_pattern.trim_start_matches("www.");
-    glob_match(pattern, &target)
+    glob_match(pattern, target)
 }
 
 /// 极简 glob：`*` 匹配任意字符序列。
@@ -215,7 +215,7 @@ fn glob_match_inner(p: &[char], t: &[char]) -> bool {
             if glob_match_inner(&p[1..], t) {
                 return true;
             }
-            if let Some(_) = t.first() {
+            if !t.is_empty() {
                 return glob_match_inner(p, &t[1..]);
             }
             false

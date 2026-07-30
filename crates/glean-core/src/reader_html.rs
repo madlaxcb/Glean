@@ -9,6 +9,7 @@ use crate::sanitize::sanitize_html_with_policy;
 
 /// Build a full reader document. Safe for IsScriptEnabled=false.
 /// Always shows title; body may be summary-only for many feeds.
+#[allow(clippy::too_many_arguments)]
 pub fn reader_document(
     title: &str,
     url: Option<&str>,

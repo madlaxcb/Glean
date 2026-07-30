@@ -88,7 +88,7 @@ pub fn extract_content(raw_html: &str) -> String {
     }
 
     // Last resort: <body>.
-    if let Some(sel) = Selector::parse("body").ok() {
+    if let Ok(sel) = Selector::parse("body") {
         if let Some(el) = document.select(&sel).next() {
             return sanitize_fragment(&el.inner_html());
         }

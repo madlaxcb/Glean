@@ -98,10 +98,8 @@ pub fn clear_all_cache() -> u64 {
         }
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
-                if entry.path().is_file() {
-                    if std::fs::remove_file(entry.path()).is_ok() {
-                        removed += 1;
-                    }
+                if entry.path().is_file() && std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
                 }
             }
         }
