@@ -1113,9 +1113,21 @@ impl SpikeApp {
                 } else {
                     ""
                 };
-            let unread = self.state.unread_per_feed.get(&feed.id).copied().unwrap_or(0);
-            let unread_mark = if unread > 0 { format!(" ({unread})") } else { String::new() };
-            let label = format!("{mute_mark}{favicon_mark}{}{error_mark}{unread_mark}", feed.title);
+            let unread = self
+                .state
+                .unread_per_feed
+                .get(&feed.id)
+                .copied()
+                .unwrap_or(0);
+            let unread_mark = if unread > 0 {
+                format!(" ({unread})")
+            } else {
+                String::new()
+            };
+            let label = format!(
+                "{mute_mark}{favicon_mark}{}{error_mark}{unread_mark}",
+                feed.title
+            );
             let resp = ui.selectable_label(sel, &label);
             if resp.clicked() {
                 feed_click = Some(feed.id);
@@ -1176,9 +1188,21 @@ impl SpikeApp {
                 } else {
                     ""
                 };
-                let unread = self.state.unread_per_feed.get(&feed.id).copied().unwrap_or(0);
-                let unread_mark = if unread > 0 { format!(" ({unread})") } else { String::new() };
-                let label = format!("  {mute_mark}{favicon_mark}{}{error_mark}{unread_mark}", feed.title);
+                let unread = self
+                    .state
+                    .unread_per_feed
+                    .get(&feed.id)
+                    .copied()
+                    .unwrap_or(0);
+                let unread_mark = if unread > 0 {
+                    format!(" ({unread})")
+                } else {
+                    String::new()
+                };
+                let label = format!(
+                    "  {mute_mark}{favicon_mark}{}{error_mark}{unread_mark}",
+                    feed.title
+                );
                 let resp = ui.selectable_label(sel, &label);
                 if resp.clicked() {
                     feed_click = Some(feed.id);
@@ -1365,12 +1389,18 @@ impl SpikeApp {
                     resp.context_menu(|ui| {
                         if is_read {
                             if ui.button("标记为未读").clicked() {
-                                self.state.dispatch(AppCommand::MarkRead { id: eid, read: false });
+                                self.state.dispatch(AppCommand::MarkRead {
+                                    id: eid,
+                                    read: false,
+                                });
                                 ui.close_menu();
                             }
                         } else {
                             if ui.button("标记为已读").clicked() {
-                                self.state.dispatch(AppCommand::MarkRead { id: eid, read: true });
+                                self.state.dispatch(AppCommand::MarkRead {
+                                    id: eid,
+                                    read: true,
+                                });
                                 ui.close_menu();
                             }
                         }

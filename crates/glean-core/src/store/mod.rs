@@ -578,9 +578,9 @@ impl Store {
 
     /// Unread count per feed, returned as (FeedId, count) pairs.
     pub fn unread_counts_per_feed(&self) -> Result<Vec<(FeedId, u64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT feed_id, COUNT(*) FROM entries WHERE is_read = 0 GROUP BY feed_id",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT feed_id, COUNT(*) FROM entries WHERE is_read = 0 GROUP BY feed_id")?;
         let rows = stmt.query_map([], |r| {
             Ok((FeedId(r.get::<_, i64>(0)?), r.get::<_, i64>(1)? as u64))
         })?;
