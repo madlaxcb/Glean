@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "glean-app"
-version = "0.0.1"
+version = "0.3.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "glean-core"
-version = "0.0.1"
+version = "0.3.0"
 dependencies = [
  "ammonia",
  "feed-rs",

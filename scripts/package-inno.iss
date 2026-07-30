@@ -14,7 +14,7 @@
 
 #define MyAppName "Glean"
 #define MyAppNameCN "拾光"
-#define MyAppVersion "0.0.1"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "madlaxcb"
 #define MyAppURL "https://github.com/madlaxcb/Glean"
 #define MyAppExeName "glean-spike.exe"

@@ -62,7 +62,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/glean-spike.exe dist/glean-spike.exe
           @"
-          Glean (M0b shell + core demo)
+          Glean / 拾光 v0.3.0 — Windows RSS Reader
           =================
           Built by GitHub Actions (windows-latest).
 
@@ -75,10 +75,14 @@ jobs:
             double-click glean-spike.exe
             (must NOT open a black console window)
 
-          Search box is in the TOP toolbar (IME test).
-
-          M0 Spike conditional pass; M0b uses in-memory SQLite demo (no network).
-          See docs/m0b.md and docs/spike-ui.md.
+          Features:
+          - RSS/Atom feed subscription, refresh, and reading
+          - Full-text extraction (readability-style)
+          - Local image cache + Favicon cache
+          - Virtual list, FTS5 trigram search (Chinese substring)
+          - Light/dark theme, keyboard shortcuts (j/k/t/s/r)
+          - OPML import/export, auto-refresh, system tray
+          - Update check via appcast.json
           "@ | Set-Content -Encoding utf8 dist/README-SPIKE.txt
 
       - name: Upload artifact (exe)
