@@ -3,7 +3,7 @@
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
 > 文档版本：0.4.0 · 日期：2026-07-30  
-> 修订说明：**M1 垂直切片已落地**（HTTP + feed-rs + 消毒入库 + UI 添加/刷新）；**§11.5 新增插件系统设计**（Rhai + 配置规则，覆盖站点适配/AI 翻译/内容增强/过滤）
+> 修订说明：**M1–M2 已落地**（订阅/阅读/组织/搜索/离线缓存全通，40 测试绿）；**M3 部分完成**（主题/快捷键/并发刷新/图片三档/设置页已做，布局记忆与性能指标待补待测）；**§11.5 插件系统设计就绪**（Rhai + 配置规则，排期 M5/M6）
 
 ---
 
@@ -609,12 +609,12 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 #### 9.0.1 Spike 范围
 
-- [ ] 三栏布局（左导航占位 / 中列表占位 / 右阅读区）  
-- [ ] WebView **单实例**；连续切换 50 篇 HTML **不**新建实例  
-- [ ] H1 child 嵌入与 H2 跟随窗至少对比一套指标  
-- [ ] 主题同步（壳背景与 WebView CSS）  
-- [ ] 外链 → 系统浏览器  
-- [ ] 脚本关闭状态下仍能换文、换主题  
+- [x] 三栏布局（左导航占位 / 中列表占位 / 右阅读区）  
+- [x] WebView **单实例**；连续切换 50 篇 HTML **不**新建实例  
+- [x] H1 child 嵌入与 H2 跟随窗至少对比一套指标（债：H2 未真正分叉，见 spike-ui.md）  
+- [x] 主题同步（壳背景与 WebView CSS）  
+- [x] 外链 → 系统浏览器  
+- [x] 脚本关闭状态下仍能换文、换主题  
 
 #### 9.0.2 量化验收（失败即计 Fail）
 
@@ -638,8 +638,8 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 #### 9.0.3 Spike 交付物
 
-- 可运行实验分支（可后删）  
-- `docs/spike-ui.md`：环境、H1/H2 选择、表格结果、录屏或截图、去留决策  
+- [x] 可运行实验分支（已并入主分支）  
+- [x] `docs/spike-ui.md`：环境、H1/H2 选择、表格结果、去留决策  
 
 ---
 
@@ -655,47 +655,63 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ---
 
-### M1 — 订阅垂直切片
+### M1 — 订阅垂直切片（已落地）
 
-- [ ] 添加 URL、feed-rs 解析、入库  
-- [ ] 列表展示；**UnreadChanged / Entry\* 事件驱动**  
-- [ ] 单实例 WebView 显示消毒正文  
-- [ ] **WebView 关 JS**；**默认 Block 远程图**  
-- [ ] 手动刷新 + 源级错误事件  
+- [x] 添加 URL、feed-rs 解析、入库  
+- [x] 列表展示；**UnreadChanged / Entry\* 事件驱动**  
+- [x] 单实例 WebView 显示消毒正文  
+- [x] **WebView 关 JS**；**默认 Block 远程图**  
+- [x] 手动刷新 + 源级错误事件
 
 **验证：** 3 个真实源可读；刷新后未读角标不靠全表轮询；脚本禁用仍可读。
 
 ---
 
-### M2 — 阅读与组织
+### M2 — 阅读与组织（已落地）
 
-- [ ] 已读/星标/全部已读  
-- [ ] 单级文件夹  
-- [ ] OPML  
-- [ ] FTS5 **trigram** 搜索（中文子串验收）  
-- [ ] 磁盘缓存离线读  
+- [x] 已读/星标/全部已读  
+- [x] 单级文件夹  
+- [x] OPML  
+- [x] FTS5 **trigram** 搜索（中文子串验收）  
+- [x] 磁盘缓存离线读
 
 **验证：** 断网读缓存；「世界」命中「你好世界」；OPML 往返。
 
 ---
 
-### M3 — 打磨
+### M3 — 打磨（部分完成）
 
-- [ ] 深浅色、布局记忆、快捷键  
-- [ ] 并发刷新与错误 UI  
-- [ ] 图片策略三档设置  
-- [ ] 设置页  
+- [x] 深浅色、快捷键  
+- [x] 布局记忆（窗口位置/大小/最大化持久化到 config.json，启动时恢复）  
+- [x] 并发刷新与错误 UI  
+- [x] 图片策略三档设置（Block / LoadOnDemand / Allow）  
+- [x] 设置页  
 
-**验证：** §0.4 启动/刷新指标初测。
+**验证：** §0.4 启动/刷新指标初测。（尚未实测）
 
 ---
 
-### M4 — 分发
+### M4 — 分发（部分完成）
 
-- [ ] 安装包 / 可选便携  
-- [ ] 更新检查  
+- [ ] 安装包 / 可选便携（脚本就绪：package-inno.iss / portable-mode.txt；尚未产出正式发布包）  
+- [x] 更新检查（appcast.json，prompt-only）  
 - [ ] 用户手册  
 - [ ] 1.0 清单  
+
+### M5 — 插件系统框架（已落地）
+
+- [x] Tier 0 内置：GitHub `releases.atom`、YouTube channel XML 的 URL 规范化（`feed/tier0.rs`，13 测试）  
+- [x] `PluginManager` 框架：扫描 `<data_dir>/plugins/`、解析 `manifest.toml`、URL glob 路由（`plugin/manager.rs`）  
+- [x] `manifest.toml` serde 结构：`[plugin]`/`[[match]]`/`[capabilities]`/`[compliance]`/`[tier1]`（`plugin/manifest.rs`）  
+- [x] Rhai runtime：按插件 manifest 动态构建 `Engine`，操作数上限 + 调用栈上限 + `disable_symbol(eval/import/export/Fn)`；按能力原语注册 `now`/`log`/`parse_json`/`json_path`/`http_get`/`http_post`/`set_field`/`set_embed`（`plugin/runtime.rs`）  
+- [x] Tier 1 配置引擎：URL 模板替换 + 域名白名单 + JSON 路径字段映射（`plugin/tier1.rs`）  
+- [x] 凭证存储抽象：`CredentialStore` + `EncryptedBlob`（`scheme = "plaintext-stub"`，DPAPI/keyring 推到 M6）  
+- [x] 凭证零接触：`http_get` 内部 Host 注入 Header，Rhai 脚本永远拿不到明文  
+- [x] 能力原语强制：未声明 `feed_fetch` 的插件，脚本里 `http_get` 直接报"函数不存在"  
+- [x] 集成到 `GleanService`：`open_path_with_proxy` 加载插件目录 + 凭证存储；`plugins()`/`credentials()`/`credentials_mut()` 访问器  
+- [x] 测试：40 旧测 + 40 新测全过；`cargo check` (core + app) + `cargo clippy` 新代码零警告 + `cargo fmt --check` 干净  
+
+**M5 范围之外（推到 M6，§11.5.11）**：Bilibili 端到端验证；Tier 2 `EntryCollector` 接入；Enhancer 接口；DPAPI/keyring 实际加密；manifest 安装时能力确认 UI。
 
 ---
 

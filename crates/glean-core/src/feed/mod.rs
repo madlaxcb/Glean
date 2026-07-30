@@ -3,10 +3,12 @@
 mod discover;
 mod fetch;
 pub mod parse;
+pub mod tier0;
 
 pub use discover::discover_feed_urls;
 pub use fetch::{fetch_feed_bytes, FetchResult, HttpClient};
 pub use parse::{parse_feed, ParsedEntry, ParsedFeed};
+pub use tier0::normalize as normalize_url_tier0;
 
 /// One feed to refresh (produced by service, consumed by background thread).
 #[derive(Debug, Clone)]

@@ -15,9 +15,12 @@ repository = "https://github.com/madlaxcb/Glean"
 [workspace.dependencies]
 glean-core = { path = "crates/glean-core" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 feed-rs = "2"
 ammonia = "4"
 url = "2"
 scraper = "0.20"
+toml = "0.8"
+rhai = { version = "1.19", features = ["sync"] }

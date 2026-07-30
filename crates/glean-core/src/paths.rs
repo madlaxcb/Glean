@@ -63,6 +63,18 @@ pub fn cache_favicons_dir() -> Option<PathBuf> {
     data_base_dir().map(|b| b.join("cache").join("favicons"))
 }
 
+/// 插件目录 `<data_dir>/plugins/`。§11.5.8
+/// Returns `None` when no base data dir can be resolved.
+pub fn plugins_dir() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("plugins"))
+}
+
+/// 凭证存储路径 `<data_dir>/credentials.json`。§11.5.9
+/// Returns `None` when no base data dir can be resolved.
+pub fn credentials_path() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("credentials.json"))
+}
+
 /// `config.json` next to the DB file.
 pub fn default_config_path() -> PathBuf {
     default_db_path()

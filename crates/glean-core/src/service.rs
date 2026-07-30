@@ -10,6 +10,8 @@ use crate::feed::{
 };
 use crate::model::{EntryFilter, EntryId, FeedId};
 use crate::opml;
+use crate::paths;
+use crate::plugin::{CredentialStore, PluginManager};
 use crate::store::Store;
 use std::path::Path;
 
@@ -18,6 +20,10 @@ pub struct GleanService {
     filter: EntryFilter,
     search_query: String,
     http: HttpClient,
+    /// §11.5 插件管理器。`None` 表示 in-memory 模式（测试用），不加载磁盘插件。
+    plugin_mgr: Option<PluginManager>,
+    /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。
+    credentials: Option<CredentialStore>,
 }
 
 impl GleanService {
@@ -31,6 +37,8 @@ impl GleanService {
             filter: EntryFilter::All,
             search_query: String::new(),
             http: HttpClient::with_proxy(proxy_url)?,
+            plugin_mgr: None,
+            credentials: None,
         })
     }
 
@@ -39,12 +47,33 @@ impl GleanService {
     }
 
     pub fn open_path_with_proxy(path: &Path, proxy_url: Option<&str>) -> Result<Self> {
+        // §11.5.8 / §11.5.9 加载插件目录 + 凭证存储。失败不阻塞核心功能：
+        // 插件系统是扩展层，DB/HTTP/订阅主线必须能独立工作。
+        let plugin_mgr = paths::plugins_dir().and_then(|d| PluginManager::new(d).ok());
+        let credentials = paths::credentials_path().and_then(|p| CredentialStore::open(p).ok());
         Ok(Self {
             store: Store::open_path(path)?,
             filter: EntryFilter::All,
             search_query: String::new(),
             http: HttpClient::with_proxy(proxy_url)?,
+            plugin_mgr,
+            credentials,
         })
+    }
+
+    /// 访问插件管理器（§11.5）。M5 仅完成框架加载；Tier 1/2 端到端接入排到 M6。
+    pub fn plugins(&self) -> Option<&PluginManager> {
+        self.plugin_mgr.as_ref()
+    }
+
+    /// 访问凭证存储（§11.5.9）。
+    pub fn credentials(&self) -> Option<&CredentialStore> {
+        self.credentials.as_ref()
+    }
+
+    /// 可变访问凭证存储——设置 UI 输入凭证后调用。
+    pub fn credentials_mut(&mut self) -> Option<&mut CredentialStore> {
+        self.credentials.as_mut()
     }
 
     pub fn handle(&mut self, cmd: AppCommand) -> Vec<AppEvent> {
@@ -483,11 +512,14 @@ impl GleanService {
     }
 
     fn add_feed_from_url(&mut self, feed_url: &str) -> Result<Vec<AppEvent>> {
-        let url = feed_url.trim();
-        if url.is_empty() {
+        let trimmed = feed_url.trim();
+        if trimmed.is_empty() {
             return Err(CoreError::Message("订阅 URL 为空".into()));
         }
-        if let Some(existing) = self.store.find_feed_by_url(url)? {
+        // §11.5.2 Tier 0: 对 GitHub releases / YouTube channel 做 URL 规范化。
+        // 规范化后的 URL 才是真正入库的订阅地址。
+        let url = crate::feed::tier0::normalize(trimmed);
+        if let Some(existing) = self.store.find_feed_by_url(&url)? {
             let mut ev = vec![AppEvent::Status {
                 message: format!("源已存在，已刷新 id={}", existing.0),
             }];
@@ -500,14 +532,14 @@ impl GleanService {
         }
 
         // Try 1: parse URL directly as a feed.
-        match self.try_add_as_feed(url) {
+        match self.try_add_as_feed(&url) {
             Ok(Some(events)) => return Ok(events),
             Ok(None) => {} // Not a feed, fall through to discovery.
             Err(e) => return Err(e),
         }
 
         // Try 2: fetch as HTML and discover feed links.
-        self.try_discover_and_add(url)
+        self.try_discover_and_add(&url)
     }
 
     /// Try to add the URL as a feed. Returns Ok(None) if it's not a feed.

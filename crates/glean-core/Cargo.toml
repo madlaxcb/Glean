@@ -7,6 +7,7 @@ description = "Glean domain types, store, feed fetch, commands and events (no UI
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { workspace = true }
@@ -14,3 +15,5 @@ feed-rs = { workspace = true }
 ammonia = { workspace = true }
 url = { workspace = true }
 scraper = { workspace = true }
+toml = { workspace = true }
+rhai = { workspace = true }

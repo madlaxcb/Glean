@@ -11,6 +11,7 @@ mod image_cache;
 mod model;
 mod opml;
 mod paths;
+pub mod plugin;
 mod reader_html;
 mod sanitize;
 mod service;
@@ -32,8 +33,12 @@ pub use model::{
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{
-    cache_entries_dir, cache_favicons_dir, cache_images_dir, clear_all_cache, default_config_path,
-    default_db_path,
+    cache_entries_dir, cache_favicons_dir, cache_images_dir, clear_all_cache, credentials_path,
+    default_config_path, default_db_path, plugins_dir,
+};
+pub use plugin::{
+    Capabilities, Compliance, Credential, CredentialStore, LoadedPlugin, Manifest, MatchRule,
+    PluginManager, PluginMeta, Runtime, Tier, Tier1Config, Tier1FieldMap,
 };
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};
