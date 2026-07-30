@@ -32,6 +32,8 @@ pub struct Feed {
     /// Favicon URL (discovered from feed or site HTML). None if not yet
     /// resolved; Some("") if resolution attempted but no icon found.
     pub favicon_url: Option<String>,
+    /// Consecutive refresh failures. Reset to 0 on success.
+    pub consecutive_failures: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

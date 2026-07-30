@@ -32,7 +32,8 @@ pub use model::{
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{
-    cache_entries_dir, cache_favicons_dir, cache_images_dir, default_config_path, default_db_path,
+    cache_entries_dir, cache_favicons_dir, cache_images_dir, clear_all_cache, default_config_path,
+    default_db_path,
 };
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};

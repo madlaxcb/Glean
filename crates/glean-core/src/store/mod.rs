@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub struct Store {
     conn: Connection,
@@ -210,6 +210,17 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 7 {
+            // Consecutive refresh failure count for each feed.
+            self.conn.execute_batch(
+                "ALTER TABLE feeds ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '7')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -343,7 +354,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url, consecutive_failures FROM feeds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -356,6 +367,7 @@ impl Store {
                 muted: r.get::<_, i64>(6)? != 0,
                 refresh_interval_secs: r.get(7)?,
                 favicon_url: r.get(8)?,
+                consecutive_failures: r.get(9)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -612,7 +624,7 @@ impl Store {
         let now = now_secs();
         if let Some(err) = error {
             self.conn.execute(
-                "UPDATE feeds SET last_error = ?1, last_fetched_at = ?2 WHERE id = ?3",
+                "UPDATE feeds SET last_error = ?1, last_fetched_at = ?2, consecutive_failures = consecutive_failures + 1 WHERE id = ?3",
                 params![err, now, id.0],
             )?;
             return Ok(());
@@ -625,7 +637,8 @@ impl Store {
                 last_modified = COALESCE(?4, last_modified),
                 last_error = NULL,
                 last_fetched_at = ?5,
-                last_refresh = ?5
+                last_refresh = ?5,
+                consecutive_failures = 0
              WHERE id = ?6",
             params![title, site_url, etag, last_modified, now, id.0],
         )?;

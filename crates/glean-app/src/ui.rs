@@ -761,6 +761,20 @@ impl eframe::App for SpikeApp {
                         .weak(),
                     );
 
+                    ui.add_space(8.0);
+                    ui.heading("存储");
+                    if ui.button("清除所有缓存").clicked() {
+                        let removed = glean_core::clear_all_cache();
+                        // Also clear in-memory favicon textures.
+                        self.favicons.clear();
+                        self.state.status = format!("已清除 {} 个缓存文件", removed);
+                    }
+                    ui.label(
+                        RichText::new("清除正文缓存、图片缓存、Favicon 缓存（数据库不受影响）")
+                            .small()
+                            .weak(),
+                    );
+
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -956,7 +970,11 @@ impl SpikeApp {
                 EntryFilter::Feed(id) if id == feed.id
             );
             let error_mark = if feed.last_error.is_some() {
-                " ⚠"
+                if feed.consecutive_failures > 1 {
+                    " ⚠✕"
+                } else {
+                    " ⚠"
+                }
             } else {
                 ""
             };
@@ -1010,7 +1028,11 @@ impl SpikeApp {
                     EntryFilter::Feed(id) if id == feed.id
                 );
                 let error_mark = if feed.last_error.is_some() {
-                    " ⚠"
+                    if feed.consecutive_failures > 1 {
+                        " ⚠✕"
+                    } else {
+                        " ⚠"
+                    }
                 } else {
                     ""
                 };

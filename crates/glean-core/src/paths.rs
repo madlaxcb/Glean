@@ -70,3 +70,29 @@ pub fn default_config_path() -> PathBuf {
         .map(|p| p.join("config.json"))
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
+
+/// Clear all cache subdirectories (entries, images, favicons).
+/// Returns the number of files removed.
+pub fn clear_all_cache() -> u64 {
+    let dirs = [
+        cache_entries_dir(),
+        cache_images_dir(),
+        cache_favicons_dir(),
+    ];
+    let mut removed = 0u64;
+    for dir in dirs.iter().flatten() {
+        if !dir.exists() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_file() {
+                    if std::fs::remove_file(entry.path()).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+    }
+    removed
+}
