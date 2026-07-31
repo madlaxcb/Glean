@@ -17,7 +17,7 @@ glean-core = { path = "crates/glean-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip"] }
 feed-rs = "2"
 ammonia = "4"
 url = "2"
