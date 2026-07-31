@@ -1,4 +1,4 @@
-// Bilibili 用户投稿 Tier 2 适配器。§11.5.11
+// Bilibili 用户投稿 Tier 2 适配器。
 //
 // 算法：b_nut(客户端生成) + buvid3/buvid4(SPI 匿名拿) → nav(wbi keys) →
 //       wbi 签名 → wbi/arc/search 拉视频列表。

@@ -21,6 +21,10 @@ pub struct SpikeApp {
     show_errors: bool,
     /// Show settings popup.
     show_settings: bool,
+    /// Show plugin manager popup.
+    show_plugins: bool,
+    /// 卸载确认：挂起的插件 id（两段式确认，避免误删）。
+    confirm_uninstall: Option<String>,
     /// Cached favicon textures keyed by FeedId.
     favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
@@ -43,6 +47,8 @@ impl SpikeApp {
             show_opml_import: false,
             show_errors: false,
             show_settings: false,
+            show_plugins: false,
+            confirm_uninstall: None,
             favicons: std::collections::HashMap::new(),
             geometry_timer: 0.0,
         }
@@ -236,6 +242,9 @@ impl eframe::App for SpikeApp {
                     if ui.button("Theme").clicked() {
                         self.state.toggle_theme(ctx);
                     }
+                    if ui.button("插件").clicked() {
+                        self.show_plugins = !self.show_plugins;
+                    }
                     if ui.button("设置").clicked() {
                         self.show_settings = !self.show_settings;
                     }
@@ -361,6 +370,8 @@ impl eframe::App for SpikeApp {
                 self.show_errors = false;
             } else if self.show_opml_import {
                 self.show_opml_import = false;
+            } else if self.show_plugins {
+                self.show_plugins = false;
             } else if self.show_settings {
                 self.show_settings = false;
             } else if self.state.opml_export.is_some() {
@@ -471,6 +482,7 @@ impl eframe::App for SpikeApp {
             || self.state.rename_feed.is_some()
             || self.state.edit_feed_url.is_some()
             || self.show_errors
+            || self.show_plugins
             || self.show_settings
             || self.state.update_available.is_some();
         self.state.reader.set_hidden(has_popup);
@@ -1025,85 +1037,15 @@ impl eframe::App for SpikeApp {
 
                     ui.add_space(8.0);
                     ui.heading("插件");
-                    let plugins: Vec<&glean_core::LoadedPlugin> = self
-                        .state
-                        .service
-                        .plugins()
-                        .map(|m| m.list().iter().collect())
-                        .unwrap_or_default();
-                    if plugins.is_empty() {
-                        ui.label(
-                            RichText::new("未加载任何插件（在数据目录 plugins/ 下放置插件目录）")
-                                .small()
-                                .weak(),
-                        );
-                    } else {
-                        for p in plugins {
-                            let tier_label = match p.manifest.plugin.tier {
-                                glean_core::Tier::Config => "Tier 1 配置",
-                                glean_core::Tier::Script => "Tier 2 脚本",
-                                glean_core::Tier::Builtin => "内置",
-                            };
-                            ui.add_space(4.0);
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} v{} [{}]  id={}",
-                                    p.manifest.plugin.name,
-                                    p.manifest.plugin.version,
-                                    tier_label,
-                                    p.manifest.plugin.id,
-                                ))
-                                .strong(),
-                            );
-                            let patterns = p
-                                .manifest
-                                .r#match
-                                .iter()
-                                .map(|r| r.url_pattern.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            ui.label(
-                                RichText::new(format!("URL 匹配: {patterns}"))
-                                    .small()
-                                    .weak(),
-                            );
-                            let caps = &p.manifest.capabilities;
-                            let mut cap_bits = Vec::new();
-                            if !caps.feed_fetch.is_empty() {
-                                cap_bits.push(format!("fetch=[{}]", caps.feed_fetch.join(", ")));
-                            }
-                            if !caps.credential_use.is_empty() {
-                                cap_bits
-                                    .push(format!("creds=[{}]", caps.credential_use.join(", ")));
-                            }
-                            if !caps.content_transform.is_empty() {
-                                cap_bits.push(format!(
-                                    "transform=[{}]",
-                                    caps.content_transform.join(", ")
-                                ));
-                            }
-                            if !caps.external_call.is_empty() {
-                                cap_bits
-                                    .push(format!("external=[{}]", caps.external_call.join(", ")));
-                            }
-                            if !cap_bits.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("能力: {}", cap_bits.join(" · ")))
-                                        .small()
-                                        .weak(),
-                                );
-                            }
-                            if p.manifest.compliance.uses_user_session {
-                                ui.label(
-                                    RichText::new(
-                                        "合规: 使用用户会话（凭证 Host 注入，插件不可见）",
-                                    )
-                                    .small()
-                                    .weak(),
-                                );
-                            }
-                        }
+                    if ui.button("管理插件…").clicked() {
+                        self.show_settings = false;
+                        self.show_plugins = true;
                     }
+                    ui.label(
+                        RichText::new("安装 / 卸载 / 启用停用，见「插件管理」窗口")
+                            .small()
+                            .weak(),
+                    );
 
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
@@ -1116,6 +1058,181 @@ impl eframe::App for SpikeApp {
                 });
             if close {
                 self.show_settings = false;
+            }
+        }
+
+        // Plugin manager popup.
+        if self.show_plugins {
+            let mut open = true;
+            let mut close = false;
+            egui::Window::new("插件管理")
+                .open(&mut open)
+                .default_size([560.0, 400.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("安装插件（文件夹）…").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                self.state.install_plugin_from_dir(&dir);
+                            }
+                        }
+                        if ui.button("安装插件（zip）…").clicked() {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .add_filter("zip 压缩包", &["zip"])
+                                .pick_file()
+                            {
+                                self.state.install_plugin_from_zip(&file);
+                            }
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "插件目录: <data_dir>/plugins/<id>/（manifest.toml + adapter.rhai），官方插件见仓库 plugins/ 目录",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.separator();
+                    // 克隆列表：循环内要对 self.state 做可变操作。
+                    let plugin_list: Vec<glean_core::plugin::LoadedPlugin> = self
+                        .state
+                        .service
+                        .plugins()
+                        .map(|m| m.list().to_vec())
+                        .unwrap_or_default();
+                    if plugin_list.is_empty() {
+                        ui.label(
+                            RichText::new("未安装任何插件。点击上方按钮安装，或从仓库 plugins/ 目录导入。")
+                                .weak(),
+                        );
+                    }
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for p in &plugin_list {
+                                let id = &p.manifest.plugin.id;
+                                let disabled = self
+                                    .state
+                                    .service
+                                    .plugins()
+                                    .map(|m| m.is_disabled(id))
+                                    .unwrap_or(false);
+                                let tier_label = match p.manifest.plugin.tier {
+                                    glean_core::Tier::Config => "Tier 1 配置",
+                                    glean_core::Tier::Script => "Tier 2 脚本",
+                                    glean_core::Tier::Builtin => "内置",
+                                };
+                                egui::Frame::group(ui.style()).show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} v{}",
+                                                p.manifest.plugin.name, p.manifest.plugin.version
+                                            ))
+                                            .strong(),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("({id}) [{tier_label}]")).weak(),
+                                        );
+                                    });
+                                    let patterns = p
+                                        .manifest
+                                        .r#match
+                                        .iter()
+                                        .map(|r| r.url_pattern.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    if !patterns.is_empty() {
+                                        ui.label(
+                                            RichText::new(format!("匹配: {patterns}"))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
+                                    let caps = &p.manifest.capabilities;
+                                    let mut cap_bits = Vec::new();
+                                    if !caps.feed_fetch.is_empty() {
+                                        cap_bits.push(format!(
+                                            "fetch=[{}]",
+                                            caps.feed_fetch.join(", ")
+                                        ));
+                                    }
+                                    if !caps.credential_use.is_empty() {
+                                        cap_bits.push(format!(
+                                            "creds=[{}]",
+                                            caps.credential_use.join(", ")
+                                        ));
+                                    }
+                                    if !caps.content_transform.is_empty() {
+                                        cap_bits.push(format!(
+                                            "transform=[{}]",
+                                            caps.content_transform.join(", ")
+                                        ));
+                                    }
+                                    if !caps.external_call.is_empty() {
+                                        cap_bits.push(format!(
+                                            "external=[{}]",
+                                            caps.external_call.join(", ")
+                                        ));
+                                    }
+                                    if !cap_bits.is_empty() {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "能力: {}",
+                                                cap_bits.join(" · ")
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                    if p.manifest.compliance.uses_user_session {
+                                        ui.label(
+                                            RichText::new(
+                                                "合规: 使用用户会话（凭证 Host 注入，插件不可见）",
+                                            )
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                    ui.horizontal(|ui| {
+                                        let mut enabled = !disabled;
+                                        if ui.checkbox(&mut enabled, "启用").changed() {
+                                            self.state.toggle_plugin(id, enabled);
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if self.confirm_uninstall.as_deref()
+                                                    == Some(id.as_str())
+                                                {
+                                                    if ui.button("确认卸载？").clicked() {
+                                                        self.state.uninstall_plugin(id);
+                                                        self.confirm_uninstall = None;
+                                                    }
+                                                    if ui.button("取消").clicked() {
+                                                        self.confirm_uninstall = None;
+                                                    }
+                                                } else if ui.button("卸载").clicked() {
+                                                    self.confirm_uninstall = Some(id.clone());
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            }
+                        });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("关闭").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                });
+            if !open || close {
+                self.show_plugins = false;
+                self.confirm_uninstall = None;
             }
         }
 

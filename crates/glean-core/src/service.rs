@@ -14,6 +14,7 @@ use crate::opml;
 use crate::paths;
 use crate::plugin::{CredentialStore, PluginManager};
 use crate::store::Store;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,8 +25,13 @@ pub struct GleanService {
     /// `Arc` 便于把同一个 HTTP 客户端（含代理配置）共享给刷新 worker 线程。
     http: Arc<HttpClient>,
     /// §11.5 插件管理器。`None` 表示 in-memory 模式（测试用），不加载磁盘插件。
-    /// `Arc` 共享给 worker 线程做 URL→插件路由（加载后只读）。
+    /// `Arc` 共享给 worker 线程做 URL→插件路由（加载后只读）。启停/安装/卸载
+    /// 通过「重建 manager」生效：UI 调 service 方法，内部写磁盘 + 重建替换 Arc，
+    /// 正在执行的 worker 继续用旧快照完成当前刷新。
     plugin_mgr: Option<Arc<PluginManager>>,
+    /// 已停用的插件 id（启停状态源）。重建 manager 时应用给它；UI 通过
+    /// [`disabled_plugins`](Self::disabled_plugins) 读回写进 `AppConfig`。
+    plugin_disabled: HashSet<String>,
     /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。owned 在此负责可变写入 + 落盘；
     /// worker 线程通过 `Clone` 取快照。
     credentials: Option<CredentialStore>,
@@ -47,6 +53,7 @@ impl GleanService {
             search_query: String::new(),
             http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr: None,
+            plugin_disabled: HashSet::new(),
             credentials: None,
             ai_config: None,
         })
@@ -69,6 +76,7 @@ impl GleanService {
             search_query: String::new(),
             http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr,
+            plugin_disabled: HashSet::new(),
             credentials,
             ai_config: None,
         })
@@ -77,6 +85,80 @@ impl GleanService {
     /// 访问插件管理器（§11.5）。
     pub fn plugins(&self) -> Option<&PluginManager> {
         self.plugin_mgr.as_deref()
+    }
+
+    /// 用 `AppConfig.disabled_plugins` 同步插件启停状态并重建 manager。
+    /// UI 启动时调用一次。
+    pub fn reload_plugins(&mut self, disabled: &[String]) -> Result<()> {
+        self.plugin_disabled = disabled.iter().cloned().collect();
+        self.rebuild_plugins()
+    }
+
+    /// 启用/停用插件。「插件管理」界面开关回调；列表变化通过
+    /// [`disabled_plugins`](Self::disabled_plugins) 读回写进 `AppConfig`。
+    pub fn set_plugin_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
+        let exists = self
+            .plugin_mgr
+            .as_ref()
+            .map(|m| m.list().iter().any(|p| p.manifest.plugin.id == id))
+            .unwrap_or(false);
+        if !exists {
+            return Err(CoreError::Message(format!("插件不存在: {id}")));
+        }
+        if enabled {
+            self.plugin_disabled.remove(id);
+        } else {
+            self.plugin_disabled.insert(id.to_string());
+        }
+        self.rebuild_plugins()
+    }
+
+    /// 当前停用的插件 id（供 UI 写回 `AppConfig.disabled_plugins`）。
+    pub fn disabled_plugins(&self) -> Vec<String> {
+        self.plugin_disabled.iter().cloned().collect()
+    }
+
+    /// 安装插件（文件夹导入）。返回插件 id；失败时（manifest 无效 /
+    /// id 已存在）不改动任何文件。
+    pub fn install_plugin_dir(&mut self, src: &Path) -> Result<String> {
+        let id = self.require_plugin_mgr()?.install_from_dir(src)?;
+        self.rebuild_plugins()?;
+        Ok(id)
+    }
+
+    /// 安装插件（zip 导入）。zip 顶层或第一层子目录含 manifest.toml 均可。
+    pub fn install_plugin_zip(&mut self, zip_path: &Path) -> Result<String> {
+        let id = self.require_plugin_mgr()?.install_from_zip(zip_path)?;
+        self.rebuild_plugins()?;
+        Ok(id)
+    }
+
+    /// 卸载插件：删除 `plugins/<id>/` 目录，并从停用集合清除。
+    pub fn uninstall_plugin(&mut self, id: &str) -> Result<()> {
+        self.require_plugin_mgr()?.uninstall(id)?;
+        self.plugin_disabled.remove(id);
+        self.rebuild_plugins()
+    }
+
+    /// 重建 PluginManager（重扫磁盘）+ 应用停用集合，替换共享 `Arc`。
+    /// in-memory 模式无插件目录时静默跳过。
+    fn rebuild_plugins(&mut self) -> Result<()> {
+        let Some(mgr) = &self.plugin_mgr else {
+            return Ok(());
+        };
+        if mgr.plugins_dir().as_os_str().is_empty() {
+            return Ok(());
+        }
+        let mut rebuilt = PluginManager::new(mgr.plugins_dir().to_path_buf())?;
+        rebuilt.set_disabled(&self.plugin_disabled);
+        self.plugin_mgr = Some(Arc::new(rebuilt));
+        Ok(())
+    }
+
+    fn require_plugin_mgr(&self) -> Result<&PluginManager> {
+        self.plugin_mgr
+            .as_deref()
+            .ok_or_else(|| CoreError::Message("插件系统不可用（内存模式）".into()))
     }
 
     /// 访问凭证存储（§11.5.9）。

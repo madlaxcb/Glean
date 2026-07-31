@@ -1,4 +1,8 @@
-# Bilibili 用户投稿适配器 (Tier 2 脚本)。§11.5.11
+# Bilibili 用户投稿适配器 (Tier 2 脚本)。
+#
+# 官方插件：随 Glean 仓库 `plugins/` 目录分发。安装方式：
+# - 在「插件管理」界面导入本目录（或 plugins/bilibili.zip）
+# - 或手动复制到 <data_dir>/plugins/bilibili/
 #
 # 匿名订阅模式：不需要用户凭证。脚本内部从 SPI endpoint 获取 buvid3 设备指纹
 # （匿名可拿）+ 客户端生成的 b_nut 时间戳，构造 Cookie header 走 wbi 签名流程。

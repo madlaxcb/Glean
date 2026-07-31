@@ -303,6 +303,11 @@ impl SpikeState {
         if let Some(ai) = s.config.ai.clone() {
             s.service.set_ai_config(ai);
         }
+        // 同步插件启停状态（AppConfig.disabled_plugins → PluginManager）。
+        let disabled = s.config.disabled_plugins.clone();
+        if let Err(e) = s.service.reload_plugins(&disabled) {
+            s.status = format!("插件加载失败: {e}");
+        }
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s.spawn_update_check();
         s
@@ -1188,6 +1193,50 @@ impl SpikeState {
         self.ai_key_input.clear();
         self.save_config();
         self.status = "AI 配置已清除".into();
+    }
+
+    /// 启用/停用插件（「插件管理」界面开关）。变化写回 `config.disabled_plugins`。
+    pub fn toggle_plugin(&mut self, id: &str, enabled: bool) {
+        match self.service.set_plugin_enabled(id, enabled) {
+            Ok(()) => {
+                self.config.disabled_plugins = self.service.disabled_plugins();
+                self.save_config();
+                if enabled {
+                    self.status = format!("插件已启用: {id}");
+                } else {
+                    self.status = format!("插件已停用: {id}");
+                }
+            }
+            Err(e) => self.status = format!("插件操作失败: {e}"),
+        }
+    }
+
+    /// 安装插件（文件夹导入）。
+    pub fn install_plugin_from_dir(&mut self, src: &std::path::Path) {
+        match self.service.install_plugin_dir(src) {
+            Ok(id) => self.status = format!("插件已安装: {id}"),
+            Err(e) => self.status = format!("安装失败: {e}"),
+        }
+    }
+
+    /// 安装插件（zip 导入）。
+    pub fn install_plugin_from_zip(&mut self, zip_path: &std::path::Path) {
+        match self.service.install_plugin_zip(zip_path) {
+            Ok(id) => self.status = format!("插件已安装: {id}"),
+            Err(e) => self.status = format!("安装失败: {e}"),
+        }
+    }
+
+    /// 卸载插件。变化写回 `config.disabled_plugins`。
+    pub fn uninstall_plugin(&mut self, id: &str) {
+        match self.service.uninstall_plugin(id) {
+            Ok(()) => {
+                self.config.disabled_plugins = self.service.disabled_plugins();
+                self.save_config();
+                self.status = format!("插件已卸载: {id}");
+            }
+            Err(e) => self.status = format!("卸载失败: {e}"),
+        }
     }
 
     pub fn reset_layout(&mut self) {

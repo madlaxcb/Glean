@@ -150,6 +150,9 @@ pub struct AppConfig {
     /// `api_key_cipher` 是 `encrypt_secret` 输出的 JSON blob，不在内存里留明文。
     #[serde(default)]
     pub ai: Option<AiConfig>,
+    /// 已停用的插件 id 列表（「插件管理」界面启停；路由跳过停用插件）。
+    #[serde(default)]
+    pub disabled_plugins: Vec<String>,
 }
 
 /// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。
@@ -195,6 +198,7 @@ impl Default for AppConfig {
             window_h: None,
             window_maximized: false,
             ai: None,
+            disabled_plugins: Vec::new(),
         }
     }
 }
