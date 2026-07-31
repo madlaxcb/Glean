@@ -1086,7 +1086,7 @@ impl eframe::App for SpikeApp {
                     });
                     ui.label(
                         RichText::new(
-                            "插件目录: <data_dir>/plugins/<id>/（manifest.toml + adapter.rhai），官方插件见仓库 plugins/ 目录",
+                            "插件目录: <data_dir>/plugins/<id>/（manifest.toml + adapter.rhai），官方插件见仓库 plugin/ 目录",
                         )
                         .small()
                         .weak(),
@@ -1101,7 +1101,7 @@ impl eframe::App for SpikeApp {
                         .unwrap_or_default();
                     if plugin_list.is_empty() {
                         ui.label(
-                            RichText::new("未安装任何插件。点击上方按钮安装，或从仓库 plugins/ 目录导入。")
+                            RichText::new("未安装任何插件。点击上方按钮安装，或从仓库 plugin/ 目录导入。")
                                 .weak(),
                         );
                     }
