@@ -12,10 +12,11 @@ mod update;
 
 use eframe::egui;
 use glean_core::{
-    default_config_path, default_db_path, run_extract_task, run_refresh_task_with_ctx,
-    should_extract, AppCommand, AppConfig, AppEvent, EntryDetail, EntryFilter, EntryId,
-    EntrySummary, ExtractOutcome, ExtractTask, FaviconCache, Feed, FeedId, Folder, FolderId,
-    GleanService, ImagePolicy, ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
+    default_config_path, default_db_path, run_enhance_task, run_extract_task,
+    run_refresh_task_with_ctx, should_extract, AppCommand, AppConfig, AppEvent, EnhanceAction,
+    EnhanceOutcome, EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome, ExtractTask,
+    FaviconCache, Feed, FeedId, Folder, FolderId, GleanService, ImagePolicy, ReaderHostMode,
+    RefreshCtx, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -185,6 +186,12 @@ pub struct SpikeState {
     pub font_size_input: String,
     /// Buffer for line width input in settings.
     pub line_width_input: String,
+    /// AI 设置缓冲：Base URL（TextEdit 需跨帧存活）。
+    pub ai_base_url_input: String,
+    /// AI 设置缓冲：模型名。
+    pub ai_model_input: String,
+    /// AI 设置缓冲：api_key 明文（password 输入；保存时加密为 cipher）。
+    pub ai_key_input: String,
     /// Per-article one-shot override: when true, reader renders with Allow
     /// regardless of config.image_policy. Reset on entry switch.
     pub reader_show_images: bool,
@@ -198,6 +205,10 @@ pub struct SpikeState {
     extract_rx: Option<mpsc::Receiver<ExtractOutcome>>,
     /// Entry currently being extracted (to avoid duplicate tasks).
     extract_in_flight: Option<EntryId>,
+    /// Background AI enhance receiver.
+    enhance_rx: Option<mpsc::Receiver<EnhanceOutcome>>,
+    /// (entry_id, kind) currently being enhanced; prevents duplicate concurrent tasks.
+    enhance_in_flight: Option<(EntryId, String)>,
     /// Background image-cache receiver: (rewritten_html, dark, image_policy).
     img_cache_rx: Option<mpsc::Receiver<(String, bool, ImagePolicy)>>,
     /// Background favicon download receiver: (feed_id, rgba_bytes, width, height).
@@ -253,6 +264,24 @@ impl SpikeState {
             refresh_interval_input: config.refresh_interval_secs.to_string(),
             font_size_input: config.font_size_px.to_string(),
             line_width_input: config.line_width_rem.to_string(),
+            // AI 设置缓冲：回填已存配置；api_key 解密回填便于查看/修改。
+            ai_base_url_input: config
+                .ai
+                .as_ref()
+                .map(|a| a.base_url.clone())
+                .unwrap_or_default(),
+            ai_model_input: config
+                .ai
+                .as_ref()
+                .map(|a| a.model.clone())
+                .unwrap_or_default(),
+            ai_key_input: config
+                .ai
+                .as_ref()
+                .and_then(|a| {
+                    glean_core::plugin::credential::decrypt_secret(&a.api_key_cipher).ok()
+                })
+                .unwrap_or_default(),
             config,
             config_path,
             auto_refresh_timer: 0.0,
@@ -262,12 +291,18 @@ impl SpikeState {
             update_available: None,
             extract_rx: None,
             extract_in_flight: None,
+            enhance_rx: None,
+            enhance_in_flight: None,
             img_cache_rx: None,
             favicon_rx: None,
             favicon_pending: std::collections::HashSet::new(),
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
+        // 若配置了 AI，把配置注入 service（供同步 fallback 命令使用）。
+        if let Some(ai) = s.config.ai.clone() {
+            s.service.set_ai_config(ai);
+        }
         s.dispatch(AppCommand::Bootstrap { seed_demo: true });
         s.spawn_update_check();
         s
@@ -482,6 +517,13 @@ impl SpikeState {
                 // to refresh the reader; nothing to project here beyond status.
                 if success {
                     self.status = format!("已抽取全文 (entry {})", id.0);
+                }
+            }
+            AppEvent::EntryEnhanced { id, kind, success } => {
+                // 成功时更新状态栏；失败时由并发的 Status 事件报错。
+                // 增强结果面板的刷新在 poll_enhance 中处理（重新拉取 enhancements）。
+                if success {
+                    self.status = format!("AI {} 完成 (entry {})", kind, id.0);
                 }
             }
         }
@@ -805,6 +847,82 @@ impl SpikeState {
         }
     }
 
+    /// 手动触发 AI 增强（摘要/翻译）。异步：prepare → spawn worker → poll。
+    /// 需 `AppConfig.ai` 已配置。同一 (entry, kind) 不重复并发。
+    pub fn enhance_current(&mut self, action: EnhanceAction) {
+        // 未配置 AI 或已有任务在跑 → 直接静默返回（UI 按钮应已根据 config.ai 禁用）。
+        if self.config.ai.is_none() || self.enhance_rx.is_some() {
+            return;
+        }
+        let entry = match &self.open_detail {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        let kind = action.kind_str().to_string();
+        let id = entry.summary.id;
+        // 同一 kind 已在跑 → 跳过。
+        if let Some((inflight_id, inflight_kind)) = &self.enhance_in_flight {
+            if *inflight_id == id && inflight_kind == &kind {
+                return;
+            }
+        }
+        let cfg = match self.config.ai.clone() {
+            Some(c) => c,
+            None => return,
+        };
+        let task = match self.service.prepare_enhance_task(id, action) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                self.status = "无内容可增强".into();
+                return;
+            }
+            Err(e) => {
+                self.status = format!("AI 准备失败: {e}");
+                return;
+            }
+        };
+        let (tx, rx) = mpsc::channel::<EnhanceOutcome>();
+        self.enhance_rx = Some(rx);
+        self.enhance_in_flight = Some((id, kind.clone()));
+        self.status = format!("AI {} 进行中…", kind);
+        thread::spawn(move || {
+            // 与 extract 一致：独立 blocking client，30s 超时。
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .expect("enhance client");
+            let outcome = run_enhance_task(&client, &cfg, &task);
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// Poll the AI enhance thread (called every frame from update).
+    pub fn poll_enhance(&mut self) {
+        let rx = match &self.enhance_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        if let Ok(outcome) = rx.try_recv() {
+            self.enhance_rx = None;
+            self.enhance_in_flight = None;
+            let id = match &outcome {
+                EnhanceOutcome::Success { entry_id, .. } => *entry_id,
+                EnhanceOutcome::Failed { entry_id, .. } => *entry_id,
+            };
+            let events = self.service.apply_enhance_outcome(outcome);
+            for ev in events {
+                self.apply_event(ev);
+            }
+            // 刷新打开的 entry：re-open 会重新拉取 enhancements 列表。
+            if let Some(open) = &self.open_detail {
+                if open.summary.id == id {
+                    self.dispatch(AppCommand::OpenEntry { id });
+                }
+            }
+        }
+    }
+
     /// Maybe spawn background image caching for the current entry.
     /// Only when cache_images is on and images are being shown (Allow or
     /// LoadOnDemand+override) and no caching task is already in flight.
@@ -1012,6 +1130,66 @@ impl SpikeState {
         self.extract_in_flight
     }
 
+    /// (entry_id, kind) currently being AI-enhanced (for UI button gating).
+    pub fn enhance_in_flight(&self) -> Option<&(EntryId, String)> {
+        self.enhance_in_flight.as_ref()
+    }
+
+    /// AI 配置是否已就绪（UI 按钮启用/禁用判断）。
+    pub fn ai_configured(&self) -> bool {
+        self.config.ai.is_some()
+    }
+
+    /// 从设置缓冲保存 AI 配置：api_key 加密后入 `config.ai` + 注入 service。
+    /// key 输入为空且已有配置时保留原密文（便于只改 URL/模型）。
+    pub fn save_ai_config(&mut self) {
+        let base_url = self.ai_base_url_input.trim().to_string();
+        if base_url.is_empty() {
+            self.status = "AI 配置未保存：Base URL 不能为空".into();
+            return;
+        }
+        let model = self.ai_model_input.trim().to_string();
+        if model.is_empty() {
+            self.status = "AI 配置未保存：模型不能为空".into();
+            return;
+        }
+        let api_key_cipher = if !self.ai_key_input.is_empty() {
+            match glean_core::plugin::credential::encrypt_secret(&self.ai_key_input) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.status = format!("AI api_key 加密失败: {e}");
+                    return;
+                }
+            }
+        } else {
+            self.config
+                .ai
+                .as_ref()
+                .map(|a| a.api_key_cipher.clone())
+                .unwrap_or_default()
+        };
+        let cfg = glean_core::AiConfig {
+            base_url,
+            model,
+            api_key_cipher,
+        };
+        self.config.ai = Some(cfg.clone());
+        self.service.set_ai_config(cfg);
+        self.save_config();
+        self.status = "AI 配置已保存".into();
+    }
+
+    /// 清除 AI 配置（config + service + 输入缓冲）。
+    pub fn clear_ai_config(&mut self) {
+        self.config.ai = None;
+        self.service.clear_ai_config();
+        self.ai_base_url_input.clear();
+        self.ai_model_input.clear();
+        self.ai_key_input.clear();
+        self.save_config();
+        self.status = "AI 配置已清除".into();
+    }
+
     pub fn reset_layout(&mut self) {
         self.nav_width = 200.0;
         self.list_width = 320.0;
@@ -1054,18 +1232,53 @@ fn render_entry(
     } else {
         &entry.content_html
     };
+    // 在正文下方追加 AI 增强结果（摘要/翻译）。转义文本避免被当成 HTML。
+    let body_with_enhancements = if entry.enhancements.is_empty() {
+        body.to_string()
+    } else {
+        let mut html = body.to_string();
+        for (kind, content) in &entry.enhancements {
+            let label = match kind.as_str() {
+                "summary" => "AI 摘要",
+                "translate" => "AI 翻译",
+                _ => "AI 增强",
+            };
+            let escaped = escape_html_text(content);
+            // 换行转 <br>，保留段落感。
+            let with_br = escaped.replace('\n', "<br>");
+            html.push_str(&format!(
+                r#"<div class="ai-enhancement"><div class="ai-label">{label}</div><div class="ai-content">{with_br}</div></div>"#
+            ));
+        }
+        html
+    };
     let has_content = !body.is_empty();
     render_entry_body(
         &entry.summary.title,
         entry.summary.url.as_deref(),
         entry.author.as_deref(),
-        body,
+        &body_with_enhancements,
         dark,
         has_content,
         image_policy,
         font_size_px,
         line_width_rem,
     )
+}
+
+/// 转义 HTML 特殊字符（`&` `<` `>` `"`），用于把 AI 纯文本输出安全嵌入 reader HTML。
+fn escape_html_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Render a reader document with explicit body content (used for image-cache

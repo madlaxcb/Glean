@@ -1,5 +1,6 @@
 //! UI → core commands.
 
+use crate::ai::EnhanceAction;
 use crate::model::{EntryFilter, EntryId, FeedId};
 use serde::{Deserialize, Serialize};
 
@@ -79,5 +80,12 @@ pub enum AppCommand {
     /// be disabled in config). UI may also call prepare/apply for async flow.
     ExtractEntry {
         id: EntryId,
+    },
+    /// Manually trigger AI enhance (summary/translate) for an entry.
+    /// Sync fallback; UI normally uses prepare_enhance_task + apply_enhance_outcome
+    /// for async (AI calls are slow, must not block UI).
+    EnhanceEntry {
+        id: EntryId,
+        action: EnhanceAction,
     },
 }

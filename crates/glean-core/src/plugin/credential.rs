@@ -177,6 +177,29 @@ fn decrypt(blob: &EncryptedBlob) -> Result<String> {
     }
 }
 
+/// 加密任意敏感字符串（如 AI api_key），返回 JSON 序列化的 `EncryptedBlob`。
+///
+/// 复用 `encrypt`/`decrypt` 原语，与插件凭证同一套加密路径（Windows DPAPI，
+/// Linux 开发期 plaintext-stub）。AppConfig 把返回字符串作为不透明字段存储，
+/// 用 [`decrypt_secret`] 还原明文。与 `CredentialStore` 结构上隔离但加密同源。
+///
+/// `pub`：设置 UI（glean-app）在保存 AI 配置时加密用户输入的 api_key。
+pub fn encrypt_secret(plaintext: &str) -> Result<String> {
+    let blob = encrypt(plaintext)?;
+    serde_json::to_string(&blob).map_err(|e| CoreError::Message(format!("secret serialize: {e}")))
+}
+
+/// 还原 [`encrypt_secret`] 的输出为明文。空字符串输入返回空字符串
+/// （未配置 api_key 的常见情况，避免无谓报错）。
+pub fn decrypt_secret(blob_json: &str) -> Result<String> {
+    if blob_json.is_empty() {
+        return Ok(String::new());
+    }
+    let blob: EncryptedBlob = serde_json::from_str(blob_json)
+        .map_err(|e| CoreError::Message(format!("secret parse: {e}")))?;
+    decrypt(&blob)
+}
+
 // DPAPI 输出 buffer 必须用 `LocalFree` 释放（Win32 规范）。
 // windows crate 0.58 移除了 `LocalFree` 符号，这里直接 FFI 声明
 // （kernel32.dll 永远导出，签名固定）。
@@ -300,6 +323,23 @@ mod tests {
         let blob = encrypt("hello world").unwrap();
         let back = decrypt(&blob).unwrap();
         assert_eq!(back, "hello world");
+    }
+
+    #[test]
+    fn secret_roundtrip_via_json() {
+        // AppConfig 存储路径：encrypt_secret → JSON 字符串 → decrypt_secret 还原。
+        let cipher = encrypt_secret("sk-test-12345").expect("encrypt");
+        // 加密输出不应包含明文（dpapi 是二进制 base64；plaintext-stub 在 Linux 开发期会含明文，那是预期的）。
+        #[cfg(windows)]
+        assert!(!cipher.contains("sk-test-12345"));
+        let back = decrypt_secret(&cipher).expect("decrypt");
+        assert_eq!(back, "sk-test-12345");
+    }
+
+    #[test]
+    fn decrypt_secret_empty_returns_empty() {
+        // 未配置 api_key 时 cipher 为空字符串，不应报错。
+        assert_eq!(decrypt_secret("").unwrap(), "");
     }
 
     #[test]

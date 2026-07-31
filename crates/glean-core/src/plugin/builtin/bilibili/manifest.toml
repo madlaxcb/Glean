@@ -1,0 +1,23 @@
+# Bilibili 用户投稿适配器 (Tier 2 脚本)。§11.5.11
+#
+# 匿名订阅模式：不需要用户凭证。脚本内部从 SPI endpoint 获取 buvid3 设备指纹
+# （匿名可拿）+ 客户端生成的 b_nut 时间戳，构造 Cookie header 走 wbi 签名流程。
+# 用户登录态 (SESSDATA) 留待 M7+ 接入 CredentialStore。
+
+[plugin]
+id = "bilibili"
+name = "Bilibili 用户投稿"
+version = "0.1.0"
+author = "Glean"
+min_glean_version = "0.5.0"
+tier = 2
+
+[[match]]
+url_pattern = "space.bilibili.com/*"
+
+[capabilities]
+feed_fetch = ["api.bilibili.com", "www.bilibili.com"]
+# 当前匿名模式不需要 credential_use；M7+ 接入 SESSDATA 时再加 "bilibili_session"。
+
+[compliance]
+uses_user_session = false

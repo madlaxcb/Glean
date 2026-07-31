@@ -92,6 +92,7 @@ mod tests {
             author: None,
             content_html: String::new(),
             extracted_html: String::new(),
+            enhancements: Vec::new(),
         }
     }
 

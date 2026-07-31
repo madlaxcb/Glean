@@ -37,4 +37,11 @@ pub enum AppEvent {
         id: EntryId,
         success: bool,
     },
+    /// Emitted when an AI enhance (summary/translate) completes. UI should
+    /// refresh the enhancements panel for the currently open entry.
+    EntryEnhanced {
+        id: EntryId,
+        kind: String,
+        success: bool,
+    },
 }

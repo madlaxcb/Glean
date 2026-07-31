@@ -84,6 +84,11 @@ pub fn reader_document(
   p, li {{ font-size: inherit; }}
   a {{ color: var(--link); }}
   img {{ max-width: 100%; height: auto; }}
+  .ai-enhancement {{ margin-top: 2rem; padding: 0.85rem 1rem; border-left: 3px solid var(--link);
+    background: color-mix(in srgb, var(--link) 6%, var(--bg)); border-radius: 4px; }}
+  .ai-label {{ font-size: 0.8rem; font-weight: 600; color: var(--link); margin: 0 0 0.4rem;
+    text-transform: uppercase; letter-spacing: 0.04em; }}
+  .ai-content {{ font-size: 0.95rem; line-height: 1.6; }}
 </style>
 </head>
 <body>

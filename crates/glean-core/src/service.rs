@@ -1,5 +1,6 @@
 //! Command handler: AppCommand → mutate store → AppEvent list.
 
+use crate::ai::{run_enhance_task, EnhanceAction, EnhanceOutcome, EnhanceTask};
 use crate::command::AppCommand;
 use crate::error::{CoreError, Result};
 use crate::event::AppEvent;
@@ -8,7 +9,7 @@ use crate::feed::{
     discover_feed_urls, fetch_feed_bytes, parse_feed, FetchResult, HttpClient, ParsedFeed,
     RefreshOutcome, RefreshTask,
 };
-use crate::model::{EntryFilter, EntryId, FeedId};
+use crate::model::{AiConfig, EntryFilter, EntryId, FeedId};
 use crate::opml;
 use crate::paths;
 use crate::plugin::{CredentialStore, PluginManager};
@@ -28,6 +29,10 @@ pub struct GleanService {
     /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。owned 在此负责可变写入 + 落盘；
     /// worker 线程通过 `Clone` 取快照。
     credentials: Option<CredentialStore>,
+    /// AI 增强配置（OpenAI 兼容）。`None` 表示未配置；仅同步 fallback 路径
+    /// (`AppCommand::EnhanceEntry`) 会用到。异步路径由 UI 直接把 `AppConfig.ai`
+    /// 传给 worker 线程，不经过 service。
+    ai_config: Option<Arc<AiConfig>>,
 }
 
 impl GleanService {
@@ -43,6 +48,7 @@ impl GleanService {
             http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr: None,
             credentials: None,
+            ai_config: None,
         })
     }
 
@@ -64,6 +70,7 @@ impl GleanService {
             http: Arc::new(HttpClient::with_proxy(proxy_url)?),
             plugin_mgr,
             credentials,
+            ai_config: None,
         })
     }
 
@@ -80,6 +87,18 @@ impl GleanService {
     /// 可变访问凭证存储——设置 UI 输入凭证后调用。
     pub fn credentials_mut(&mut self) -> Option<&mut CredentialStore> {
         self.credentials.as_mut()
+    }
+
+    /// 设置 AI 配置（来自 `AppConfig.ai`）。UI 启动时若有 AI 配置则调用一次。
+    /// 仅同步 fallback 路径 (`AppCommand::EnhanceEntry`) 会用到；异步路径由
+    /// UI 直接把 `AppConfig.ai` 传给 worker 线程。
+    pub fn set_ai_config(&mut self, cfg: AiConfig) {
+        self.ai_config = Some(Arc::new(cfg));
+    }
+
+    /// 清除 AI 配置（用户在设置里删除时调用），同步 fallback 会回到「AI 未配置」。
+    pub fn clear_ai_config(&mut self) {
+        self.ai_config = None;
     }
 
     /// 共享 HTTP 客户端（含代理配置）给 worker 线程。
@@ -334,6 +353,24 @@ impl GleanService {
                 let outcome = crate::extract::run_extract_task(&self.http.inner, &task);
                 Ok(self.apply_extract_outcome_inner(outcome)?)
             }
+            AppCommand::EnhanceEntry { id, action } => {
+                // Sync fallback. UI normally uses prepare_enhance_task +
+                // apply_enhance_outcome for async (AI calls are slow).
+                let cfg = match self.ai_config.as_ref() {
+                    Some(c) => Arc::clone(c),
+                    None => return Err(CoreError::Message("AI 未配置 (AppConfig.ai 为空)".into())),
+                };
+                let task = match self.prepare_enhance_task(id, action)? {
+                    Some(t) => t,
+                    None => {
+                        return Err(CoreError::Message(
+                            "entry 无内容可增强 (content_html 为空)".into(),
+                        ))
+                    }
+                };
+                let outcome = run_enhance_task(&self.http.inner, &cfg, &task);
+                Ok(self.apply_enhance_outcome_inner(outcome)?)
+            }
         }
     }
 
@@ -504,6 +541,76 @@ impl GleanService {
                 },
                 AppEvent::Status {
                     message: format!("全文抽取失败: {error}"),
+                },
+            ]),
+        }
+    }
+
+    // --- Async AI enhance: UI calls prepare → thread → apply ---
+
+    /// 构建一个增强任务。优先用 `extracted_html`（全文抽取结果），否则用
+    /// `content_html`（feed 原始正文）。两者皆空返回 `Ok(None)`。
+    ///
+    /// 不依赖 `ai_config`：UI 在调用前自行检查 `AppConfig.ai` 是否存在。
+    /// 不检查是否已有 enhancement——手动触发允许覆盖重新生成。
+    pub fn prepare_enhance_task(
+        &self,
+        id: EntryId,
+        action: EnhanceAction,
+    ) -> Result<Option<EnhanceTask>> {
+        let entry = self.store.get_entry(id)?;
+        let content = if !entry.extracted_html.is_empty() {
+            entry.extracted_html.clone()
+        } else {
+            entry.content_html.clone()
+        };
+        if content.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(EnhanceTask {
+            entry_id: id,
+            action,
+            title: entry.summary.title.clone(),
+            content,
+        }))
+    }
+
+    /// 应用一个后台增强结果；返回要发出的事件。
+    pub fn apply_enhance_outcome(&mut self, outcome: EnhanceOutcome) -> Vec<AppEvent> {
+        match self.apply_enhance_outcome_inner(outcome) {
+            Ok(ev) => ev,
+            Err(e) => vec![AppEvent::Error {
+                message: e.to_string(),
+            }],
+        }
+    }
+
+    fn apply_enhance_outcome_inner(&mut self, outcome: EnhanceOutcome) -> Result<Vec<AppEvent>> {
+        match outcome {
+            EnhanceOutcome::Success {
+                entry_id,
+                kind,
+                result,
+            } => {
+                self.store.set_enhancement(entry_id, &kind, &result)?;
+                Ok(vec![AppEvent::EntryEnhanced {
+                    id: entry_id,
+                    kind,
+                    success: true,
+                }])
+            }
+            EnhanceOutcome::Failed {
+                entry_id,
+                kind,
+                error,
+            } => Ok(vec![
+                AppEvent::EntryEnhanced {
+                    id: entry_id,
+                    kind,
+                    success: false,
+                },
+                AppEvent::Status {
+                    message: format!("AI 增强失败: {error}"),
                 },
             ]),
         }
@@ -845,5 +952,112 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
             feed_id: task.feed_id,
             error: e.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::EnhanceAction;
+    use crate::model::EntryFilter;
+
+    /// Demo entry 有 content_html，prepare 应返回 Some(task)，title/content 已填充。
+    #[test]
+    fn prepare_enhance_task_for_entry_with_content() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let id = first_entry_id(&svc);
+        let task = svc
+            .prepare_enhance_task(id, EnhanceAction::Summarize)
+            .expect("prepare")
+            .expect("Some(task)");
+        assert_eq!(task.entry_id, id);
+        assert!(!task.title.is_empty());
+        assert!(!task.content.is_empty());
+        assert_eq!(task.action.kind_str(), "summary");
+    }
+
+    /// 空内容的 entry，prepare 返回 Ok(None)。
+    #[test]
+    fn prepare_enhance_task_returns_none_for_empty_content() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let fid = svc.store.list_feeds().unwrap()[0].id;
+        let id = svc
+            .store
+            .add_entry(fid, "g-empty", "空条目", None, "")
+            .unwrap();
+        let task = svc
+            .prepare_enhance_task(id, EnhanceAction::Summarize)
+            .expect("prepare");
+        assert!(task.is_none());
+    }
+
+    /// apply Success 落库 + 发 EntryEnhanced{success:true}。
+    #[test]
+    fn apply_enhance_outcome_success_persists_and_emits() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let id = first_entry_id(&svc);
+        let outcome = EnhanceOutcome::Success {
+            entry_id: id,
+            kind: "summary".into(),
+            result: "这是摘要。".into(),
+        };
+        let ev = svc.apply_enhance_outcome(outcome);
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            AppEvent::EntryEnhanced { id: eid, kind, success } if *eid == id && kind == "summary" && *success
+        )));
+        let stored = svc.store.get_enhancement(id, "summary").unwrap();
+        assert_eq!(stored.as_deref(), Some("这是摘要。"));
+    }
+
+    /// apply Failed 不落库 + 发 EntryEnhanced{success:false} + Status。
+    #[test]
+    fn apply_enhance_outcome_failed_emits_error() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let id = first_entry_id(&svc);
+        let outcome = EnhanceOutcome::Failed {
+            entry_id: id,
+            kind: "translate".into(),
+            error: "boom".into(),
+        };
+        let ev = svc.apply_enhance_outcome(outcome);
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            AppEvent::EntryEnhanced { id: eid, kind, success } if *eid == id && kind == "translate" && !*success
+        )));
+        assert!(svc
+            .store
+            .get_enhancement(id, "translate")
+            .unwrap()
+            .is_none());
+    }
+
+    /// 同步 `EnhanceEntry` 在未配置 AI 时返回 Error 事件，不发网络请求。
+    #[test]
+    fn enhance_entry_sync_errors_without_ai_config() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let id = first_entry_id(&svc);
+        let ev = svc.handle(AppCommand::EnhanceEntry {
+            id,
+            action: EnhanceAction::Summarize,
+        });
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            AppEvent::Error { message } if message.contains("AI 未配置")
+        )));
+    }
+
+    fn first_entry_id(svc: &GleanService) -> EntryId {
+        svc.store
+            .list_entries(EntryFilter::All)
+            .unwrap()
+            .first()
+            .expect("at least one demo entry")
+            .id
     }
 }

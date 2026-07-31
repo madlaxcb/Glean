@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub struct Store {
     conn: Connection,
@@ -260,6 +260,24 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 9 {
+            // AI 增强结果（摘要/翻译）。每个 entry 每个 kind 唯一，重新触发覆盖旧结果。
+            // ON DELETE CASCADE：entry 删除时增强结果一并清理。
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS entry_enhancements (
+                    entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (entry_id, kind)
+                );",
+            )?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '9')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -501,6 +519,7 @@ impl Store {
                         author: r.get(7)?,
                         content_html: r.get(8)?,
                         extracted_html: r.get(9)?,
+                        enhancements: Vec::new(),
                     })
                 },
             )
@@ -517,6 +536,8 @@ impl Store {
                 }
             }
         }
+        // AI 增强结果（摘要/翻译）。
+        detail.enhancements = self.list_enhancements(id)?;
         Ok(detail)
     }
 
@@ -547,6 +568,44 @@ impl Store {
             self.write_entry_cache(id, html);
         }
         Ok(())
+    }
+
+    /// 写入/覆盖一条 AI 增强结果（摘要或翻译）。重新触发同一 kind 会覆盖。
+    pub fn set_enhancement(&mut self, id: EntryId, kind: &str, content: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO entry_enhancements(entry_id, kind, content, created_at)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(entry_id, kind) DO UPDATE SET content = excluded.content, created_at = excluded.created_at",
+            params![id.0, kind, content, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// 取单个 kind 的增强结果。`None` 表示尚未生成。
+    pub fn get_enhancement(&self, id: EntryId, kind: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT content FROM entry_enhancements WHERE entry_id = ?1 AND kind = ?2",
+                params![id.0, kind],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// 取某 entry 的所有增强结果（kind, content），按 created_at 升序。
+    pub fn list_enhancements(&self, id: EntryId) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, content FROM entry_enhancements WHERE entry_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![id.0], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn toggle_star(&mut self, id: EntryId) -> Result<bool> {
@@ -1004,5 +1063,44 @@ mod tests {
         let cache_file = cache_dir.join(id.0.to_string()).join("body.html");
         assert_eq!(std::fs::read_to_string(&cache_file).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// schema v9：entry_enhancements 写入/覆盖/读取/级联删除。
+    #[test]
+    fn enhancement_roundtrip_and_overwrite() {
+        let mut store = Store::open_in_memory().unwrap();
+        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let id = store
+            .add_entry(fid, "g1", "Title", None, "<p>x</p>")
+            .unwrap();
+
+        // 初始无增强。
+        assert!(store.get_enhancement(id, "summary").unwrap().is_none());
+        assert!(store.list_enhancements(id).unwrap().is_empty());
+
+        // 写摘要。
+        store.set_enhancement(id, "summary", "第一版摘要").unwrap();
+        assert_eq!(
+            store.get_enhancement(id, "summary").unwrap().as_deref(),
+            Some("第一版摘要")
+        );
+
+        // 同 kind 覆盖。
+        store.set_enhancement(id, "summary", "第二版摘要").unwrap();
+        assert_eq!(
+            store.get_enhancement(id, "summary").unwrap().as_deref(),
+            Some("第二版摘要")
+        );
+
+        // 加翻译，list 返回 2 条。
+        store
+            .set_enhancement(id, "translate", "Translated.")
+            .unwrap();
+        let all = store.list_enhancements(id).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|(k, v)| k == "summary" && v == "第二版摘要"));
+        assert!(all
+            .iter()
+            .any(|(k, v)| k == "translate" && v == "Translated."));
     }
 }

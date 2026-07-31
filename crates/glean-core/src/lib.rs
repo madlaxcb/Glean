@@ -1,6 +1,7 @@
 //! Glean domain core: models, SQLite store, feed fetch, AppCommand/AppEvent.
 //! This crate must never depend on egui, wry, or tauri.
 
+pub mod ai;
 mod command;
 mod error;
 mod event;
@@ -17,6 +18,7 @@ mod sanitize;
 mod service;
 pub mod store;
 
+pub use ai::{run_enhance_task, EnhanceAction, EnhanceOutcome, EnhanceTask};
 pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
@@ -28,8 +30,8 @@ pub use favicon_cache::FaviconCache;
 pub use feed::{discover_feed_urls, run_refresh_task, RefreshOutcome, RefreshTask};
 pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
-    AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,
-    ImagePolicy,
+    AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder,
+    FolderId, ImagePolicy,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{

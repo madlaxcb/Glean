@@ -14,6 +14,7 @@
 //! 4. **最小权限**：`Engine` 按插件动态构建，只注册声明过的 host 函数
 //! 5. **不阻塞主循环**：所有 hook 在 worker 线程，超时由 Host 强制
 
+pub mod builtin;
 pub mod credential;
 pub mod enhancer;
 pub mod manager;
@@ -21,6 +22,7 @@ pub mod manifest;
 pub mod runtime;
 pub mod tier1;
 
+pub use builtin::BuiltinPlugin;
 pub use credential::{Credential, CredentialStore};
 pub use enhancer::{Enhancer, EntryPatch, HostApi};
 pub use manager::{LoadedPlugin, PluginManager};

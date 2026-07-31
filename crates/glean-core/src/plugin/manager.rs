@@ -20,6 +20,7 @@
 use crate::error::{CoreError, Result};
 use crate::feed::parse::ParsedFeed;
 use crate::feed::HttpClient;
+use crate::plugin::builtin;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Manifest, MatchRule};
 use crate::plugin::runtime::Runtime;
@@ -27,12 +28,17 @@ use crate::plugin::tier1;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// 已加载的插件：manifest + 可选脚本路径。
+/// 已加载的插件：manifest + 可选脚本内容。
+///
+/// `script` 直接持有脚本字符串（避免每次执行重新读盘）。来源：
+/// - 磁盘插件：`<dir>/adapter.rhai` 读出的内容
+/// - 内置插件：`include_str!` 嵌入的静态字符串
+/// - Tier 1 / 内置 Tier 0：`None`
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub manifest: Manifest,
     pub dir: PathBuf,
-    pub script_path: Option<PathBuf>,
+    pub script: Option<String>,
 }
 
 /// PluginManager：管理已加载的插件集合并提供 URL 路由。
@@ -59,7 +65,7 @@ impl PluginManager {
             .map(|m| LoadedPlugin {
                 manifest: m,
                 dir: PathBuf::new(),
-                script_path: None,
+                script: None,
             })
             .collect();
         Self {
@@ -68,48 +74,70 @@ impl PluginManager {
         }
     }
 
-    /// 扫描 `<plugins_dir>/<id>/manifest.toml`。
+    /// 扫描 `<plugins_dir>/<id>/manifest.toml`，再合并内置插件（磁盘优先）。
     fn scan(&mut self) -> Result<()> {
         self.plugins.clear();
-        if self.plugins_dir.as_os_str().is_empty() {
-            return Ok(());
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // 1. 磁盘插件
+        if !self.plugins_dir.as_os_str().is_empty() {
+            if let Ok(entries) = std::fs::read_dir(&self.plugins_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let manifest_path = path.join("manifest.toml");
+                    if !manifest_path.is_file() {
+                        continue;
+                    }
+                    let bytes = match std::fs::read(&manifest_path) {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    let text = match std::str::from_utf8(&bytes) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let manifest: Manifest = match toml::from_str(text) {
+                        Ok(m) => m,
+                        Err(_) => continue, // 解析失败的插件跳过，不阻塞其他插件
+                    };
+                    seen_ids.insert(manifest.plugin.id.clone());
+                    let script_path = path.join("adapter.rhai");
+                    let script = if script_path.is_file() {
+                        std::fs::read_to_string(&script_path).ok()
+                    } else {
+                        None
+                    };
+                    self.plugins.push(LoadedPlugin {
+                        manifest,
+                        dir: path,
+                        script,
+                    });
+                }
+            }
         }
-        let Ok(entries) = std::fs::read_dir(&self.plugins_dir) else {
-            return Ok(()); // 目录不存在视为空
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
+
+        // 2. 内置插件（磁盘没有同名 id 时才加入，磁盘优先）
+        for b in builtin::all() {
+            if seen_ids.contains(b.id) {
                 continue;
             }
-            let manifest_path = path.join("manifest.toml");
-            if !manifest_path.is_file() {
-                continue;
-            }
-            let bytes = match std::fs::read(&manifest_path) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let text = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let manifest: Manifest = match toml::from_str(text) {
+            let manifest: Manifest = match toml::from_str(b.manifest_toml) {
                 Ok(m) => m,
-                Err(_) => continue, // 解析失败的插件跳过，不阻塞其他插件
-            };
-            let script_path = path.join("adapter.rhai");
-            let script_path = if script_path.is_file() {
-                Some(script_path)
-            } else {
-                None
+                Err(e) => {
+                    // 内置 manifest 解析失败是 bug，开发期直接 panic 提示
+                    panic!("builtin plugin '{}' manifest parse error: {e}", b.id);
+                }
             };
             self.plugins.push(LoadedPlugin {
                 manifest,
-                dir: path,
-                script_path,
+                dir: PathBuf::new(),
+                script: b.adapter_rhai.map(|s| s.to_string()),
             });
         }
+
         Ok(())
     }
 
@@ -165,17 +193,15 @@ impl PluginManager {
         ) {
             return Ok(None);
         }
-        let Some(script_path) = &plugin.script_path else {
+        let Some(script) = &plugin.script else {
             return Err(CoreError::Message(format!(
                 "tier2 plugin '{}' missing adapter.rhai",
                 plugin.manifest.plugin.id
             )));
         };
-        let script = std::fs::read_to_string(script_path)
-            .map_err(|e| CoreError::Message(format!("read adapter.rhai: {e}")))?;
         let creds = credentials.unwrap_or_else(|| Arc::new(CredentialStore::in_memory()));
         let rt = Runtime::build(plugin.manifest.clone(), http, creds);
-        let parsed = rt.run_script(&script)?;
+        let parsed = rt.run_script(script, url)?;
         Ok(Some(parsed))
     }
 }
@@ -303,11 +329,17 @@ mod tests {
     }
 
     #[test]
-    fn new_with_missing_dir_is_empty() {
+    fn new_with_missing_dir_loads_builtins() {
+        // 即使磁盘插件目录不存在，内置插件（bilibili）也应被加载。
         let tmp = std::env::temp_dir().join(format!("glean-plugin-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let mgr = PluginManager::new(tmp.clone()).expect("open");
-        assert!(mgr.list().is_empty());
+        assert!(
+            mgr.list()
+                .iter()
+                .any(|p| p.manifest.plugin.id == "bilibili"),
+            "bilibili builtin should be loaded"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -344,8 +376,75 @@ title = "$.name"
         .unwrap();
 
         let mgr = PluginManager::new(tmp.clone()).expect("open");
-        assert_eq!(mgr.list().len(), 1);
-        assert_eq!(mgr.list()[0].manifest.plugin.id, "test-plugin");
+        // 磁盘 test-plugin + 内置 bilibili
+        let ids: Vec<&str> = mgr
+            .list()
+            .iter()
+            .map(|p| p.manifest.plugin.id.as_str())
+            .collect();
+        assert!(ids.contains(&"test-plugin"), "test-plugin should be loaded");
+        assert!(
+            ids.contains(&"bilibili"),
+            "bilibili builtin should be loaded"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 内置 bilibili 插件的 manifest.toml 能正确解析，且能力声明符合预期。
+    #[test]
+    fn builtin_bilibili_manifest_parses() {
+        let toml_text = include_str!("builtin/bilibili/manifest.toml");
+        let m: Manifest = toml::from_str(toml_text).expect("bilibili manifest parse");
+        assert_eq!(m.plugin.id, "bilibili");
+        assert_eq!(m.plugin.tier, crate::plugin::manifest::Tier::Script);
+        assert!(m
+            .capabilities
+            .feed_fetch
+            .contains(&"api.bilibili.com".to_string()));
+        assert!(!m.compliance.uses_user_session);
+    }
+
+    /// 端到端：用内置 bilibili 插件订阅 `space.bilibili.com/2`（碧诗）。
+    /// 验证 wbi 签名 + buvid3 流程能拿到真实视频列表。
+    /// 手动跑：`cargo test -p glean-core -- --ignored bilibili_end_to_end`
+    ///
+    /// 注意：在数据中心 IP 环境下可能被风控（-352 / -799）；用户住宅 IP 通常正常。
+    #[test]
+    #[ignore = "需联网访问 api.bilibili.com（匿名，可能被风控）"]
+    fn bilibili_end_to_end() {
+        let tmp = std::env::temp_dir().join(format!("glean-bili-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mgr = PluginManager::new(tmp.clone()).expect("open");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let http = Arc::new(HttpClient::default());
+        let parsed = mgr
+            .run_tier2_for_url("https://space.bilibili.com/2", http, None)
+            .expect("run_tier2")
+            .expect("matched plugin");
+
+        assert_eq!(parsed.title, "Bilibili 用户投稿");
+        assert!(!parsed.entries.is_empty(), "应至少拿到 1 个视频");
+        let first = &parsed.entries[0];
+        assert!(
+            first.guid.starts_with("BV"),
+            "guid 应是 bvid，got: {}",
+            first.guid
+        );
+        assert!(!first.title.is_empty());
+        assert!(
+            first
+                .url
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("https://www.bilibili.com/video/"),
+            "url 应指向视频页"
+        );
+        assert!(first.author.is_some(), "author 不应为空");
+        assert!(first.published_at.is_some(), "published_at 不应为空");
+        assert!(
+            first.content_html.contains("<img"),
+            "content_html 应含封面图"
+        );
     }
 }

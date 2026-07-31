@@ -92,10 +92,16 @@ impl Runtime {
 
     /// 执行 Tier 2 适配器脚本，返回脚本通过 `set_field`/`add_entry` 收集到的
     /// `ParsedFeed`。脚本结束未 commit 的 current entry 自动 commit。
-    pub fn run_script(&self, script: &str) -> Result<ParsedFeed> {
+    ///
+    /// `source_url` 是用户输入的原始订阅 URL（如
+    /// `https://space.bilibili.com/12345`），通过 Rhai 全局常量 `SOURCE_URL`
+    /// 暴露给脚本，脚本据此提取路径变量（如 mid）。
+    pub fn run_script(&self, script: &str, source_url: &str) -> Result<ParsedFeed> {
+        let mut scope = rhai::Scope::new();
+        scope.push_constant("SOURCE_URL", source_url.to_string());
         let _ = self
             .engine
-            .eval::<Dynamic>(script)
+            .eval_with_scope::<rhai::Dynamic>(&mut scope, script)
             .map_err(|e| CoreError::Message(format!("rhai eval: {e}")))?;
         let collector = self
             .collector
@@ -143,6 +149,13 @@ fn register_pure_fns(engine: &mut Engine) {
     });
     engine.register_fn("json_path", |json: Dynamic, path: String| -> Dynamic {
         json_path_lookup(&json, &path).unwrap_or(Dynamic::UNIT)
+    });
+    // 通用 MD5 hex 摘要（非 Bilibili 专属，所有脚本可用）。
+    engine.register_fn("md5", |s: String| -> String {
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
     });
 }
 
@@ -598,7 +611,9 @@ mod tests {
             set_field("published_at", "1700000001");
             add_entry();
         "#;
-        let parsed = rt.run_script(script).expect("run_script");
+        let parsed = rt
+            .run_script(script, "https://example.com/test")
+            .expect("run_script");
         assert_eq!(parsed.title, "T");
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[0].title, "T");
@@ -623,8 +638,88 @@ mod tests {
             set_field("title", "Only");
             set_field("guid", "g1");
         "#;
-        let parsed = rt.run_script(script).expect("run_script");
+        let parsed = rt
+            .run_script(script, "https://example.com/test")
+            .expect("run_script");
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].title, "Only");
+    }
+
+    /// md5 host 函数注册后可用，且结果与标准 MD5 一致。
+    #[test]
+    fn md5_host_fn_matches_known_hash() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let hash: String = rt.engine.eval(r#"md5("hello")"#).expect("md5 eval");
+        assert_eq!(hash, "5d41402abc4b2a76b9719d911017c592");
+    }
+
+    /// wbi 签名算法（与 `builtin/bilibili/adapter.rhai` 中 `wbi_sign` 同实现）
+    /// 必须与 Bilibili 官方算法一致。测试向量由 Python 实现对固定输入计算得到：
+    /// `img_key=7cd084941338484aae1ad9425b84077c, sub_key=4932caff0ff746eab6f01bf08b70ac45,
+    /// params={mid:2,pn:1,ps:5,wts:1785474273}` → `w_rid=09e338abf9d88493d458b6c8876af8ff`。
+    #[test]
+    fn wbi_signing_matches_known_vector() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            fn filter_chars(s) {
+                let out = "";
+                for c in s {
+                    if c != '!' && c != "'" && c != '(' && c != ')' && c != '*' {
+                        out += c;
+                    }
+                }
+                return out;
+            }
+
+            fn to_str(v) {
+                let t = type_of(v);
+                if t == "i64" || t == "i32" || t == "int" {
+                    return "" + v;
+                }
+                return v;
+            }
+
+            fn wbi_sign(params, img_key, sub_key, wts) {
+                let MIXIN_KEY_ENC_TAB = [
+                    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+                    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 36, 25, 51, 0, 4, 44, 52,
+                    6, 21, 54, 16, 26, 11, 22, 40, 7, 30, 55, 48, 24, 1, 20, 57, 34, 17, 59, 61,
+                    56, 60, 63, 62,
+                ];
+                let orig = img_key + sub_key;
+                let mixin_key = "";
+                for i in MIXIN_KEY_ENC_TAB {
+                    if i >= len(orig) { break; }
+                    mixin_key += orig[i];
+                    if len(mixin_key) >= 32 { break; }
+                }
+
+                params["wts"] = wts;
+                let keys = params.keys();
+                keys.sort();
+                let query = "";
+                for k in keys {
+                    let v_str = to_str(params[k]);
+                    let filtered = filter_chars(v_str);
+                    if len(query) > 0 { query += "&"; }
+                    query += k + "=" + filtered;
+                }
+                let w_rid = md5(query + mixin_key);
+                params["w_rid"] = w_rid;
+                return params;
+            }
+
+            let params = #{"mid": "2", "pn": "1", "ps": "5"};
+            let signed = wbi_sign(params, "7cd084941338484aae1ad9425b84077c", "4932caff0ff746eab6f01bf08b70ac45", 1785474273);
+            signed["w_rid"]
+        "#;
+        let w_rid: String = rt.engine.eval(script).expect("wbi eval");
+        assert_eq!(w_rid, "09e338abf9d88493d458b6c8876af8ff");
     }
 }

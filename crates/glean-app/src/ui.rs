@@ -2,7 +2,7 @@ use crate::tray::TrayAction;
 use crate::update;
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::{AppCommand, EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
+use glean_core::{AppCommand, EnhanceAction, EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -86,6 +86,9 @@ impl eframe::App for SpikeApp {
 
         // Poll background full-text extraction.
         self.state.poll_extract();
+
+        // Poll background AI enhance (summary/translate).
+        self.state.poll_enhance();
 
         // Poll background image caching.
         self.state.poll_img_cache();
@@ -175,6 +178,34 @@ impl eframe::App for SpikeApp {
                         if ui.button("抽取全文").clicked() {
                             self.state.extract_current();
                         }
+                    }
+                    // AI 摘要/翻译：需已配置 AI 且有打开的 entry。
+                    if self.state.open_detail.is_some() && self.state.ai_configured() {
+                        let in_flight = self.state.enhance_in_flight();
+                        let entry_id = self
+                            .state
+                            .open_detail
+                            .as_ref()
+                            .map(|e| e.summary.id)
+                            .unwrap();
+                        let summary_busy = in_flight
+                            .map(|(id, k)| *id == entry_id && k == "summary")
+                            .unwrap_or(false);
+                        let translate_busy = in_flight
+                            .map(|(id, k)| *id == entry_id && k == "translate")
+                            .unwrap_or(false);
+                        ui.add_enabled_ui(!summary_busy, |ui| {
+                            if ui.button("摘要").clicked() {
+                                self.state.enhance_current(EnhanceAction::Summarize);
+                            }
+                        });
+                        ui.add_enabled_ui(!translate_busy, |ui| {
+                            if ui.button("翻译").clicked() {
+                                self.state.enhance_current(EnhanceAction::Translate {
+                                    target_lang: "中文".into(),
+                                });
+                            }
+                        });
                     }
                     ui.separator();
                     if ui.button("导入OPML").clicked() {
@@ -859,6 +890,74 @@ impl eframe::App for SpikeApp {
                             .small()
                             .weak(),
                     );
+
+                    ui.add_space(8.0);
+                    ui.heading("AI 增强");
+                    if self.state.ai_configured() {
+                        ui.label(
+                            RichText::new("已配置：阅读工具栏显示「摘要」「翻译」")
+                                .small()
+                                .weak(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("未配置：阅读工具栏不显示 AI 按钮")
+                                .small()
+                                .weak(),
+                        );
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Base URL");
+                        let te = egui::TextEdit::singleline(&mut self.state.ai_base_url_input)
+                            .id(egui::Id::new("ai_base_url_input"))
+                            .desired_width(200.0)
+                            .hint_text("https://api.openai.com/v1");
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("模型");
+                        let te = egui::TextEdit::singleline(&mut self.state.ai_model_input)
+                            .id(egui::Id::new("ai_model_input"))
+                            .desired_width(200.0)
+                            .hint_text("gpt-4o-mini / deepseek-chat");
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("API Key");
+                        let te = egui::TextEdit::singleline(&mut self.state.ai_key_input)
+                            .id(egui::Id::new("ai_key_input"))
+                            .password(true)
+                            .desired_width(200.0)
+                            .hint_text("sk-…");
+                        let resp = ui.add(te);
+                        if resp.clicked() || resp.gained_focus() {
+                            self.state.reader.reclaim_shell_focus();
+                            resp.request_focus();
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "OpenAI 兼容协议。api_key 加密存储（Windows DPAPI），不落明文；留空则保留已存 key。",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("保存").clicked() {
+                            self.state.save_ai_config();
+                        }
+                        if self.state.ai_configured() && ui.button("清除配置").clicked() {
+                            self.state.clear_ai_config();
+                        }
+                    });
 
                     ui.add_space(8.0);
                     ui.heading("排版");

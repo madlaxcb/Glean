@@ -58,6 +58,10 @@ pub struct EntryDetail {
     /// Empty if not extracted yet or extraction failed. When non-empty, the
     /// reader prefers this over `content_html`.
     pub extracted_html: String,
+    /// AI 增强结果（摘要/翻译），(kind, content) 列表，按 created_at 升序。
+    /// 空表示尚未生成。`#[serde(default)]` 保证旧序列化数据向后兼容。
+    #[serde(default)]
+    pub enhancements: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -142,6 +146,22 @@ pub struct AppConfig {
     /// Persisted window maximized state.
     #[serde(default)]
     pub window_maximized: bool,
+    /// AI 增强配置（摘要/翻译）。`None` = 未配置，UI 隐藏增强按钮。
+    /// `api_key_cipher` 是 `encrypt_secret` 输出的 JSON blob，不在内存里留明文。
+    #[serde(default)]
+    pub ai: Option<AiConfig>,
+}
+
+/// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。
+///
+/// `base_url` 形如 `https://api.openai.com/v1` 或 DeepSeek/通义/Kimi 的兼容端点。
+/// `api_key_cipher` = `crate::plugin::credential::encrypt_secret(api_key)`。
+/// 明文 api_key 只在使用时短暂解密，不持久化、不入 AppConfig 内存常驻。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_cipher: String,
 }
 
 fn default_true() -> bool {
@@ -174,6 +194,7 @@ impl Default for AppConfig {
             window_w: None,
             window_h: None,
             window_maximized: false,
+            ai: None,
         }
     }
 }
