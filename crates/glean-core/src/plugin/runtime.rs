@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(hash, "5d41402abc4b2a76b9719d911017c592");
     }
 
-    /// wbi 签名算法（与仓库 `plugin/bilibili/adapter.rhai` 中 `wbi_sign` 同实现）
+    /// wbi 签名算法（与仓库 `plugins/bilibili/adapter.rhai` 中 `wbi_sign` 同实现）
     /// 必须与 Bilibili 官方算法一致。测试向量由 Python 实现对固定输入计算得到：
     /// `img_key=7cd084941338484aae1ad9425b84077c, sub_key=4932caff0ff746eab6f01bf08b70ac45,
     /// params={mid:2,pn:1,ps:5,wts:1785474273}` → `w_rid=09e338abf9d88493d458b6c8876af8ff`。

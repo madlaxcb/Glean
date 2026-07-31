@@ -201,7 +201,16 @@ impl PluginManager {
             .map_err(|e| CoreError::Message(format!("打开 zip 失败: {e}")))?;
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| CoreError::Message(format!("zip 解析失败: {e}")))?;
-        let tmp = std::env::temp_dir().join(format!("glean-plugin-import-{}", std::process::id()));
+        // 解压临时目录必须唯一（pid + 时间戳）：并发安装（含并行测试）时
+        // 若共用固定目录会互相踩踏，导致读到对方解压出的 manifest.toml。
+        let tmp = std::env::temp_dir().join(format!(
+            "glean-plugin-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
         archive
             .extract(&tmp)
@@ -485,11 +494,11 @@ title = "$.name"
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 官方插件目录（仓库 `plugin/bilibili/`）的 manifest.toml 能正确解析，
+    /// 官方插件目录（仓库 `plugins/bilibili/`）的 manifest.toml 能正确解析，
     /// 且能力声明符合预期。所有插件都不再内嵌进程序。
     #[test]
     fn official_bilibili_manifest_parses() {
-        let toml_text = include_str!("../../../../plugin/bilibili/manifest.toml");
+        let toml_text = include_str!("../../../../plugins/bilibili/manifest.toml");
         let m: Manifest = toml::from_str(toml_text).expect("bilibili manifest parse");
         assert_eq!(m.plugin.id, "bilibili");
         assert_eq!(m.plugin.tier, crate::plugin::manifest::Tier::Script);
@@ -675,7 +684,7 @@ entries_json_path = "$.items"
         assert!(mgr.uninstall("pixiv").is_err(), "no dir → cannot uninstall");
     }
 
-    /// 端到端：用官方 bilibili 插件（仓库 `plugin/bilibili/`）订阅
+    /// 端到端：用官方 bilibili 插件（仓库 `plugins/bilibili/`）订阅
     /// `space.bilibili.com/2`（碧诗）。验证 wbi 签名 + buvid3 流程能拿到真实视频列表。
     /// 手动跑：`cargo test -p glean-core -- --ignored bilibili_end_to_end`
     ///
@@ -689,12 +698,12 @@ entries_json_path = "$.items"
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
             plugin_dir.join("manifest.toml"),
-            include_str!("../../../../plugin/bilibili/manifest.toml"),
+            include_str!("../../../../plugins/bilibili/manifest.toml"),
         )
         .unwrap();
         std::fs::write(
             plugin_dir.join("adapter.rhai"),
-            include_str!("../../../../plugin/bilibili/adapter.rhai"),
+            include_str!("../../../../plugins/bilibili/adapter.rhai"),
         )
         .unwrap();
         let mgr = PluginManager::new(tmp.clone()).expect("open");
