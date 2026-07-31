@@ -1,10 +1,12 @@
 //! HTTP fetch + RSS/Atom/JSON Feed parse (M1).
 
+mod categorize;
 mod discover;
 mod fetch;
 pub mod parse;
 pub mod tier0;
 
+pub use categorize::categorize;
 pub use discover::discover_feed_urls;
 pub use fetch::{fetch_feed_bytes, FetchResult, HttpClient};
 pub use parse::{parse_feed, ParsedEntry, ParsedFeed};
@@ -17,6 +19,8 @@ pub struct RefreshTask {
     pub url: String,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// 是否走代理抓取（use_proxy = true 时使用设置页配置的代理）。
+    pub use_proxy: bool,
 }
 
 /// Outcome of refreshing one feed (sent back from background thread).

@@ -22,8 +22,12 @@ pub struct GleanService {
     store: Store,
     filter: EntryFilter,
     search_query: String,
-    /// `Arc` 便于把同一个 HTTP 客户端（含代理配置）共享给刷新 worker 线程。
+    /// 直连 HTTP 客户端，共享给刷新 worker 线程。
     http: Arc<HttpClient>,
+    /// 带代理的 HTTP 客户端（`proxy_url` 非空时存在），供 `use_proxy = true` 的订阅使用。
+    http_proxy: Option<Arc<HttpClient>>,
+    /// 当前代理设置（空 = 无代理），与设置页同步。
+    proxy_url: String,
     /// §11.5 插件管理器。`None` 表示 in-memory 模式（测试用），不加载磁盘插件。
     /// `Arc` 共享给 worker 线程做 URL→插件路由（加载后只读）。启停/安装/卸载
     /// 通过「重建 manager」生效：UI 调 service 方法，内部写磁盘 + 重建替换 Arc，
@@ -47,11 +51,14 @@ impl GleanService {
     }
 
     pub fn open_in_memory_with_proxy(proxy_url: Option<&str>) -> Result<Self> {
+        let (proxy_url, http, http_proxy) = build_http_clients(proxy_url)?;
         Ok(Self {
             store: Store::open_in_memory()?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: Arc::new(HttpClient::with_proxy(proxy_url)?),
+            http,
+            http_proxy,
+            proxy_url,
             plugin_mgr: None,
             plugin_disabled: HashSet::new(),
             credentials: None,
@@ -70,16 +77,36 @@ impl GleanService {
             .and_then(|d| PluginManager::new(d).ok())
             .map(Arc::new);
         let credentials = paths::credentials_path().and_then(|p| CredentialStore::open(p).ok());
+        let (proxy_url, http, http_proxy) = build_http_clients(proxy_url)?;
         Ok(Self {
             store: Store::open_path(path)?,
             filter: EntryFilter::All,
             search_query: String::new(),
-            http: Arc::new(HttpClient::with_proxy(proxy_url)?),
+            http,
+            http_proxy,
+            proxy_url,
             plugin_mgr,
             plugin_disabled: HashSet::new(),
             credentials,
             ai_config: None,
         })
+    }
+
+    /// 更新代理设置并重建带代理的 HTTP 客户端（设置页保存时调用，立即生效）。
+    /// 代理 URL 非法时保留旧客户端并在 stderr 提示，不影响直连。
+    pub fn set_proxy_url(&mut self, proxy_url: &str) {
+        self.proxy_url = proxy_url.to_string();
+        self.http_proxy = if proxy_url.is_empty() {
+            None
+        } else {
+            match HttpClient::with_proxy(Some(proxy_url)) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    eprintln!("glean: invalid proxy {proxy_url:?}: {e}");
+                    None
+                }
+            }
+        };
     }
 
     /// 访问插件管理器（§11.5）。
@@ -194,21 +221,23 @@ impl GleanService {
         RefreshCtx {
             plugin_mgr: self.plugin_mgr.clone(),
             http: Arc::clone(&self.http),
+            http_proxy: self.http_proxy.clone(),
             credentials: self.credentials.clone(),
         }
     }
 
     /// §11.5 刷新时的插件路由：URL 命中已加载插件则走 Tier 1/2，否则返回 `None`
     /// 让调用方走默认 RSS。返回 `Some(Err)` 表示插件命中但执行失败。
-    fn fetch_via_plugin(&self, url: &str) -> Option<Result<ParsedFeed>> {
+    /// `client` 由调用方按订阅的 use_proxy 选定（直连或代理）。
+    fn fetch_via_plugin(&self, url: &str, client: &Arc<HttpClient>) -> Option<Result<ParsedFeed>> {
         let mgr = self.plugin_mgr.as_deref()?;
         // Tier 1：纯配置驱动，无需凭证。
-        if let Some(res) = mgr.run_tier1_for_url(url, &self.http).transpose() {
+        if let Some(res) = mgr.run_tier1_for_url(url, client).transpose() {
             return Some(res);
         }
         // Tier 2：Rhai 脚本，需要凭证快照（如有）。
         let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        mgr.run_tier2_for_url(url, Arc::clone(&self.http), creds)
+        mgr.run_tier2_for_url(url, Arc::clone(client), creds)
             .transpose()
     }
 
@@ -295,7 +324,12 @@ impl GleanService {
                 Ok(ev)
             }
             AppCommand::AddFeedLocal { title, feed_url } => {
-                let id = self.store.add_feed(&title, &feed_url, None)?;
+                let id = self.store.add_feed(
+                    &title,
+                    &feed_url,
+                    None,
+                    crate::feed::categorize(&feed_url),
+                )?;
                 let mut ev = self.emit_nav()?;
                 ev.push(AppEvent::Status {
                     message: format!("已添加本地源 id={}", id.0),
@@ -373,6 +407,28 @@ impl GleanService {
             AppCommand::SetFeedRefreshInterval { id, secs } => {
                 self.store.set_feed_refresh_interval(id, secs)?;
                 self.emit_nav()
+            }
+            AppCommand::SetFeedCategory { id, category } => {
+                self.store.set_feed_category(id, category)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: format!("已更新分类为「{}」", category.label()),
+                });
+                Ok(ev)
+            }
+            AppCommand::ToggleFeedProxy { id } => {
+                let (_, _, _, use_proxy) = self.store.get_feed_fetch_meta(id)?;
+                let next = !use_proxy;
+                self.store.set_feed_use_proxy(id, next)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: if next {
+                        "已开启代理".into()
+                    } else {
+                        "已关闭代理（直连）".into()
+                    },
+                });
+                Ok(ev)
             }
             AppCommand::AutoRefresh => {
                 // Caller (UI) checks interval and dispatches refresh tasks for due feeds.
@@ -465,12 +521,13 @@ impl GleanService {
         };
         let mut tasks = Vec::with_capacity(ids.len());
         for id in ids {
-            let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id)?;
+            let (url, etag, last_modified, use_proxy) = self.store.get_feed_fetch_meta(id)?;
             tasks.push(RefreshTask {
                 feed_id: id,
                 url,
                 etag,
                 last_modified,
+                use_proxy,
             });
         }
         Ok(tasks)
@@ -492,12 +549,13 @@ impl GleanService {
         }
         let mut tasks = Vec::with_capacity(due.len());
         for id in due {
-            let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id)?;
+            let (url, etag, last_modified, use_proxy) = self.store.get_feed_fetch_meta(id)?;
             tasks.push(RefreshTask {
                 feed_id: id,
                 url,
                 etag,
                 last_modified,
+                use_proxy,
             });
         }
         Ok(tasks)
@@ -708,10 +766,11 @@ impl GleanService {
     }
 
     fn refresh_one_sync(&mut self, id: FeedId) -> Option<RefreshOutcome> {
-        let (url, etag, last_modified) = self.store.get_feed_fetch_meta(id).ok()?;
+        let (url, etag, last_modified, use_proxy) = self.store.get_feed_fetch_meta(id).ok()?;
+        let client = pick_client(use_proxy, &self.http, &self.http_proxy);
         // §11.5 刷新时先做插件路由：URL 命中已加载插件则走 Tier 1/2，
         // 跳过 RSS fetch（插件不做条件请求，每次拉新）。未命中走默认 RSS。
-        if let Some(res) = self.fetch_via_plugin(&url) {
+        if let Some(res) = self.fetch_via_plugin(&url, client) {
             return Some(match res {
                 Ok(parsed) => RefreshOutcome::Updated {
                     feed_id: id,
@@ -725,7 +784,7 @@ impl GleanService {
                 },
             });
         }
-        match fetch_feed_bytes(&self.http, &url, etag.as_deref(), last_modified.as_deref()) {
+        match fetch_feed_bytes(client, &url, etag.as_deref(), last_modified.as_deref()) {
             Ok(FetchResult::NotModified) => Some(RefreshOutcome::NotModified { feed_id: id }),
             Ok(FetchResult::Body {
                 bytes,
@@ -817,7 +876,8 @@ impl GleanService {
     /// §11.5 订阅时的插件路由：URL 命中已加载插件则用 Tier 1/2 产出的 feed 入库。
     /// 返回 `Ok(None)` 表示未命中插件（调用方走 RSS 发现）；`Err` 表示插件命中但失败。
     fn try_add_via_plugin(&mut self, url: &str) -> Result<Option<Vec<AppEvent>>> {
-        let parsed = match self.fetch_via_plugin(url) {
+        // 新订阅默认直连（use_proxy 之后可在右键菜单单独开启）。
+        let parsed = match self.fetch_via_plugin(url, &self.http) {
             None => return Ok(None),
             Some(Err(e)) => return Err(e),
             Some(Ok(p)) => p,
@@ -835,7 +895,9 @@ impl GleanService {
         etag: Option<String>,
         last_modified: Option<String>,
     ) -> Result<Vec<AppEvent>> {
-        let id = self.store.add_feed(&parsed.title, url, None)?;
+        let id = self
+            .store
+            .add_feed(&parsed.title, url, None, crate::feed::categorize(url))?;
         self.store.update_feed_after_fetch(
             id,
             Some(&parsed.title),
@@ -921,7 +983,12 @@ impl GleanService {
                 } else {
                     o.title.clone()
                 };
-                self.store.add_feed(&title, &o.feed_url, None)?;
+                self.store.add_feed(
+                    &title,
+                    &o.feed_url,
+                    None,
+                    crate::feed::categorize(&o.feed_url),
+                )?;
                 added += 1;
             }
         }
@@ -954,6 +1021,20 @@ impl GleanService {
     }
 }
 
+/// 构建直连 + 带代理两套 HTTP 客户端。代理 URL 为空时 `http_proxy = None`。
+fn build_http_clients(
+    proxy_url: Option<&str>,
+) -> Result<(String, Arc<HttpClient>, Option<Arc<HttpClient>>)> {
+    let proxy_url = proxy_url.unwrap_or("").to_string();
+    let http = Arc::new(HttpClient::new()?);
+    let http_proxy = if proxy_url.is_empty() {
+        None
+    } else {
+        Some(Arc::new(HttpClient::with_proxy(Some(&proxy_url))?))
+    };
+    Ok((proxy_url, http, http_proxy))
+}
+
 /// §11.5 worker 线程的刷新上下文快照：共享 `PluginManager`/`HttpClient`，
 /// 克隆 `CredentialStore`。`None` 字段表示该能力不可用，worker 走默认 RSS。
 ///
@@ -962,15 +1043,31 @@ impl GleanService {
 pub struct RefreshCtx {
     pub plugin_mgr: Option<Arc<PluginManager>>,
     pub http: Arc<HttpClient>,
+    /// 带代理的客户端（`use_proxy = true` 的订阅使用）；`None` = 未配置代理，回退直连。
+    pub http_proxy: Option<Arc<HttpClient>>,
     pub credentials: Option<CredentialStore>,
+}
+
+/// 按订阅的 use_proxy 选择 HTTP 客户端；未配置代理时回退直连。
+fn pick_client<'a>(
+    use_proxy: bool,
+    http: &'a Arc<HttpClient>,
+    http_proxy: &'a Option<Arc<HttpClient>>,
+) -> &'a Arc<HttpClient> {
+    if use_proxy {
+        http_proxy.as_ref().unwrap_or(http)
+    } else {
+        http
+    }
 }
 
 /// 在 worker 线程执行一次刷新。逻辑与 `GleanService::refresh_one_sync` 对齐：
 /// 先做插件路由（Tier 1/2），未命中走默认 RSS（fetch + parse）。
 /// 插件不做条件请求，命中即拉新；RSS 路径保留 etag/last_modified。
 pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> RefreshOutcome {
+    let client = pick_client(task.use_proxy, &ctx.http, &ctx.http_proxy);
     if let Some(mgr) = ctx.plugin_mgr.as_deref() {
-        if let Some(res) = mgr.run_tier1_for_url(&task.url, &ctx.http).transpose() {
+        if let Some(res) = mgr.run_tier1_for_url(&task.url, client).transpose() {
             return match res {
                 Ok(parsed) => RefreshOutcome::Updated {
                     feed_id: task.feed_id,
@@ -986,7 +1083,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
         }
         let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
         if let Some(res) = mgr
-            .run_tier2_for_url(&task.url, Arc::clone(&ctx.http), creds)
+            .run_tier2_for_url(&task.url, Arc::clone(client), creds)
             .transpose()
         {
             return match res {
@@ -1005,7 +1102,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
     }
     // 默认 RSS 路径
     match fetch_feed_bytes(
-        &ctx.http,
+        client,
         &task.url,
         task.etag.as_deref(),
         task.last_modified.as_deref(),

@@ -18,6 +18,79 @@ pub struct Folder {
     pub sort_key: i64,
 }
 
+/// 订阅的内容类型，用于导航栏分类分组：
+/// 文章（纯文本）/ 社交媒体（图文）/ 图片 / 音乐 / 视频。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedCategory {
+    /// 文章：文本内容。
+    #[default]
+    Article,
+    /// 社交媒体：图文混排。
+    Social,
+    /// 图片。
+    Image,
+    /// 音乐 / 播客。
+    Music,
+    /// 视频。
+    Video,
+}
+
+impl FeedCategory {
+    /// 存储 / 序列化用字符串标识（与 `#[serde(rename_all = "snake_case")]` 一致）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FeedCategory::Article => "article",
+            FeedCategory::Social => "social",
+            FeedCategory::Image => "image",
+            FeedCategory::Music => "music",
+            FeedCategory::Video => "video",
+        }
+    }
+
+    /// 从存储字符串解析；未知值回退为 Article（向前兼容）。
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "social" => FeedCategory::Social,
+            "image" => FeedCategory::Image,
+            "music" => FeedCategory::Music,
+            "video" => FeedCategory::Video,
+            _ => FeedCategory::Article,
+        }
+    }
+
+    /// 导航栏展示名。
+    pub fn label(&self) -> &'static str {
+        match self {
+            FeedCategory::Article => "文章",
+            FeedCategory::Social => "社交媒体",
+            FeedCategory::Image => "图片",
+            FeedCategory::Music => "音乐",
+            FeedCategory::Video => "视频",
+        }
+    }
+
+    /// 导航栏分组图标。
+    pub fn icon(&self) -> &'static str {
+        match self {
+            FeedCategory::Article => "📄",
+            FeedCategory::Social => "💬",
+            FeedCategory::Image => "🖼",
+            FeedCategory::Music => "🎵",
+            FeedCategory::Video => "🎬",
+        }
+    }
+}
+
+/// 所有分类的有序遍历（导航栏固定顺序：文章 → 社交媒体 → 图片 → 音乐 → 视频）。
+pub const FEED_CATEGORIES: [FeedCategory; 5] = [
+    FeedCategory::Article,
+    FeedCategory::Social,
+    FeedCategory::Image,
+    FeedCategory::Music,
+    FeedCategory::Video,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Feed {
     pub id: FeedId,
@@ -34,6 +107,12 @@ pub struct Feed {
     pub favicon_url: Option<String>,
     /// Consecutive refresh failures. Reset to 0 on success.
     pub consecutive_failures: i32,
+    /// 内容类型分类（导航栏分组依据）。
+    #[serde(default)]
+    pub category: FeedCategory,
+    /// 是否使用设置页配置的 HTTP 代理抓取该订阅。false = 直连。
+    #[serde(default)]
+    pub use_proxy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

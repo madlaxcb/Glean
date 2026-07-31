@@ -234,6 +234,8 @@ mod tests {
             refresh_interval_secs: 0,
             favicon_url: None,
             consecutive_failures: 0,
+            category: crate::model::FeedCategory::Article,
+            use_proxy: false,
         }];
         let xml = export_opml(&feeds);
         assert!(xml.contains("https://ex.com/rss"));

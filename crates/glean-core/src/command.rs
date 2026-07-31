@@ -68,6 +68,13 @@ pub enum AppCommand {
         id: FeedId,
         secs: i64,
     },
+    SetFeedCategory {
+        id: FeedId,
+        category: crate::model::FeedCategory,
+    },
+    ToggleFeedProxy {
+        id: FeedId,
+    },
     AutoRefresh,
     CreateFolder {
         name: String,

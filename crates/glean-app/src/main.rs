@@ -215,6 +215,8 @@ pub struct SpikeState {
     favicon_rx: Option<mpsc::Receiver<(FeedId, Vec<u8>, u32, u32)>>,
     /// Set of feed IDs whose favicon download is already in flight.
     favicon_pending: std::collections::HashSet<FeedId>,
+    /// 导航栏分类组折叠状态（会话内有效，不持久化）。
+    pub collapsed_categories: std::collections::HashSet<glean_core::FeedCategory>,
 }
 
 impl SpikeState {
@@ -296,6 +298,7 @@ impl SpikeState {
             img_cache_rx: None,
             favicon_rx: None,
             favicon_pending: std::collections::HashSet::new(),
+            collapsed_categories: std::collections::HashSet::new(),
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);

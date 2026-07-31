@@ -2,7 +2,10 @@ use crate::tray::TrayAction;
 use crate::update;
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
-use glean_core::{AppCommand, EnhanceAction, EntryFilter, FolderId, ImagePolicy, ReaderHostMode};
+use glean_core::{
+    AppCommand, EnhanceAction, EntryFilter, FeedCategory, FolderId, ImagePolicy, ReaderHostMode,
+    FEED_CATEGORIES,
+};
 
 const SPLIT_HIT: f32 = 6.0;
 const NAV_MIN: f32 = 120.0;
@@ -11,6 +14,19 @@ const LIST_MIN: f32 = 180.0;
 const LIST_MAX: f32 = 520.0;
 const READER_MIN: f32 = 240.0;
 const FAVICON_SIZE: f32 = 14.0;
+
+/// 订阅行的交互动作（左键点击选中 / 右键菜单项）。
+enum FeedRowAction {
+    Click(glean_core::FeedId),
+    Delete(glean_core::FeedId),
+    Rename(glean_core::FeedId),
+    EditUrl(glean_core::FeedId),
+    MarkRead(glean_core::FeedId),
+    MoveFolder(glean_core::FeedId, Option<FolderId>),
+    ToggleMute(glean_core::FeedId),
+    SetCategory(glean_core::FeedId, FeedCategory),
+    ToggleProxy(glean_core::FeedId),
+}
 
 pub struct SpikeApp {
     state: SpikeState,
@@ -893,12 +909,15 @@ impl eframe::App for SpikeApp {
                             resp.request_focus();
                         }
                         if resp.lost_focus() {
+                            // 立即重建带代理的 HTTP 客户端，无需重启。
+                            let proxy = self.state.config.proxy_url.clone();
+                            self.state.service.set_proxy_url(&proxy);
                             self.state.sync_config();
                             self.state.save_config();
                         }
                     });
                     ui.label(
-                        RichText::new("支持 http/socks5 代理，重启后生效")
+                        RichText::new("支持 http/socks5 代理；开启「使用代理」的订阅会走此代理")
                             .small()
                             .weak(),
                     );
@@ -1377,13 +1396,7 @@ impl SpikeApp {
         ui.separator();
 
         // Collect action requests from the closure.
-        let mut feed_click = None;
-        let mut feed_delete = None;
-        let mut feed_mark_read = None;
-        let mut feed_rename = None;
-        let mut feed_edit_url = None;
-        let mut feed_move_folder = None;
-        let mut feed_toggle_mute = None;
+        let mut action = None;
         let mut do_create_folder = false;
 
         // Context menu on "订阅" header for creating folders.
@@ -1405,175 +1418,96 @@ impl SpikeApp {
             }
         });
 
-        // Group feeds by folder.
+        // 按内容类型分类分组（文章/社交媒体/图片/音乐/视频），组内再按文件夹分组。
         let folders = self.state.folders.clone();
         let feeds = self.state.feeds.clone();
 
-        // Feeds without folder first.
-        let orphans: Vec<_> = feeds.iter().filter(|f| f.folder_id.is_none()).collect();
-
-        for feed in &orphans {
-            let sel = matches!(
-                self.state.filter,
-                EntryFilter::Feed(id) if id == feed.id
-            );
-            let error_mark = if feed.last_error.is_some() {
-                if feed.consecutive_failures > 1 {
-                    " ⚠✕"
-                } else {
-                    " ⚠"
-                }
-            } else {
-                ""
-            };
-            let mute_mark = if feed.muted { "🔇" } else { "" };
-            let has_favicon_tex = self.favicons.contains_key(&feed.id);
-            if has_favicon_tex {
-                let tex = self.favicons.get(&feed.id).unwrap();
-                ui.add(
-                    egui::Image::new(tex).fit_to_exact_size(egui::vec2(FAVICON_SIZE, FAVICON_SIZE)),
-                );
+        for category in FEED_CATEGORIES {
+            let cat_feeds: Vec<_> = feeds.iter().filter(|f| f.category == category).collect();
+            if cat_feeds.is_empty() {
+                continue;
             }
-            let favicon_mark =
-                if !has_favicon_tex && feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty()) {
-                    "🌐"
-                } else {
-                    ""
-                };
-            let unread = self
-                .state
-                .unread_per_feed
-                .get(&feed.id)
-                .copied()
-                .unwrap_or(0);
-            let unread_mark = if unread > 0 {
-                format!(" ({unread})")
-            } else {
-                String::new()
-            };
-            let label = format!(
-                "{mute_mark}{favicon_mark}{}{error_mark}{unread_mark}",
-                feed.title
-            );
-            let resp = ui.selectable_label(sel, &label);
-            if resp.clicked() {
-                feed_click = Some(feed.id);
-            }
-            self.draw_feed_context_menu(
-                ui,
-                &resp,
-                feed,
-                &folders,
-                &mut feed_delete,
-                &mut feed_rename,
-                &mut feed_edit_url,
-                &mut feed_mark_read,
-                &mut feed_move_folder,
-                &mut feed_toggle_mute,
-            );
-        }
-
-        // Feeds grouped by folder.
-        for folder in &folders {
-            let folder_feeds: Vec<_> = feeds
+            let cat_unread: u64 = cat_feeds
                 .iter()
-                .filter(|f| f.folder_id == Some(folder.id))
-                .collect();
-            let _is_empty = folder_feeds.is_empty();
-            ui.label(
-                RichText::new(format!("📁 {}", folder.name))
-                    .small()
-                    .strong(),
-            );
-            for feed in &folder_feeds {
-                let sel = matches!(
-                    self.state.filter,
-                    EntryFilter::Feed(id) if id == feed.id
+                .map(|f| self.state.unread_per_feed.get(&f.id).copied().unwrap_or(0))
+                .sum();
+            let collapsed = self.state.collapsed_categories.contains(&category);
+            let header = format!("{} {} ({})", category.icon(), category.label(), cat_unread);
+            let header_resp = ui.selectable_label(!collapsed, header);
+            if header_resp.clicked() {
+                if collapsed {
+                    self.state.collapsed_categories.remove(&category);
+                } else {
+                    self.state.collapsed_categories.insert(category);
+                }
+            }
+            if collapsed {
+                continue;
+            }
+
+            // 组内：无文件夹的订阅平铺在前，再按文件夹分组。
+            let orphans: Vec<_> = cat_feeds.iter().filter(|f| f.folder_id.is_none()).collect();
+            for feed in &orphans {
+                if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
+                    action = Some(a);
+                }
+            }
+            for folder in &folders {
+                let folder_feeds: Vec<_> = cat_feeds
+                    .iter()
+                    .filter(|f| f.folder_id == Some(folder.id))
+                    .collect();
+                if folder_feeds.is_empty() {
+                    continue;
+                }
+                ui.label(
+                    RichText::new(format!("📁 {}", folder.name))
+                        .small()
+                        .strong(),
                 );
-                let error_mark = if feed.last_error.is_some() {
-                    if feed.consecutive_failures > 1 {
-                        " ⚠✕"
-                    } else {
-                        " ⚠"
+                for feed in &folder_feeds {
+                    if let Some(a) = self.draw_feed_item(ui, feed, &folders, true) {
+                        action = Some(a);
                     }
-                } else {
-                    ""
-                };
-                let mute_mark = if feed.muted { "🔇" } else { "" };
-                let has_favicon_tex = self.favicons.contains_key(&feed.id);
-                if has_favicon_tex {
-                    let tex = self.favicons.get(&feed.id).unwrap();
-                    ui.add(
-                        egui::Image::new(tex)
-                            .fit_to_exact_size(egui::vec2(FAVICON_SIZE, FAVICON_SIZE)),
-                    );
                 }
-                let favicon_mark = if !has_favicon_tex
-                    && feed.favicon_url.as_deref().is_some_and(|u| !u.is_empty())
-                {
-                    "🌐"
-                } else {
-                    ""
-                };
-                let unread = self
-                    .state
-                    .unread_per_feed
-                    .get(&feed.id)
-                    .copied()
-                    .unwrap_or(0);
-                let unread_mark = if unread > 0 {
-                    format!(" ({unread})")
-                } else {
-                    String::new()
-                };
-                let label = format!(
-                    "  {mute_mark}{favicon_mark}{}{error_mark}{unread_mark}",
-                    feed.title
-                );
-                let resp = ui.selectable_label(sel, &label);
-                if resp.clicked() {
-                    feed_click = Some(feed.id);
-                }
-                self.draw_feed_context_menu(
-                    ui,
-                    &resp,
-                    feed,
-                    &folders,
-                    &mut feed_delete,
-                    &mut feed_rename,
-                    &mut feed_edit_url,
-                    &mut feed_mark_read,
-                    &mut feed_move_folder,
-                    &mut feed_toggle_mute,
-                );
             }
         }
 
         // Apply actions after the closure borrows are released.
-        if let Some(id) = feed_click {
-            self.state.set_filter(EntryFilter::Feed(id));
-        }
-        if let Some(id) = feed_delete {
-            self.state.delete_feed(id);
-        }
-        if let Some(id) = feed_rename {
-            if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
-                self.state.rename_feed = Some((id, f.title.clone()));
+        match action {
+            Some(FeedRowAction::Click(id)) => {
+                self.state.set_filter(EntryFilter::Feed(id));
             }
-        }
-        if let Some(id) = feed_edit_url {
-            if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
-                self.state.edit_feed_url = Some((id, f.feed_url.clone()));
+            Some(FeedRowAction::Delete(id)) => {
+                self.state.delete_feed(id);
             }
-        }
-        if let Some((feed_id, folder_id)) = feed_move_folder {
-            self.state.move_feed_to_folder(feed_id, folder_id);
-        }
-        if let Some(id) = feed_toggle_mute {
-            self.state.toggle_mute_feed(id);
-        }
-        if let Some(id) = feed_mark_read {
-            self.state.mark_all_read(Some(id));
+            Some(FeedRowAction::Rename(id)) => {
+                if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
+                    self.state.rename_feed = Some((id, f.title.clone()));
+                }
+            }
+            Some(FeedRowAction::EditUrl(id)) => {
+                if let Some(f) = self.state.feeds.iter().find(|f| f.id == id) {
+                    self.state.edit_feed_url = Some((id, f.feed_url.clone()));
+                }
+            }
+            Some(FeedRowAction::MoveFolder(feed_id, folder_id)) => {
+                self.state.move_feed_to_folder(feed_id, folder_id);
+            }
+            Some(FeedRowAction::ToggleMute(id)) => {
+                self.state.toggle_mute_feed(id);
+            }
+            Some(FeedRowAction::SetCategory(id, category)) => {
+                self.state
+                    .dispatch(AppCommand::SetFeedCategory { id, category });
+            }
+            Some(FeedRowAction::ToggleProxy(id)) => {
+                self.state.dispatch(AppCommand::ToggleFeedProxy { id });
+            }
+            Some(FeedRowAction::MarkRead(id)) => {
+                self.state.mark_all_read(Some(id));
+            }
+            None => {}
         }
         if do_create_folder {
             let name = self.state.new_folder_input.trim().to_string();
@@ -1584,39 +1518,101 @@ impl SpikeApp {
         }
     }
 
+    /// 渲染单个订阅行（favicon + 标题 + 未读/静音/错误标记），返回用户动作。
+    fn draw_feed_item(
+        &mut self,
+        ui: &mut Ui,
+        feed: &glean_core::Feed,
+        folders: &[glean_core::Folder],
+        indent: bool,
+    ) -> Option<FeedRowAction> {
+        let selected = matches!(self.state.filter, EntryFilter::Feed(id) if id == feed.id);
+        let unread = self
+            .state
+            .unread_per_feed
+            .get(&feed.id)
+            .copied()
+            .unwrap_or(0);
+        let mut title = feed.title.clone();
+        if feed.muted {
+            title.push_str(" 🔇");
+        }
+        if feed.last_error.is_some() {
+            title.push_str(" ⚠");
+        }
+        if unread > 0 {
+            title.push_str(&format!(" ({unread})"));
+        }
+        let rich = if unread > 0 {
+            RichText::new(title).strong()
+        } else {
+            RichText::new(title)
+        };
+        let row = ui.horizontal(|ui| {
+            if indent {
+                ui.add_space(12.0);
+            }
+            if let Some(tex) = self.favicons.get(&feed.id) {
+                ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(FAVICON_SIZE)));
+            } else {
+                ui.label("🌐");
+            }
+            ui.selectable_label(selected, rich)
+        });
+        let resp = row.inner;
+        let mut action = None;
+        if resp.clicked() {
+            action = Some(FeedRowAction::Click(feed.id));
+        }
+        self.draw_feed_context_menu(&resp, feed, folders, &mut action);
+        action
+    }
+
     fn draw_feed_context_menu(
         &mut self,
-        _ui: &mut Ui,
         resp: &egui::Response,
         feed: &glean_core::Feed,
         folders: &[glean_core::Folder],
-        feed_delete: &mut Option<glean_core::FeedId>,
-        feed_rename: &mut Option<glean_core::FeedId>,
-        feed_edit_url: &mut Option<glean_core::FeedId>,
-        feed_mark_read: &mut Option<glean_core::FeedId>,
-        feed_move_folder: &mut Option<(glean_core::FeedId, Option<FolderId>)>,
-        feed_toggle_mute: &mut Option<glean_core::FeedId>,
+        action: &mut Option<FeedRowAction>,
     ) {
         resp.context_menu(|ui| {
+            // 分类子菜单（导航栏分组依据）。
+            ui.menu_button("分类", |ui| {
+                for category in FEED_CATEGORIES {
+                    if ui
+                        .selectable_label(feed.category == category, category.label())
+                        .clicked()
+                    {
+                        *action = Some(FeedRowAction::SetCategory(feed.id, category));
+                        ui.close_menu();
+                    }
+                }
+            });
+            // 代理开关：开启时走设置页配置的 HTTP 代理，关闭时直连。
+            let mut use_proxy = feed.use_proxy;
+            if ui.checkbox(&mut use_proxy, "使用代理").changed() {
+                *action = Some(FeedRowAction::ToggleProxy(feed.id));
+                ui.close_menu();
+            }
             if ui.button("重命名").clicked() {
-                *feed_rename = Some(feed.id);
+                *action = Some(FeedRowAction::Rename(feed.id));
                 ui.close_menu();
             }
             if ui.button("编辑 URL").clicked() {
-                *feed_edit_url = Some(feed.id);
+                *action = Some(FeedRowAction::EditUrl(feed.id));
                 ui.close_menu();
             }
             let mute_label = if feed.muted { "取消静音" } else { "静音" };
             if ui.button(mute_label).clicked() {
-                *feed_toggle_mute = Some(feed.id);
+                *action = Some(FeedRowAction::ToggleMute(feed.id));
                 ui.close_menu();
             }
             if ui.button("标记全部已读").clicked() {
-                *feed_mark_read = Some(feed.id);
+                *action = Some(FeedRowAction::MarkRead(feed.id));
                 ui.close_menu();
             }
             if ui.button("删除订阅").clicked() {
-                *feed_delete = Some(feed.id);
+                *action = Some(FeedRowAction::Delete(feed.id));
                 ui.close_menu();
             }
             ui.separator();
@@ -1625,7 +1621,7 @@ impl SpikeApp {
                 // Option to remove from folder.
                 if feed.folder_id.is_some() {
                     if ui.button("（无文件夹）").clicked() {
-                        *feed_move_folder = Some((feed.id, None));
+                        *action = Some(FeedRowAction::MoveFolder(feed.id, None));
                         ui.close_menu();
                     }
                 }
@@ -1635,7 +1631,7 @@ impl SpikeApp {
                         .add_enabled(!already, egui::Button::new(&folder.name))
                         .clicked()
                     {
-                        *feed_move_folder = Some((feed.id, Some(folder.id)));
+                        *action = Some(FeedRowAction::MoveFolder(feed.id, Some(folder.id)));
                         ui.close_menu();
                     }
                 }
@@ -1650,8 +1646,8 @@ impl SpikeApp {
                     r.request_focus();
                 }
                 if ui.button("创建并移入").clicked() {
-                    // Will be handled via do_create_folder below; just signal move.
-                    *feed_move_folder = Some((feed.id, None)); // placeholder, will create first
+                    // 保持既有占位行为（移入“无文件夹”）；真正的建文件夹走“＋ 新建文件夹”菜单。
+                    *action = Some(FeedRowAction::MoveFolder(feed.id, None));
                     ui.close_menu();
                 }
             });

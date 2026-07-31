@@ -2,13 +2,13 @@
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder, FolderId,
+    EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedCategory, FeedId, Folder, FolderId,
 };
 use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 11;
 
 pub struct Store {
     conn: Connection,
@@ -112,6 +112,8 @@ impl Store {
                     last_modified TEXT,
                     last_fetched_at INTEGER,
                     last_error TEXT,
+                    category TEXT NOT NULL DEFAULT 'article',
+                    use_proxy INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL
                 );
                 CREATE TABLE entries (
@@ -278,6 +280,44 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 10 {
+            // 订阅内容分类（导航栏分组：文章/社交媒体/图片/音乐/视频）。
+            // 新库建表已含 category 列；老库（v1-v9）在此补列，重复列报错忽略。
+            let _ = self.conn.execute_batch(
+                "ALTER TABLE feeds ADD COLUMN category TEXT NOT NULL DEFAULT 'article';",
+            );
+            // 回填：已有订阅按 feed_url 自动分类（用户之后在 UI 手动修改不会被覆盖，
+            // 因为回填只发生在这次 v10 升级迁移）。
+            let urls: Vec<(i64, String)> = {
+                let mut stmt = self.conn.prepare("SELECT id, feed_url FROM feeds")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            for (id, feed_url) in urls {
+                let cat = crate::feed::categorize(&feed_url).as_str();
+                self.conn.execute(
+                    "UPDATE feeds SET category = ?1 WHERE id = ?2",
+                    params![cat, id],
+                )?;
+            }
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '10')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
+        if ver < 11 {
+            // 订阅是否走代理（per-feed）。0 = 直连，1 = 使用设置页配置的代理。
+            // 新库建表已含 use_proxy 列；老库补列，重复列报错忽略。
+            let _ = self.conn.execute_batch(
+                "ALTER TABLE feeds ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0;",
+            );
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '11')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -373,11 +413,12 @@ impl Store {
         title: &str,
         feed_url: &str,
         folder_id: Option<FolderId>,
+        category: FeedCategory,
     ) -> Result<FeedId> {
         let now = now_secs();
         self.conn.execute(
-            "INSERT INTO feeds(folder_id, title, feed_url, created_at) VALUES(?1, ?2, ?3, ?4)",
-            params![folder_id.map(|f| f.0), title, feed_url, now],
+            "INSERT INTO feeds(folder_id, title, feed_url, category, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![folder_id.map(|f| f.0), title, feed_url, category.as_str(), now],
         )?;
         Ok(FeedId(self.conn.last_insert_rowid()))
     }
@@ -411,7 +452,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url, consecutive_failures FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url, consecutive_failures, category, use_proxy FROM feeds ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -425,6 +466,8 @@ impl Store {
                 refresh_interval_secs: r.get(7)?,
                 favicon_url: r.get(8)?,
                 consecutive_failures: r.get(9)?,
+                category: FeedCategory::from_str(&r.get::<_, String>(10)?),
+                use_proxy: r.get::<_, i64>(11)? != 0,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -711,12 +754,12 @@ impl Store {
     pub fn get_feed_fetch_meta(
         &self,
         id: FeedId,
-    ) -> Result<(String, Option<String>, Option<String>)> {
+    ) -> Result<(String, Option<String>, Option<String>, bool)> {
         self.conn
             .query_row(
-                "SELECT feed_url, etag, last_modified FROM feeds WHERE id = ?1",
+                "SELECT feed_url, etag, last_modified, use_proxy FROM feeds WHERE id = ?1",
                 params![id.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)),
             )
             .map_err(|_| CoreError::NotFound(format!("feed {}", id.0)))
     }
@@ -909,6 +952,22 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_feed_category(&mut self, id: FeedId, category: FeedCategory) -> Result<()> {
+        self.conn.execute(
+            "UPDATE feeds SET category = ?1 WHERE id = ?2",
+            params![category.as_str(), id.0],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_feed_use_proxy(&mut self, id: FeedId, use_proxy: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE feeds SET use_proxy = ?1 WHERE id = ?2",
+            params![if use_proxy { 1 } else { 0 }, id.0],
+        )?;
+        Ok(())
+    }
+
     /// Return feed IDs whose last_refresh is older than their interval (or global default).
     pub fn feeds_due_for_refresh(
         &self,
@@ -1004,7 +1063,9 @@ mod tests {
         let cache_dir = tmp.join("cache").join("entries");
         let mut store = Store::open_path_with_cache(&db_path, Some(cache_dir.clone())).unwrap();
 
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed("T", "https://ex/feed.xml", None, FeedCategory::Article)
+            .unwrap();
         let body = "<p>cached body &amp; soul</p>";
         let id = store.add_entry(fid, "g1", "Title", None, body).unwrap();
 
@@ -1037,7 +1098,9 @@ mod tests {
         let tmp = unique_tmp("glean-nocache");
         let db_path = tmp.join("glean.db");
         let mut store = Store::open_path_with_cache(&db_path, None).unwrap();
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed("T", "https://ex/feed.xml", None, FeedCategory::Article)
+            .unwrap();
         let id = store
             .add_entry(fid, "g1", "Title", None, "<p>x</p>")
             .unwrap();
@@ -1053,7 +1116,9 @@ mod tests {
         let db_path = tmp.join("glean.db");
         let cache_dir = tmp.join("cache").join("entries");
         let mut store = Store::open_path_with_cache(&db_path, Some(cache_dir.clone())).unwrap();
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed("T", "https://ex/feed.xml", None, FeedCategory::Article)
+            .unwrap();
         let body = "<p>upserted</p>";
         assert!(store
             .upsert_entry(fid, "g1", "Title", None, None, None, None, body)
@@ -1069,7 +1134,9 @@ mod tests {
     #[test]
     fn enhancement_roundtrip_and_overwrite() {
         let mut store = Store::open_in_memory().unwrap();
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed("T", "https://ex/feed.xml", None, FeedCategory::Article)
+            .unwrap();
         let id = store
             .add_entry(fid, "g1", "Title", None, "<p>x</p>")
             .unwrap();

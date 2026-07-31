@@ -30,8 +30,8 @@ pub use favicon_cache::FaviconCache;
 pub use feed::{discover_feed_urls, run_refresh_task, RefreshOutcome, RefreshTask};
 pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
-    AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedId, Folder,
-    FolderId, ImagePolicy,
+    AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedCategory,
+    FeedId, Folder, FolderId, ImagePolicy, FEED_CATEGORIES,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{
@@ -183,7 +183,14 @@ mod tests {
 </channel></rss>"#;
         let parsed = parse_feed(SAMPLE).unwrap();
         let mut store = Store::open_in_memory().unwrap();
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed(
+                "T",
+                "https://ex/feed.xml",
+                None,
+                crate::model::FeedCategory::Article,
+            )
+            .unwrap();
         let mut n = 0;
         for e in &parsed.entries {
             if store
@@ -214,7 +221,14 @@ mod tests {
     #[test]
     fn etag_last_modified_roundtrip() {
         let mut store = Store::open_in_memory().unwrap();
-        let fid = store.add_feed("T", "https://ex/feed.xml", None).unwrap();
+        let fid = store
+            .add_feed(
+                "T",
+                "https://ex/feed.xml",
+                None,
+                crate::model::FeedCategory::Article,
+            )
+            .unwrap();
         store
             .update_feed_after_fetch(
                 fid,
@@ -225,9 +239,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        let (url, etag, lm) = store.get_feed_fetch_meta(fid).unwrap();
+        let (url, etag, lm, use_proxy) = store.get_feed_fetch_meta(fid).unwrap();
         assert_eq!(url, "https://ex/feed.xml");
         assert_eq!(etag.as_deref(), Some(r#""abc123""#));
         assert_eq!(lm.as_deref(), Some("Wed, 21 Oct 2015 07:28:00 GMT"));
+        assert!(!use_proxy);
     }
 }
