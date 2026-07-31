@@ -3,8 +3,8 @@ use crate::update;
 use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use glean_core::{
-    AppCommand, EnhanceAction, EntryFilter, FeedCategory, FolderId, ImagePolicy, ReaderHostMode,
-    FEED_CATEGORIES,
+    AccentColor, AppCommand, EnhanceAction, EntryFilter, FeedCategory, FolderId, ImagePolicy,
+    ReaderHostMode, ACCENT_COLORS, FEED_CATEGORIES,
 };
 
 const SPLIT_HIT: f32 = 6.0;
@@ -45,18 +45,21 @@ pub struct SpikeApp {
     favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
     geometry_timer: f32,
+    /// 已应用到 ctx 的样式（dark, accent）；变化时才重建 style，避免每帧 set_style。
+    applied_style: Option<(bool, AccentColor)>,
 }
 
 impl SpikeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::fonts::install(&cc.egui_ctx);
-        apply_style(&cc.egui_ctx, false);
         let state = SpikeState::new();
+        apply_style(&cc.egui_ctx, state.dark, state.config.accent);
         // Give the tray an egui::Context clone so tray event callbacks can
         // directly drive viewport commands and repaints. This is essential
         // for restoring from tray: ctx.request_repaint() alone is a no-op
         // for hidden windows, so callbacks must also call Win32 ShowWindow.
         state.tray.set_egui_ctx(cc.egui_ctx.clone());
+        let applied_style = Some((state.dark, state.config.accent));
         Self {
             state,
             primed: false,
@@ -67,6 +70,7 @@ impl SpikeApp {
             confirm_uninstall: None,
             favicons: std::collections::HashMap::new(),
             geometry_timer: 0.0,
+            applied_style,
         }
     }
 }
@@ -153,10 +157,11 @@ impl eframe::App for SpikeApp {
             }
         }
 
-        if self.state.dark {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        // 主题（深浅）或主题色变化时重建样式；不变则跳过重设。
+        let want_style = (self.state.dark, self.state.config.accent);
+        if self.applied_style != Some(want_style) {
+            apply_style(ctx, want_style.0, want_style.1);
+            self.applied_style = Some(want_style);
         }
 
         let panel_fill = ctx.style().visuals.panel_fill;
@@ -300,7 +305,8 @@ impl eframe::App for SpikeApp {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&self.state.status).small());
+                        let color = ui.visuals().strong_text_color().gamma_multiply(0.85);
+                        ui.label(RichText::new(&self.state.status).size(13.0).color(color));
                     });
                 });
             });
@@ -329,11 +335,7 @@ impl eframe::App for SpikeApp {
                     if ui.button("添加").clicked() || enter {
                         self.state.add_feed_from_url();
                     }
-                    ui.label(
-                        RichText::new("示例: https://www.reddit.com/r/rust/.rss")
-                            .small()
-                            .weak(),
-                    );
+                    hint(ui, "示例: https://www.reddit.com/r/rust/.rss");
                 });
             });
 
@@ -345,10 +347,9 @@ impl eframe::App for SpikeApp {
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("j/k 换文 · r 刷新 · s 星标 · t 主题 · , 设置 · Esc 关闭弹窗")
-                        .small()
-                        .weak(),
+                hint(
+                    ui,
+                    "j/k 换文 · r 刷新 · s 星标 · t 主题 · , 设置 · Esc 关闭弹窗",
                 );
             });
 
@@ -734,8 +735,14 @@ impl eframe::App for SpikeApp {
                         .show(ui, |ui| {
                             for (i, err) in self.state.errors.iter().enumerate().rev() {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("#{}", i + 1)).small().weak());
-                                    ui.label(RichText::new(err).small());
+                                    let color =
+                                        ui.visuals().strong_text_color().gamma_multiply(0.72);
+                                    ui.label(
+                                        RichText::new(format!("#{}", i + 1))
+                                            .size(12.5)
+                                            .color(color),
+                                    );
+                                    ui.label(RichText::new(err).size(13.5));
                                 });
                                 ui.separator();
                             }
@@ -754,326 +761,308 @@ impl eframe::App for SpikeApp {
         if self.show_settings {
             let mut close = false;
             egui::Window::new("设置")
-                .resizable(false)
-                .default_width(380.0)
+                .resizable(true)
+                .default_size([480.0, 560.0])
                 .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.heading("外观");
-                    ui.horizontal(|ui| {
-                        ui.label("主题");
-                        if ui.selectable_label(!self.state.dark, "浅色").clicked()
-                            && self.state.dark
-                        {
-                            self.state.toggle_theme(ctx);
-                        }
-                        if ui.selectable_label(self.state.dark, "深色").clicked()
-                            && !self.state.dark
-                        {
-                            self.state.toggle_theme(ctx);
-                        }
-                    });
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            settings_heading(ui, "外观");
+                            ui.horizontal(|ui| {
+                                ui.label("主题");
+                                if ui.selectable_label(!self.state.dark, "浅色").clicked()
+                                    && self.state.dark
+                                {
+                                    self.state.toggle_theme(ctx);
+                                }
+                                if ui.selectable_label(self.state.dark, "深色").clicked()
+                                    && !self.state.dark
+                                {
+                                    self.state.toggle_theme(ctx);
+                                }
+                            });
+                            // 主题色色板：圆形色块，选中者加描边。
+                            ui.horizontal(|ui| {
+                                ui.label("主题色");
+                                for c in ACCENT_COLORS {
+                                    let (r, g, b) = c.rgb(self.state.dark);
+                                    let color = Color32::from_rgb(r, g, b);
+                                    let selected = self.state.config.accent == c;
+                                    let (rect, resp) = ui.allocate_exact_size(
+                                        Vec2::splat(26.0),
+                                        Sense::click(),
+                                    );
+                                    let border = if selected {
+                                        Stroke::new(2.5_f32, ui.visuals().strong_text_color())
+                                    } else {
+                                        Stroke::new(
+                                            1.0_f32,
+                                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                                        )
+                                    };
+                                    ui.painter().circle(rect.center(), 9.0, color, border);
+                                    if resp.clicked() && !selected {
+                                        self.state.config.accent = c;
+                                        self.state.sync_config();
+                                        self.state.save_config();
+                                    }
+                                    resp.on_hover_text(c.label());
+                                }
+                            });
+                            hint(ui, "主题色影响选中背景、悬停高亮与链接颜色");
 
-                    ui.add_space(8.0);
-                    ui.heading("阅读");
-                    ui.horizontal(|ui| {
-                        ui.label("远程图片");
-                        let policy = self.state.config.image_policy;
-                        if ui
-                            .selectable_label(policy == ImagePolicy::Block, "拦截")
-                            .clicked()
-                            && policy != ImagePolicy::Block
-                        {
-                            self.state.config.image_policy = ImagePolicy::Block;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                        if ui
-                            .selectable_label(policy == ImagePolicy::LoadOnDemand, "按需")
-                            .clicked()
-                            && policy != ImagePolicy::LoadOnDemand
-                        {
-                            self.state.config.image_policy = ImagePolicy::LoadOnDemand;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                        if ui
-                            .selectable_label(policy == ImagePolicy::Allow, "允许")
-                            .clicked()
-                            && policy != ImagePolicy::Allow
-                        {
-                            self.state.config.image_policy = ImagePolicy::Allow;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                    });
-                    ui.label(
-                        RichText::new("拦截=去图；按需=每篇可点「显示图片」；允许=始终加载")
-                            .small()
-                            .weak(),
-                    );
-
-                    ui.add_space(8.0);
-                    ui.heading("布局");
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "导航 {} · 列表 {}",
-                            self.state.nav_width as i32, self.state.list_width as i32
-                        ));
-                        if ui.button("重置布局").clicked() {
-                            self.state.reset_layout();
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    ui.heading("刷新");
-                    ui.horizontal(|ui| {
-                        ui.label("全局自动刷新间隔（秒，0=关闭）");
-                        let te = egui::TextEdit::singleline(&mut self.state.refresh_interval_input)
-                            .id(egui::Id::new("refresh_interval_input"))
-                            .desired_width(80.0);
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                        if resp.lost_focus() {
-                            if let Ok(v) = self.state.refresh_interval_input.parse::<i64>() {
-                                self.state.set_global_refresh_interval(v.max(0));
-                            } else {
-                                // Reset to current config on invalid input.
-                                self.state.refresh_interval_input =
-                                    self.state.config.refresh_interval_secs.to_string();
-                            }
-                        }
-                    });
-                    ui.label(
-                        RichText::new("每源可在右键菜单单独设置刷新间隔")
-                            .small()
-                            .weak(),
-                    );
-
-                    ui.add_space(8.0);
-                    ui.heading("阅读");
-                    ui.horizontal(|ui| {
-                        let cur = self.state.config.auto_extract;
-                        if ui.selectable_label(cur, "开").clicked() && !cur {
-                            self.state.config.auto_extract = true;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                        if ui.selectable_label(!cur, "关").clicked() && cur {
-                            self.state.config.auto_extract = false;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                    });
-                    ui.label(
-                        RichText::new("自动抽取：打开短摘要文章时后台抓取原文全文（readability）")
-                            .small()
-                            .weak(),
-                    );
-
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        let cur = self.state.config.cache_images;
-                        if ui.selectable_label(cur, "开").clicked() && !cur {
-                            self.state.config.cache_images = true;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                        if ui.selectable_label(!cur, "关").clicked() && cur {
-                            self.state.config.cache_images = false;
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                    });
-                    ui.label(
-                        RichText::new(
-                            "缓存图片：显示图片时下载到本地，改写 src 指向本地缓存（离线可看）",
-                        )
-                        .small()
-                        .weak(),
-                    );
-
-                    ui.add_space(8.0);
-                    ui.heading("网络");
-                    ui.horizontal(|ui| {
-                        ui.label("HTTP 代理");
-                        let te = egui::TextEdit::singleline(&mut self.state.config.proxy_url)
-                            .id(egui::Id::new("proxy_url_input"))
-                            .desired_width(200.0)
-                            .hint_text("http://127.0.0.1:7890");
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                        if resp.lost_focus() {
-                            // 立即重建带代理的 HTTP 客户端，无需重启。
-                            let proxy = self.state.config.proxy_url.clone();
-                            self.state.service.set_proxy_url(&proxy);
-                            self.state.sync_config();
-                            self.state.save_config();
-                        }
-                    });
-                    ui.label(
-                        RichText::new("支持 http/socks5 代理；开启「使用代理」的订阅会走此代理")
-                            .small()
-                            .weak(),
-                    );
-
-                    ui.add_space(8.0);
-                    ui.heading("AI 增强");
-                    if self.state.ai_configured() {
-                        ui.label(
-                            RichText::new("已配置：阅读工具栏显示「摘要」「翻译」")
-                                .small()
-                                .weak(),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new("未配置：阅读工具栏不显示 AI 按钮")
-                                .small()
-                                .weak(),
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Base URL");
-                        let te = egui::TextEdit::singleline(&mut self.state.ai_base_url_input)
-                            .id(egui::Id::new("ai_base_url_input"))
-                            .desired_width(200.0)
-                            .hint_text("https://api.openai.com/v1");
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("模型");
-                        let te = egui::TextEdit::singleline(&mut self.state.ai_model_input)
-                            .id(egui::Id::new("ai_model_input"))
-                            .desired_width(200.0)
-                            .hint_text("gpt-4o-mini / deepseek-chat");
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("API Key");
-                        let te = egui::TextEdit::singleline(&mut self.state.ai_key_input)
-                            .id(egui::Id::new("ai_key_input"))
-                            .password(true)
-                            .desired_width(200.0)
-                            .hint_text("sk-…");
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                    });
-                    ui.label(
-                        RichText::new(
-                            "OpenAI 兼容协议。api_key 加密存储（Windows DPAPI），不落明文；留空则保留已存 key。",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("保存").clicked() {
-                            self.state.save_ai_config();
-                        }
-                        if self.state.ai_configured() && ui.button("清除配置").clicked() {
-                            self.state.clear_ai_config();
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    ui.heading("排版");
-                    ui.horizontal(|ui| {
-                        ui.label("字体大小 (px)");
-                        let te = egui::TextEdit::singleline(&mut self.state.font_size_input)
-                            .id(egui::Id::new("font_size_input"))
-                            .desired_width(50.0);
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                        if resp.lost_focus() {
-                            if let Ok(v) = self.state.font_size_input.parse::<u16>() {
-                                if v >= 10 && v <= 32 {
-                                    self.state.config.font_size_px = v;
+                            settings_heading(ui, "阅读");
+                            ui.horizontal(|ui| {
+                                ui.label("远程图片");
+                                let policy = self.state.config.image_policy;
+                                if ui
+                                    .selectable_label(policy == ImagePolicy::Block, "拦截")
+                                    .clicked()
+                                    && policy != ImagePolicy::Block
+                                {
+                                    self.state.config.image_policy = ImagePolicy::Block;
                                     self.state.sync_config();
                                     self.state.save_config();
                                 }
-                            } else {
-                                self.state.font_size_input =
-                                    self.state.config.font_size_px.to_string();
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("行宽 (rem)");
-                        let te = egui::TextEdit::singleline(&mut self.state.line_width_input)
-                            .id(egui::Id::new("line_width_input"))
-                            .desired_width(50.0);
-                        let resp = ui.add(te);
-                        if resp.clicked() || resp.gained_focus() {
-                            self.state.reader.reclaim_shell_focus();
-                            resp.request_focus();
-                        }
-                        if resp.lost_focus() {
-                            if let Ok(v) = self.state.line_width_input.parse::<u16>() {
-                                if v >= 20 && v <= 80 {
-                                    self.state.config.line_width_rem = v;
+                                if ui
+                                    .selectable_label(policy == ImagePolicy::LoadOnDemand, "按需")
+                                    .clicked()
+                                    && policy != ImagePolicy::LoadOnDemand
+                                {
+                                    self.state.config.image_policy = ImagePolicy::LoadOnDemand;
                                     self.state.sync_config();
                                     self.state.save_config();
                                 }
+                                if ui
+                                    .selectable_label(policy == ImagePolicy::Allow, "允许")
+                                    .clicked()
+                                    && policy != ImagePolicy::Allow
+                                {
+                                    self.state.config.image_policy = ImagePolicy::Allow;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "拦截=去图；按需=每篇可点「显示图片」；允许=始终加载");
+
+                            settings_heading(ui, "布局");
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "导航 {} · 列表 {}",
+                                    self.state.nav_width as i32, self.state.list_width as i32
+                                ));
+                                if ui.button("重置布局").clicked() {
+                                    self.state.reset_layout();
+                                }
+                            });
+
+                            settings_heading(ui, "刷新");
+                            ui.horizontal(|ui| {
+                                ui.label("全局自动刷新间隔（秒，0=关闭）");
+                                let te = egui::TextEdit::singleline(&mut self.state.refresh_interval_input)
+                                    .id(egui::Id::new("refresh_interval_input"))
+                                    .desired_width(80.0);
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    if let Ok(v) = self.state.refresh_interval_input.parse::<i64>() {
+                                        self.state.set_global_refresh_interval(v.max(0));
+                                    } else {
+                                        // Reset to current config on invalid input.
+                                        self.state.refresh_interval_input =
+                                            self.state.config.refresh_interval_secs.to_string();
+                                    }
+                                }
+                            });
+                            hint(ui, "每源可在右键菜单单独设置刷新间隔");
+
+                            settings_heading(ui, "全文与缓存");
+                            ui.horizontal(|ui| {
+                                ui.label("自动抽取");
+                                let cur = self.state.config.auto_extract;
+                                if ui.selectable_label(cur, "开").clicked() && !cur {
+                                    self.state.config.auto_extract = true;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                                if ui.selectable_label(!cur, "关").clicked() && cur {
+                                    self.state.config.auto_extract = false;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "打开短摘要文章时后台抓取原文全文（readability）");
+
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("缓存图片");
+                                let cur = self.state.config.cache_images;
+                                if ui.selectable_label(cur, "开").clicked() && !cur {
+                                    self.state.config.cache_images = true;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                                if ui.selectable_label(!cur, "关").clicked() && cur {
+                                    self.state.config.cache_images = false;
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "显示图片时下载到本地，改写 src 指向本地缓存（离线可看）");
+
+                            settings_heading(ui, "网络");
+                            ui.horizontal(|ui| {
+                                ui.label("HTTP 代理");
+                                let te = egui::TextEdit::singleline(&mut self.state.config.proxy_url)
+                                    .id(egui::Id::new("proxy_url_input"))
+                                    .desired_width(200.0)
+                                    .hint_text("http://127.0.0.1:7890");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    // 立即重建带代理的 HTTP 客户端，无需重启。
+                                    let proxy = self.state.config.proxy_url.clone();
+                                    self.state.service.set_proxy_url(&proxy);
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "支持 http/socks5 代理；开启「使用代理」的订阅会走此代理");
+
+                            settings_heading(ui, "AI 增强");
+                            if self.state.ai_configured() {
+                                hint(ui, "已配置：阅读工具栏显示「摘要」「翻译」");
                             } else {
-                                self.state.line_width_input =
-                                    self.state.config.line_width_rem.to_string();
+                                hint(ui, "未配置：阅读工具栏不显示 AI 按钮");
                             }
-                        }
-                    });
-                    ui.label(RichText::new("修改后重新打开文章生效").small().weak());
+                            ui.horizontal(|ui| {
+                                ui.label("Base URL");
+                                let te = egui::TextEdit::singleline(&mut self.state.ai_base_url_input)
+                                    .id(egui::Id::new("ai_base_url_input"))
+                                    .desired_width(200.0)
+                                    .hint_text("https://api.openai.com/v1");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("模型");
+                                let te = egui::TextEdit::singleline(&mut self.state.ai_model_input)
+                                    .id(egui::Id::new("ai_model_input"))
+                                    .desired_width(200.0)
+                                    .hint_text("gpt-4o-mini / deepseek-chat");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("API Key");
+                                let te = egui::TextEdit::singleline(&mut self.state.ai_key_input)
+                                    .id(egui::Id::new("ai_key_input"))
+                                    .password(true)
+                                    .desired_width(200.0)
+                                    .hint_text("sk-…");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                            });
+                            hint(ui, "OpenAI 兼容协议。api_key 加密存储（Windows DPAPI），不落明文；留空则保留已存 key。");
+                            ui.horizontal(|ui| {
+                                if ui.button("保存").clicked() {
+                                    self.state.save_ai_config();
+                                }
+                                if self.state.ai_configured() && ui.button("清除配置").clicked() {
+                                    self.state.clear_ai_config();
+                                }
+                            });
 
-                    ui.add_space(8.0);
-                    ui.heading("存储");
-                    if ui.button("清除所有缓存").clicked() {
-                        let removed = glean_core::clear_all_cache();
-                        // Also clear in-memory favicon textures.
-                        self.favicons.clear();
-                        self.state.status = format!("已清除 {} 个缓存文件", removed);
-                    }
-                    ui.label(
-                        RichText::new("清除正文缓存、图片缓存、Favicon 缓存（数据库不受影响）")
-                            .small()
-                            .weak(),
-                    );
+                            settings_heading(ui, "排版");
+                            ui.horizontal(|ui| {
+                                ui.label("字体大小 (px)");
+                                let te = egui::TextEdit::singleline(&mut self.state.font_size_input)
+                                    .id(egui::Id::new("font_size_input"))
+                                    .desired_width(50.0);
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    if let Ok(v) = self.state.font_size_input.parse::<u16>() {
+                                        if v >= 10 && v <= 32 {
+                                            self.state.config.font_size_px = v;
+                                            self.state.sync_config();
+                                            self.state.save_config();
+                                        }
+                                    } else {
+                                        self.state.font_size_input =
+                                            self.state.config.font_size_px.to_string();
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("行宽 (rem)");
+                                let te = egui::TextEdit::singleline(&mut self.state.line_width_input)
+                                    .id(egui::Id::new("line_width_input"))
+                                    .desired_width(50.0);
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    if let Ok(v) = self.state.line_width_input.parse::<u16>() {
+                                        if v >= 20 && v <= 80 {
+                                            self.state.config.line_width_rem = v;
+                                            self.state.sync_config();
+                                            self.state.save_config();
+                                        }
+                                    } else {
+                                        self.state.line_width_input =
+                                            self.state.config.line_width_rem.to_string();
+                                    }
+                                }
+                            });
+                            hint(ui, "修改后重新打开文章生效");
 
-                    ui.add_space(8.0);
-                    ui.heading("插件");
-                    if ui.button("管理插件…").clicked() {
-                        self.show_settings = false;
-                        self.show_plugins = true;
-                    }
-                    ui.label(
-                        RichText::new("安装 / 卸载 / 启用停用，见「插件管理」窗口")
-                            .small()
-                            .weak(),
-                    );
-
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("关闭").clicked() {
-                                close = true;
+                            settings_heading(ui, "存储");
+                            if ui.button("清除所有缓存").clicked() {
+                                let removed = glean_core::clear_all_cache();
+                                // Also clear in-memory favicon textures.
+                                self.favicons.clear();
+                                self.state.status = format!("已清除 {} 个缓存文件", removed);
                             }
+                            hint(ui, "清除正文缓存、图片缓存、Favicon 缓存（数据库不受影响）");
+
+                            settings_heading(ui, "插件");
+                            if ui.button("管理插件…").clicked() {
+                                self.show_settings = false;
+                                self.show_plugins = true;
+                            }
+                            hint(ui, "安装 / 卸载 / 启用停用，见「插件管理」窗口");
+
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("关闭").clicked() {
+                                        close = true;
+                                    }
+                                });
+                            });
                         });
-                    });
                 });
             if close {
                 self.show_settings = false;
@@ -1103,13 +1092,7 @@ impl eframe::App for SpikeApp {
                             }
                         }
                     });
-                    ui.label(
-                        RichText::new(
-                            "插件目录: <data_dir>/plugins/<id>/（manifest.toml + adapter.rhai），官方插件见仓库 plugins/ 目录",
-                        )
-                        .small()
-                        .weak(),
-                    );
+                    hint(ui, "插件目录: <data_dir>/plugins/<id>/（manifest.toml + adapter.rhai），官方插件见仓库 plugins/ 目录");
                     ui.separator();
                     // 克隆列表：循环内要对 self.state 做可变操作。
                     let plugin_list: Vec<glean_core::plugin::LoadedPlugin> = self
@@ -1119,10 +1102,7 @@ impl eframe::App for SpikeApp {
                         .map(|m| m.list().to_vec())
                         .unwrap_or_default();
                     if plugin_list.is_empty() {
-                        ui.label(
-                            RichText::new("未安装任何插件。点击上方按钮安装，或从仓库 plugins/ 目录导入。")
-                                .weak(),
-                        );
+                        hint(ui, "未安装任何插件。点击上方按钮安装，或从仓库 plugins/ 目录导入。");
                     }
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -1150,8 +1130,11 @@ impl eframe::App for SpikeApp {
                                             ))
                                             .strong(),
                                         );
+                                        let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
                                         ui.label(
-                                            RichText::new(format!("({id}) [{tier_label}]")).weak(),
+                                            RichText::new(format!("({id}) [{tier_label}]"))
+                                                .size(12.5)
+                                                .color(color),
                                         );
                                     });
                                     let patterns = p
@@ -1162,11 +1145,7 @@ impl eframe::App for SpikeApp {
                                         .collect::<Vec<_>>()
                                         .join(", ");
                                     if !patterns.is_empty() {
-                                        ui.label(
-                                            RichText::new(format!("匹配: {patterns}"))
-                                                .small()
-                                                .weak(),
-                                        );
+                                        hint(ui, format!("匹配: {patterns}"));
                                     }
                                     let caps = &p.manifest.capabilities;
                                     let mut cap_bits = Vec::new();
@@ -1195,23 +1174,10 @@ impl eframe::App for SpikeApp {
                                         ));
                                     }
                                     if !cap_bits.is_empty() {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "能力: {}",
-                                                cap_bits.join(" · ")
-                                            ))
-                                            .small()
-                                            .weak(),
-                                        );
+                                        hint(ui, format!("能力: {}", cap_bits.join(" · ")));
                                     }
                                     if p.manifest.compliance.uses_user_session {
-                                        ui.label(
-                                            RichText::new(
-                                                "合规: 使用用户会话（凭证 Host 注入，插件不可见）",
-                                            )
-                                            .small()
-                                            .weak(),
-                                        );
+                                        hint(ui, "合规: 使用用户会话（凭证 Host 注入，插件不可见）");
                                     }
                                     ui.horizontal(|ui| {
                                         let mut enabled = !disabled;
@@ -1279,14 +1245,15 @@ impl eframe::App for SpikeApp {
                     });
                     ui.add_space(6.0);
                     if let Some(log) = &changelog {
-                        ui.label(RichText::new("更新日志：").weak());
+                        let color = ui.visuals().strong_text_color().gamma_multiply(0.8);
+                        ui.label(RichText::new("更新日志：").size(13.5).color(color));
                         egui::ScrollArea::vertical()
                             .max_height(160.0)
                             .show(ui, |ui| {
-                                ui.label(log);
+                                ui.label(RichText::new(log).size(13.5));
                             });
                     } else {
-                        ui.label(RichText::new("无更新日志").weak().small());
+                        hint(ui, "无更新日志");
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -1400,7 +1367,8 @@ impl SpikeApp {
         let mut do_create_folder = false;
 
         // Context menu on "订阅" header for creating folders.
-        ui.label(RichText::new("订阅").weak());
+        let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
+        ui.label(RichText::new("订阅").size(12.5).color(color));
         ui.menu_button("＋ 新建文件夹", |ui| {
             let te = egui::TextEdit::singleline(&mut self.state.new_folder_input)
                 .id(egui::Id::new("new_folder_input"))
@@ -1462,7 +1430,7 @@ impl SpikeApp {
                 }
                 ui.label(
                     RichText::new(format!("📁 {}", folder.name))
-                        .small()
+                        .size(13.5)
                         .strong(),
                 );
                 for feed in &folder_feeds {
@@ -1671,7 +1639,7 @@ impl SpikeApp {
                 ui.separator();
                 ui.colored_label(
                     Color32::from_rgb(220, 80, 60),
-                    RichText::new(format!("错误: {err}")).small(),
+                    RichText::new(format!("错误: {err}")).size(13.0),
                 );
             }
         });
@@ -1753,12 +1721,85 @@ impl SpikeApp {
     }
 }
 
-fn apply_style(ctx: &egui::Context, dark: bool) {
-    if dark {
-        ctx.set_visuals(egui::Visuals::dark());
+/// 应用全局样式：字体（整体调大）、现代化间距/圆角、主题强调色。
+/// egui 默认 Body/Button 14px、Small 10px，高分辨率下说明文字过小难读，
+/// 这里统一放大并把主题色注入选中/悬停/链接等视觉元素。
+fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
+    use egui::{FontFamily, FontId, TextStyle};
+    let (r, g, b) = accent.rgb(dark);
+    let accent_c = Color32::from_rgb(r, g, b);
+
+    let mut style = (*ctx.style()).clone();
+
+    // 字体：正文 15.5 / 按钮 15 / 说明文字 12.5（原默认 14/14/10）。
+    style.text_styles = [
+        (
+            TextStyle::Heading,
+            FontId::new(22.0, FontFamily::Proportional),
+        ),
+        (TextStyle::Body, FontId::new(15.5, FontFamily::Proportional)),
+        (
+            TextStyle::Button,
+            FontId::new(15.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(12.5, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(13.5, FontFamily::Monospace),
+        ),
+    ]
+    .into();
+
+    // 现代化留白与间距。
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    style.spacing.window_margin = Margin::same(14);
+    style.spacing.menu_margin = Margin::same(8);
+    style.spacing.indent = 20.0;
+
+    // 视觉：圆角 + 主题色。
+    let mut visuals = if dark {
+        egui::Visuals::dark()
     } else {
-        ctx.set_visuals(egui::Visuals::light());
-    }
+        egui::Visuals::light()
+    };
+    visuals.hyperlink_color = accent_c;
+    visuals.selection.bg_fill = accent_c.linear_multiply(if dark { 0.55 } else { 0.30 });
+    visuals.selection.stroke = Stroke::new(1.0_f32, accent_c);
+    visuals.widgets.hovered.weak_bg_fill = accent_c.linear_multiply(if dark { 0.25 } else { 0.12 });
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, accent_c.linear_multiply(0.6));
+    visuals.widgets.active.weak_bg_fill = accent_c.linear_multiply(if dark { 0.45 } else { 0.25 });
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, accent_c);
+    visuals.widgets.open.weak_bg_fill = accent_c.linear_multiply(if dark { 0.30 } else { 0.15 });
+
+    let radius = egui::CornerRadius::same(6);
+    visuals.widgets.noninteractive.corner_radius = radius;
+    visuals.widgets.inactive.corner_radius = radius;
+    visuals.widgets.hovered.corner_radius = radius;
+    visuals.widgets.active.corner_radius = radius;
+    visuals.widgets.open.corner_radius = radius;
+    visuals.window_corner_radius = egui::CornerRadius::same(10);
+    visuals.menu_corner_radius = egui::CornerRadius::same(8);
+
+    style.visuals = visuals;
+    ctx.set_style(style);
+}
+
+/// 说明/提示文字：12.5px + 正文色的 72% 透明度。
+/// 替代旧的 `.small().weak()`（10px 极淡灰），深浅主题下都清晰可读。
+fn hint(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
+    let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
+    ui.label(RichText::new(text).size(12.5).color(color))
+}
+
+/// 设置窗体的分组标题（16px 加粗 + 适度间距）。
+fn settings_heading(ui: &mut Ui, title: &str) {
+    ui.add_space(12.0);
+    ui.label(RichText::new(title).size(16.0).strong());
+    ui.add_space(4.0);
 }
 
 fn paint_column_bg(ui: &Ui, rect: egui::Rect, fill: Color32, stroke: Color32) {

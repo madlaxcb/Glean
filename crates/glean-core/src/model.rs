@@ -91,6 +91,67 @@ pub const FEED_CATEGORIES: [FeedCategory; 5] = [
     FeedCategory::Video,
 ];
 
+/// UI 主题强调色（设置页可选）：影响选中背景、悬停高亮、链接颜色。
+/// core 不依赖 egui，颜色以 RGB 元组暴露，由 UI 层转成 Color32。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentColor {
+    #[default]
+    Blue,
+    Purple,
+    Green,
+    Orange,
+    Pink,
+    Teal,
+}
+
+/// 主题色的有序遍历（设置页色板固定顺序）。
+pub const ACCENT_COLORS: [AccentColor; 6] = [
+    AccentColor::Blue,
+    AccentColor::Purple,
+    AccentColor::Green,
+    AccentColor::Orange,
+    AccentColor::Pink,
+    AccentColor::Teal,
+];
+
+impl AccentColor {
+    /// 设置页展示名。
+    pub fn label(&self) -> &'static str {
+        match self {
+            AccentColor::Blue => "蓝",
+            AccentColor::Purple => "紫",
+            AccentColor::Green => "绿",
+            AccentColor::Orange => "橙",
+            AccentColor::Pink => "粉",
+            AccentColor::Teal => "青",
+        }
+    }
+
+    /// 强调色 RGB。dark = true 时返回提亮变体，保证深色背景上的对比度。
+    pub fn rgb(&self, dark: bool) -> (u8, u8, u8) {
+        if dark {
+            match self {
+                AccentColor::Blue => (110, 160, 250),
+                AccentColor::Purple => (185, 145, 250),
+                AccentColor::Green => (95, 200, 130),
+                AccentColor::Orange => (250, 165, 90),
+                AccentColor::Pink => (245, 135, 175),
+                AccentColor::Teal => (90, 200, 195),
+            }
+        } else {
+            match self {
+                AccentColor::Blue => (30, 100, 215),
+                AccentColor::Purple => (130, 75, 210),
+                AccentColor::Green => (25, 140, 75),
+                AccentColor::Orange => (215, 110, 20),
+                AccentColor::Pink => (205, 55, 110),
+                AccentColor::Teal => (15, 135, 130),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Feed {
     pub id: FeedId,
@@ -232,6 +293,9 @@ pub struct AppConfig {
     /// 已停用的插件 id 列表（「插件管理」界面启停；路由跳过停用插件）。
     #[serde(default)]
     pub disabled_plugins: Vec<String>,
+    /// UI 主题强调色（设置页色板可选）。
+    #[serde(default)]
+    pub accent: AccentColor,
 }
 
 /// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。
@@ -278,6 +342,7 @@ impl Default for AppConfig {
             window_maximized: false,
             ai: None,
             disabled_plugins: Vec::new(),
+            accent: AccentColor::default(),
         }
     }
 }

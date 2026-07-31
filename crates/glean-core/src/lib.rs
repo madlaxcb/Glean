@@ -30,8 +30,8 @@ pub use favicon_cache::FaviconCache;
 pub use feed::{discover_feed_urls, run_refresh_task, RefreshOutcome, RefreshTask};
 pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
-    AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed, FeedCategory,
-    FeedId, Folder, FolderId, ImagePolicy, FEED_CATEGORIES,
+    AccentColor, AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed,
+    FeedCategory, FeedId, Folder, FolderId, ImagePolicy, ACCENT_COLORS, FEED_CATEGORIES,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{
