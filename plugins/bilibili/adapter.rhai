@@ -43,6 +43,14 @@ fn to_str(v) {
     return v;
 }
 
+/// 把 code 字段转为可读字符串；缺失（响应非 JSON）时显示 "?"。
+fn code_str(code) {
+    if type_of(code) == "i64" {
+        return "" + code;
+    }
+    return "?";
+}
+
 /// 计算 wbi 签名后的参数 map (含 wts + w_rid)。
 fn wbi_sign(params, img_key, sub_key, wts) {
     let MIXIN_KEY_ENC_TAB = [
@@ -85,6 +93,28 @@ fn build_query(params) {
         first = false;
     }
     return query;
+}
+
+/// 拉取 arc/search 并重试（-352 风控是概率性的，间隔重试可显著提高成功率）。
+/// 最终仍失败时返回最后一次响应（由调用方 throw 报错，让 UI 可见失败原因）。
+fn fetch_arc_with_retry(url, hdrs) {
+    let tries = 3;
+    let attempt = 0;
+    let arc = parse_json("{}");
+    while attempt < tries {
+        let resp = http_get(url, hdrs, "");
+        arc = parse_json(resp["body"]);
+        let code = json_path(arc, "code");
+        if type_of(code) == "i64" && code == 0 {
+            return arc;
+        }
+        log("warn", "bilibili arc/search 第 " + attempt + " 次失败 code=" + code_str(code));
+        attempt += 1;
+        if attempt < tries {
+            sleep_ms(2000);
+        }
+    }
+    return arc;
 }
 
 // ---- URL 解析：从 space.bilibili.com/<mid>[/...] 提取 mid ----
@@ -147,7 +177,26 @@ if len(mid) == 0 {
         let sub_key = sub_url.split("/")[len(sub_url.split("/")) - 1].split(".")[0];
         log("info", "bilibili wbi keys: img=" + img_key + " sub=" + sub_key);
 
-        // 3. wbi 签名 + 拉取视频列表
+        // 2.5 acc/info 拿 UP 主昵称 → 设置订阅名称（如 "Bilibili 某UP主"）。
+        // 注意：acc/info 在部分网络（如数据中心 IP 风控）下可能失败，
+        // 失败时静默回退到 manifest.name，不中断主流程。
+        let acc_url = "https://api.bilibili.com/x/space/wbi/acc/info?mid=" + mid
+            + "&" + build_query(wbi_sign(#{}, img_key, sub_key, now()));
+        let acc_resp = http_get(acc_url, hdrs, "");
+        let acc = parse_json(acc_resp["body"]);
+        let acc_code = json_path(acc, "code");
+        if type_of(acc_code) == "i64" {
+            log("info", "bilibili acc/info code=" + acc_code);
+        }
+        let uname = to_str(json_path(acc, "data.name"));
+        if type_of(uname) == "string" && len(uname) > 0 {
+            set_feed_title("Bilibili " + uname);
+            log("info", "bilibili UP主: " + uname);
+        } else {
+            log("warn", "bilibili acc/info 未返回昵称（跳过订阅名设置）");
+        }
+
+        // 3. wbi 签名 + 拉取视频列表（带重试）
         let params = #{
             "mid": mid,
             "pn": "1",
@@ -156,11 +205,13 @@ if len(mid) == 0 {
         let signed = wbi_sign(params, img_key, sub_key, now());
         let url = "https://api.bilibili.com/x/space/wbi/arc/search?" + build_query(signed);
 
-        let arc_resp = http_get(url, hdrs, "");
-        let arc = parse_json(arc_resp["body"]);
+        let arc = fetch_arc_with_retry(url, hdrs);
         let code = json_path(arc, "code");
         if to_str(code) != "0" {
-            log("error", "bilibili arc/search code=" + to_str(code) + " msg=" + to_str(json_path(arc, "message")));
+            let msg = to_str(json_path(arc, "message"));
+            log("error", "bilibili arc/search code=" + code_str(code) + " msg=" + msg);
+            // throw 让 refresh 走 Error 分支，订阅/刷新失败原因会显示在 UI。
+            throw("bilibili arc/search 失败 code=" + code_str(code) + " msg=" + msg);
         } else {
             let vlist = json_path(arc, "data.list.vlist");
             let count = 0;
@@ -187,6 +238,9 @@ if len(mid) == 0 {
                 count += 1;
             }
             log("info", "bilibili 收集 " + count + " 条");
+            if count == 0 {
+                log("warn", "bilibili mid=" + mid + " 返回 0 条（可能被风控或该 UP 主无公开投稿）");
+            }
         }
     }
 }

@@ -97,6 +97,11 @@ impl Runtime {
     /// `https://space.bilibili.com/12345`），通过 Rhai 全局常量 `SOURCE_URL`
     /// 暴露给脚本，脚本据此提取路径变量（如 mid）。
     pub fn run_script(&self, script: &str, source_url: &str) -> Result<ParsedFeed> {
+        // 重置上次运行残留的 feed_title（同一 Runtime 可多次执行脚本，
+        // 避免第一次 set_feed_title 的结果泄漏到第二次）。
+        if let Some(c) = &self.collector {
+            c.lock().unwrap().feed_title = None;
+        }
         let mut scope = rhai::Scope::new();
         scope.push_constant("SOURCE_URL", source_url.to_string());
         let _ = self
@@ -117,8 +122,12 @@ impl Runtime {
             g.commit_current();
         }
         let entries = std::mem::take(&mut g.entries);
+        let title = g
+            .feed_title
+            .clone()
+            .unwrap_or_else(|| self.manifest.plugin.name.clone());
         Ok(ParsedFeed {
-            title: self.manifest.plugin.name.clone(),
+            title,
             site_url: None,
             favicon_url: None,
             entries,
@@ -139,8 +148,13 @@ impl Runtime {
 /// 注册纯计算 host 函数（无网络/无凭证，所有插件都可用）。§11.5.6
 fn register_pure_fns(engine: &mut Engine) {
     engine.register_fn("now", system_now);
+    engine.register_fn("sleep_ms", |ms: i64| {
+        // 供脚本在失败重试间做节流（阻塞当前 worker 线程，不阻塞 UI 主线程）。
+        std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+    });
     engine.register_fn("log", |level: String, msg: String| {
-        let _ = (level, msg); // M6 接入正式日志渠道
+        // 输出到 stderr：GUI 模式下从终端启动可见，便于诊断插件执行失败。
+        eprintln!("[plugin:{level}] {msg}");
     });
     engine.register_fn("parse_json", |s: String| -> Dynamic {
         serde_json::from_str::<serde_json::Value>(&s)
@@ -216,12 +230,14 @@ fn register_http_fns(
     );
 }
 
-/// Tier 2 entry 收集器：脚本通过 `set_field` 写 current，`add_entry` 提交。
+/// Tier 2 entry 收集器：脚本通过 `set_field` 写 current，`add_entry` 提交，
+/// `set_feed_title` 覆盖 feed 标题（默认取 manifest.name）。
 /// §11.5.6：所有产出 HTML 在 service 层 upsert 前必过 ammonia。
 #[derive(Default)]
 struct EntryCollector {
     entries: Vec<ParsedEntry>,
     current: CurrentEntry,
+    feed_title: Option<String>,
 }
 
 #[derive(Default)]
@@ -291,9 +307,15 @@ fn register_entry_fns(engine: &mut Engine, collector: Arc<Mutex<EntryCollector>>
         g.commit_current();
     });
 
-    let c3 = collector;
-    engine.register_fn("set_embed", move |provider: String, id: String| {
+    let c3 = collector.clone();
+    engine.register_fn("set_feed_title", move |title: String| {
         let mut g = c3.lock().unwrap();
+        g.feed_title = Some(title);
+    });
+
+    let c4 = collector;
+    engine.register_fn("set_embed", move |provider: String, id: String| {
+        let mut g = c4.lock().unwrap();
         g.current.content_html = format!("{provider}:{id}");
     });
 }
@@ -643,6 +665,30 @@ mod tests {
             .expect("run_script");
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].title, "Only");
+    }
+
+    /// `set_feed_title` 覆盖 feed 标题（默认取 manifest.name）。
+    #[test]
+    fn set_feed_title_overrides_manifest_name() {
+        let m = empty_manifest(Tier::Script); // name = "T"
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            set_feed_title("Bilibili 某UP主");
+            set_field("title", "v1");
+            add_entry();
+        "#;
+        let parsed = rt
+            .run_script(script, "https://space.bilibili.com/3428150")
+            .expect("run_script");
+        assert_eq!(parsed.title, "Bilibili 某UP主");
+        assert_eq!(parsed.entries.len(), 1);
+        // 未调用 set_feed_title 时回退到 manifest.name
+        let parsed2 = rt
+            .run_script(r#"set_field("title", "v2"); add_entry();"#, "https://x.com")
+            .expect("run_script");
+        assert_eq!(parsed2.title, "T");
     }
 
     /// md5 host 函数注册后可用，且结果与标准 MD5 一致。

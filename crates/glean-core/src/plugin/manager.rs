@@ -685,13 +685,15 @@ entries_json_path = "$.items"
     }
 
     /// 端到端：用官方 bilibili 插件（仓库 `plugins/bilibili/`）订阅
-    /// `space.bilibili.com/2`（碧诗）。验证 wbi 签名 + buvid3 流程能拿到真实视频列表。
-    /// 手动跑：`cargo test -p glean-core -- --ignored bilibili_end_to_end`
+    /// `space.bilibili.com/<mid>`。验证 wbi 签名 + buvid3 流程能拿到真实视频列表。
+    /// 默认 mid=2（碧诗）；可用环境变量 `GLEAN_BILI_MID` 指定任意 UP 主：
+    /// `GLEAN_BILI_MID=3428150 cargo test -p glean-core -- --ignored bilibili_end_to_end`
     ///
     /// 注意：在数据中心 IP 环境下可能被风控（-352 / -799）；用户住宅 IP 通常正常。
     #[test]
     #[ignore = "需联网访问 api.bilibili.com（匿名，可能被风控）"]
     fn bilibili_end_to_end() {
+        let mid = std::env::var("GLEAN_BILI_MID").unwrap_or_else(|_| "2".to_string());
         let tmp = std::env::temp_dir().join(format!("glean-bili-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let plugin_dir = tmp.join("bilibili");
@@ -710,12 +712,17 @@ entries_json_path = "$.items"
         let _ = std::fs::remove_dir_all(&tmp);
 
         let http = Arc::new(HttpClient::default());
+        let url = format!("https://space.bilibili.com/{mid}");
         let parsed = mgr
-            .run_tier2_for_url("https://space.bilibili.com/2", http, None)
+            .run_tier2_for_url(&url, http, None)
             .expect("run_tier2")
             .expect("matched plugin");
 
-        assert_eq!(parsed.title, "Bilibili 用户投稿");
+        assert!(
+            parsed.title.starts_with("Bilibili "),
+            "订阅标题应含 UP 主名（set_feed_title），got: {}",
+            parsed.title
+        );
         assert!(!parsed.entries.is_empty(), "应至少拿到 1 个视频");
         let first = &parsed.entries[0];
         assert!(
