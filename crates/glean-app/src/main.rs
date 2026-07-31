@@ -217,6 +217,9 @@ pub struct SpikeState {
     favicon_pending: std::collections::HashSet<FeedId>,
     /// 导航栏分类组折叠状态（会话内有效，不持久化）。
     pub collapsed_categories: std::collections::HashSet<glean_core::FeedCategory>,
+    /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
+    /// 跨帧存活，避免输入被每帧重绘覆盖。
+    pub plugin_cred_edits: std::collections::HashMap<String, (String, String)>,
 }
 
 impl SpikeState {
@@ -299,6 +302,7 @@ impl SpikeState {
             favicon_rx: None,
             favicon_pending: std::collections::HashSet::new(),
             collapsed_categories: std::collections::HashSet::new(),
+            plugin_cred_edits: std::collections::HashMap::new(),
         };
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
@@ -1239,6 +1243,39 @@ impl SpikeState {
                 self.status = format!("插件已卸载: {id}");
             }
             Err(e) => self.status = format!("卸载失败: {e}"),
+        }
+    }
+
+    /// 保存插件凭证槽（§11.5.9 UI 入口）。落盘加密（Windows DPAPI）。
+    pub fn save_plugin_credential(&mut self, plugin_id: &str, slot: &str) {
+        let key = format!("{plugin_id}:{slot}");
+        let (name, value) = self
+            .plugin_cred_edits
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        if name.trim().is_empty() {
+            self.status = format!("凭证 {plugin_id}:{slot} 未保存：Header 名为空");
+            return;
+        }
+        match self
+            .service
+            .set_credential(plugin_id, slot, name.trim(), &value)
+        {
+            Ok(()) => self.status = format!("凭证已保存: {plugin_id}:{slot}"),
+            Err(e) => self.status = format!("凭证保存失败: {e}"),
+        }
+    }
+
+    /// 清除插件凭证槽。
+    pub fn remove_plugin_credential(&mut self, plugin_id: &str, slot: &str) {
+        match self.service.remove_credential(plugin_id, slot) {
+            Ok(()) => {
+                self.status = format!("凭证已清除: {plugin_id}:{slot}");
+                self.plugin_cred_edits
+                    .remove(&format!("{plugin_id}:{slot}"));
+            }
+            Err(e) => self.status = format!("凭证清除失败: {e}"),
         }
     }
 

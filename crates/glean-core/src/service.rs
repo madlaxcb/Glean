@@ -198,6 +198,48 @@ impl GleanService {
         self.credentials.as_mut()
     }
 
+    /// 设置插件凭证槽并立即落盘（Windows DPAPI 加密）。§11.5.9 UI 入口。
+    pub fn set_credential(
+        &mut self,
+        plugin_id: &str,
+        slot: &str,
+        header_name: &str,
+        header_value: &str,
+    ) -> Result<()> {
+        let store = self
+            .credentials
+            .as_mut()
+            .ok_or_else(|| CoreError::Message("凭证存储不可用（内存模式）".into()))?;
+        store.set(
+            plugin_id,
+            slot,
+            crate::plugin::Credential {
+                header_name: header_name.to_string(),
+                header_value: header_value.to_string(),
+            },
+        );
+        store.flush()
+    }
+
+    /// 清除插件凭证槽并落盘。
+    pub fn remove_credential(&mut self, plugin_id: &str, slot: &str) -> Result<()> {
+        let store = self
+            .credentials
+            .as_mut()
+            .ok_or_else(|| CoreError::Message("凭证存储不可用（内存模式）".into()))?;
+        store.remove(plugin_id, slot);
+        store.flush()
+    }
+
+    /// 读取插件凭证槽（明文仅 Host 内部用；UI 用于显示「已设置」状态）。
+    pub fn get_credential(
+        &self,
+        plugin_id: &str,
+        slot: &str,
+    ) -> Option<&crate::plugin::Credential> {
+        self.credentials.as_ref()?.get(plugin_id, slot)
+    }
+
     /// 设置 AI 配置（来自 `AppConfig.ai`）。UI 启动时若有 AI 配置则调用一次。
     /// 仅同步 fallback 路径 (`AppCommand::EnhanceEntry`) 会用到；异步路径由
     /// UI 直接把 `AppConfig.ai` 传给 worker 线程。

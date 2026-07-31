@@ -1179,6 +1179,79 @@ impl eframe::App for SpikeApp {
                                     if p.manifest.compliance.uses_user_session {
                                         hint(ui, "合规: 使用用户会话（凭证 Host 注入，插件不可见）");
                                     }
+                                    // 凭证槽设置（§11.5.9 UI 入口）。
+                                    if !caps.credential_use.is_empty() {
+                                        let slots = caps.credential_use.clone();
+                                        for slot in &slots {
+                                            let has_cred = self
+                                                .state
+                                                .service
+                                                .get_credential(id, slot)
+                                                .is_some();
+                                            let key = format!("{id}:{slot}");
+                                            let mut do_save = false;
+                                            let mut do_remove = false;
+                                            ui.horizontal(|ui| {
+                                                let color = ui.visuals().strong_text_color().gamma_multiply(0.85);
+                                                ui.label(
+                                                    RichText::new(format!("凭证槽: {slot}"))
+                                                        .size(13.0)
+                                                        .color(color),
+                                                );
+                                                if has_cred {
+                                                    ui.colored_label(
+                                                        ui.visuals().hyperlink_color,
+                                                        "已设置",
+                                                    );
+                                                } else {
+                                                    hint(ui, "未设置");
+                                                }
+                                            });
+                                            {
+                                                // 借用放在独立作用域，避免与下方 self 方法调用冲突。
+                                                let entry = self
+                                                    .state
+                                                    .plugin_cred_edits
+                                                    .entry(key.clone())
+                                                    .or_default();
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Header");
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(&mut entry.0)
+                                                            .id(egui::Id::new(format!(
+                                                                "plugin_cred_name_{key}"
+                                                            )))
+                                                            .desired_width(110.0)
+                                                            .hint_text("Cookie"),
+                                                    );
+                                                    ui.label("值");
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(&mut entry.1)
+                                                            .id(egui::Id::new(format!(
+                                                                "plugin_cred_val_{key}"
+                                                            )))
+                                                            .password(true)
+                                                            .desired_width(160.0),
+                                                    );
+                                                });
+                                            }
+                                            ui.horizontal(|ui| {
+                                                if ui.button("保存凭证").clicked() {
+                                                    do_save = true;
+                                                }
+                                                if has_cred && ui.button("清除").clicked() {
+                                                    do_remove = true;
+                                                }
+                                                hint(ui, "凭证由 Host 注入请求头，插件脚本不可见");
+                                            });
+                                            if do_save {
+                                                self.state.save_plugin_credential(id, slot);
+                                            }
+                                            if do_remove {
+                                                self.state.remove_plugin_credential(id, slot);
+                                            }
+                                        }
+                                    }
                                     ui.horizontal(|ui| {
                                         let mut enabled = !disabled;
                                         if ui.checkbox(&mut enabled, "启用").changed() {

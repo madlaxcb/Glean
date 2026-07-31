@@ -361,6 +361,37 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    #[test]
+    fn flush_then_reopen_persists() {
+        // 落盘后重新 open，凭证仍在（Windows dpapi / Linux stub 都要通过）。
+        let tmp = std::env::temp_dir().join(format!(
+            "glean-cred-roundtrip-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+        {
+            let mut store = CredentialStore::open(tmp.clone()).expect("open");
+            store.set(
+                "pixiv",
+                "pixiv_session",
+                Credential {
+                    header_name: "Cookie".into(),
+                    header_value: "PHPSESSID=abc".into(),
+                },
+            );
+            store.flush().expect("flush");
+        }
+        let store = CredentialStore::open(tmp.clone()).expect("reopen");
+        let cred = store.get("pixiv", "pixiv_session").expect("persisted");
+        assert_eq!(cred.header_name, "Cookie");
+        assert_eq!(cred.header_value, "PHPSESSID=abc");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     impl CredentialStore {
         fn entries_ref(&self) -> &HashMap<String, Credential> {
             &self.entries
