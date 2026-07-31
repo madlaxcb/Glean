@@ -212,16 +212,25 @@ fn scheme_url(filename: &str) -> String {
 }
 
 fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>, String)> {
-    let resp = client
-        .get(url)
-        .header(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Glean/0.0.1 (+RSS reader)",
-            ),
-        )
-        .send()
-        .map_err(|e| CoreError::Http(e.to_string()))?;
+    let mut req = client.get(url).header(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Glean/0.0.1 (+RSS reader)",
+        ),
+    );
+    // i.pximg.net 要求 Referer 为 pixiv 页面，否则返回 403。
+    if let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+    {
+        if host == "i.pximg.net" || host.ends_with(".pximg.net") {
+            req = req.header(
+                reqwest::header::REFERER,
+                reqwest::header::HeaderValue::from_static("https://www.pixiv.net/"),
+            );
+        }
+    }
+    let resp = req.send().map_err(|e| CoreError::Http(e.to_string()))?;
     if !resp.status().is_success() {
         return Err(CoreError::Http(format!(
             "HTTP {} for {}",

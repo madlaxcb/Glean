@@ -1,0 +1,31 @@
+# Pixiv 用户投稿适配器 (Tier 2 脚本)。
+#
+# 官方插件：随 Glean 仓库 `plugins/` 目录分发。安装方式：
+# - 在「插件管理」界面导入本目录（或 plugins/pixiv.zip）
+# - 或手动复制到 <data_dir>/plugins/pixiv/
+#
+# 需要凭证：Pixiv Refresh Token（OAuth 长期令牌）。
+# 在「插件管理」→ pixiv → 凭证槽 pixiv_refresh_token 填入。
+# 获取方式：第三方工具生成（如 pixiv 官方设置页导出的 refresh token）。
+# 脚本在 Host 层通过 {{pixiv_refresh_token}} 占位符注入请求体，脚本拿不到明文。
+
+[plugin]
+id = "pixiv"
+name = "Pixiv 用户投稿"
+version = "0.1.0"
+author = "Glean"
+min_glean_version = "0.5.0"
+tier = 2
+
+[[match]]
+url_pattern = "pixiv.net/users/*"
+
+[[match]]
+url_pattern = "www.pixiv.net/users/*"
+
+[capabilities]
+feed_fetch = ["oauth.secure.pixiv.net", "app-api.pixiv.net"]
+credential_use = ["pixiv_refresh_token"]
+
+[compliance]
+uses_user_session = true

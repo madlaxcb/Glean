@@ -80,10 +80,15 @@ mod tests {
     #[test]
     fn bootstrap_demo_emits_nav_and_entries() {
         let mut svc = GleanService::open_in_memory().expect("mem db");
-        let ev = svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        let ev = svc.handle(AppCommand::Bootstrap);
         assert!(ev.iter().any(|e| matches!(e, AppEvent::Ready)));
         assert!(ev.iter().any(|e| matches!(e, AppEvent::NavUpdated { .. })));
-        let entries = ev.iter().find_map(|e| match e {
+        // 空库时显式种 demo 数据（Bootstrap 不再自动 seed）。
+        svc.store.seed_demo_if_empty().unwrap();
+        let ev2 = svc.handle(AppCommand::ListEntries {
+            filter: EntryFilter::All,
+        });
+        let entries = ev2.iter().find_map(|e| match e {
             AppEvent::EntriesUpdated { entries } => Some(entries.clone()),
             _ => None,
         });
@@ -93,7 +98,8 @@ mod tests {
     #[test]
     fn open_entry_marks_read_and_returns_html() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        svc.handle(AppCommand::Bootstrap);
+        svc.store.seed_demo_if_empty().unwrap();
         let list = svc.handle(AppCommand::ListEntries {
             filter: EntryFilter::All,
         });
@@ -164,7 +170,7 @@ mod tests {
     #[test]
     fn add_feed_local_via_service() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: false });
+        svc.handle(AppCommand::Bootstrap);
         let ev = svc.handle(AppCommand::AddFeedLocal {
             title: "Local".into(),
             feed_url: "https://example.org/rss.xml".into(),

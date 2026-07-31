@@ -509,6 +509,29 @@ title = "$.name"
         assert!(!m.compliance.uses_user_session);
     }
 
+    /// 官方 pixiv 插件 manifest 能解析，且声明了 OAuth 端点白名单 + 凭证槽。
+    #[test]
+    fn official_pixiv_manifest_parses() {
+        let toml_text = include_str!("../../../../plugins/pixiv/manifest.toml");
+        let m: Manifest = toml::from_str(toml_text).expect("pixiv manifest parse");
+        assert_eq!(m.plugin.id, "pixiv");
+        assert_eq!(m.plugin.tier, crate::plugin::manifest::Tier::Script);
+        assert!(m
+            .capabilities
+            .feed_fetch
+            .contains(&"app-api.pixiv.net".to_string()));
+        assert!(m
+            .capabilities
+            .credential_use
+            .contains(&"pixiv_refresh_token".to_string()));
+        assert!(m.compliance.uses_user_session);
+        // URL 路由要命中用户主页。
+        assert!(m
+            .r#match
+            .iter()
+            .any(|r| r.url_pattern == "pixiv.net/users/*"));
+    }
+
     #[test]
     fn disabled_plugin_skipped_in_routing() {
         let mut m = make_manifest("pixiv", "pixiv.net/users/*", Tier::Script);

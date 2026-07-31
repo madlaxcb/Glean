@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub struct GleanService {
-    store: Store,
+    pub store: Store,
     filter: EntryFilter,
     search_query: String,
     /// 直连 HTTP 客户端，共享给刷新 worker 线程。
@@ -294,16 +294,8 @@ impl GleanService {
 
     fn handle_inner(&mut self, cmd: AppCommand) -> Result<Vec<AppEvent>> {
         match cmd {
-            AppCommand::Bootstrap { seed_demo } => {
+            AppCommand::Bootstrap => {
                 let mut ev = vec![AppEvent::Ready];
-                if seed_demo {
-                    let seeded = self.store.seed_demo_if_empty()?;
-                    if seeded {
-                        ev.push(AppEvent::Status {
-                            message: "Demo data seeded (offline)".into(),
-                        });
-                    }
-                }
                 ev.extend(self.emit_nav()?);
                 ev.extend(self.emit_entries()?);
                 Ok(ev)
@@ -1186,7 +1178,7 @@ mod tests {
     #[test]
     fn prepare_enhance_task_for_entry_with_content() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        bootstrap_with_demo(&mut svc);
         let id = first_entry_id(&svc);
         let task = svc
             .prepare_enhance_task(id, EnhanceAction::Summarize)
@@ -1202,7 +1194,7 @@ mod tests {
     #[test]
     fn prepare_enhance_task_returns_none_for_empty_content() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        bootstrap_with_demo(&mut svc);
         let fid = svc.store.list_feeds().unwrap()[0].id;
         let id = svc
             .store
@@ -1218,7 +1210,7 @@ mod tests {
     #[test]
     fn apply_enhance_outcome_success_persists_and_emits() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        bootstrap_with_demo(&mut svc);
         let id = first_entry_id(&svc);
         let outcome = EnhanceOutcome::Success {
             entry_id: id,
@@ -1238,7 +1230,7 @@ mod tests {
     #[test]
     fn apply_enhance_outcome_failed_emits_error() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        bootstrap_with_demo(&mut svc);
         let id = first_entry_id(&svc);
         let outcome = EnhanceOutcome::Failed {
             entry_id: id,
@@ -1261,7 +1253,7 @@ mod tests {
     #[test]
     fn enhance_entry_sync_errors_without_ai_config() {
         let mut svc = GleanService::open_in_memory().unwrap();
-        svc.handle(AppCommand::Bootstrap { seed_demo: true });
+        bootstrap_with_demo(&mut svc);
         let id = first_entry_id(&svc);
         let ev = svc.handle(AppCommand::EnhanceEntry {
             id,
@@ -1280,5 +1272,11 @@ mod tests {
             .first()
             .expect("at least one demo entry")
             .id
+    }
+
+    /// Bootstrap 不再自动种 demo 数据，测试需显式造数据。
+    fn bootstrap_with_demo(svc: &mut GleanService) {
+        svc.handle(AppCommand::Bootstrap);
+        svc.store.seed_demo_if_empty().unwrap();
     }
 }

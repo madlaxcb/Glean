@@ -320,7 +320,7 @@ fn register_entry_fns(engine: &mut Engine, collector: Arc<Mutex<EntryCollector>>
     });
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum HttpMethod {
     Get,
     Post,
@@ -370,14 +370,19 @@ fn do_http(
         }
     }
 
+    // §11.5.9 凭证 body 注入：`{{slot_name}}` 占位符在请求前替换为凭证值。
+    // 用于把凭证放进 POST body 的 OAuth 流程（如 Pixiv refresh_token 换 access_token）。
+    // 只替换 manifest 已声明的 slot（未声明会在上面的 slot 校验中报错），
+    // 脚本永远拿不到明文。
+    let body = if method == HttpMethod::Post {
+        inject_body_credentials(body, creds, plugin_id, cred_slots)
+    } else {
+        body.to_string()
+    };
+
     let send_result = match method {
         HttpMethod::Get => http.inner.get(url).headers(hdrs).send(),
-        HttpMethod::Post => http
-            .inner
-            .post(url)
-            .body(body.to_string())
-            .headers(hdrs)
-            .send(),
+        HttpMethod::Post => http.inner.post(url).body(body).headers(hdrs).send(),
     };
 
     match send_result {
@@ -406,6 +411,26 @@ fn error_map(m: &mut Map, msg: String) -> Map {
     m.insert("status".into(), Dynamic::from_int(0));
     m.insert("error".into(), Dynamic::from(msg));
     std::mem::take(m)
+}
+
+/// 替换 body 中的 `{{slot_name}}` 占位符为凭证值。§11.5.9
+/// 仅处理 manifest 已声明的 slot；占位符保留（未设置凭证时请求自然失败，错误对用户可见）。
+fn inject_body_credentials(
+    body: &str,
+    creds: &CredentialStore,
+    plugin_id: &str,
+    cred_slots: &[String],
+) -> String {
+    let mut out = body.to_string();
+    for slot in cred_slots {
+        let placeholder = format!("{{{{{slot}}}}}");
+        if out.contains(&placeholder) {
+            if let Some(cred) = creds.get(plugin_id, slot) {
+                out = out.replace(&placeholder, &cred.header_value);
+            }
+        }
+    }
+    out
 }
 
 fn is_domain_allowed(url: &str, allowed: &[String]) -> bool {
@@ -604,6 +629,62 @@ mod tests {
             &["example.com".into()]
         ));
         assert!(!is_domain_allowed("not a url", &["example.com".into()]));
+    }
+
+    #[test]
+    fn inject_body_credentials_replaces_declared_slot() {
+        // 声明的 slot → body 占位符被替换为凭证值（凭证取 header_value）。
+        let mut creds = CredentialStore::in_memory();
+        creds.set(
+            "pixiv",
+            "pixiv_refresh_token",
+            crate::plugin::Credential {
+                header_name: "x-secret".into(),
+                header_value: "RT-123456".into(),
+            },
+        );
+        let slots = vec!["pixiv_refresh_token".to_string()];
+        let out = inject_body_credentials(
+            "client_id=a&grant_type=refresh_token&refresh_token={{pixiv_refresh_token}}",
+            &creds,
+            "pixiv",
+            &slots,
+        );
+        assert!(
+            out.contains("refresh_token=RT-123456"),
+            "slot should be replaced: {out}"
+        );
+        assert!(!out.contains("{{"), "no placeholder left: {out}");
+    }
+
+    #[test]
+    fn inject_body_credentials_keeps_placeholder_when_unset() {
+        // 未设置凭证 → 占位符保留（请求会失败，错误对用户可见），不 panic。
+        let creds = CredentialStore::in_memory();
+        let slots = vec!["pixiv_refresh_token".to_string()];
+        let out = inject_body_credentials(
+            "refresh_token={{pixiv_refresh_token}}",
+            &creds,
+            "pixiv",
+            &slots,
+        );
+        assert!(out.contains("{{pixiv_refresh_token}}"));
+    }
+
+    #[test]
+    fn official_pixiv_script_compiles() {
+        // 官方 pixiv 插件脚本必须能通过 Rhai 编译（语法验证，不执行网络请求）。
+        let script = include_str!("../../../../plugins/pixiv/adapter.rhai");
+        let mut m = empty_manifest(Tier::Script);
+        m.capabilities.feed_fetch =
+            vec!["oauth.secure.pixiv.net".into(), "app-api.pixiv.net".into()];
+        m.capabilities.credential_use = vec!["pixiv_refresh_token".into()];
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        rt.engine
+            .compile(script)
+            .expect("pixiv adapter.rhai compiles");
     }
 
     #[test]

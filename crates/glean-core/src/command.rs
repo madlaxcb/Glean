@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppCommand {
-    Bootstrap {
-        seed_demo: bool,
-    },
+    Bootstrap,
     RefreshNav,
     ListEntries {
         filter: EntryFilter,

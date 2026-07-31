@@ -98,7 +98,7 @@ fn build_query(params) {
 /// 拉取 arc/search 并重试（-352 风控是概率性的，间隔重试可显著提高成功率）。
 /// 最终仍失败时返回最后一次响应（由调用方 throw 报错，让 UI 可见失败原因）。
 fn fetch_arc_with_retry(url, hdrs) {
-    let tries = 3;
+    let tries = 5;
     let attempt = 0;
     let arc = parse_json("{}");
     while attempt < tries {
@@ -211,7 +211,9 @@ if len(mid) == 0 {
             let msg = to_str(json_path(arc, "message"));
             log("error", "bilibili arc/search code=" + code_str(code) + " msg=" + msg);
             // throw 让 refresh 走 Error 分支，订阅/刷新失败原因会显示在 UI。
-            throw("bilibili arc/search 失败 code=" + code_str(code) + " msg=" + msg);
+            // -352 风控与网络环境相关，提示用户可尝试给该订阅开启「使用代理」。
+            throw("bilibili arc/search 失败 code=" + code_str(code) + " msg=" + msg
+                + "（若持续失败，请给该订阅开启「使用代理」）");
         } else {
             let vlist = json_path(arc, "data.list.vlist");
             let count = 0;

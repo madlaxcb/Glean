@@ -315,7 +315,7 @@ impl SpikeState {
         if let Err(e) = s.service.reload_plugins(&disabled) {
             s.status = format!("插件加载失败: {e}");
         }
-        s.dispatch(AppCommand::Bootstrap { seed_demo: true });
+        s.dispatch(AppCommand::Bootstrap);
         s.spawn_update_check();
         s
     }
