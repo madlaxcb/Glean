@@ -206,8 +206,8 @@ for item in illusts {
         for page in pages {
             let img = str_safe(json_path(page, "image_urls.medium"));
             let original = str_safe(json_path(page, "image_urls.original"));
-            if len(img) > 0 && len(original) > 0 {
-                html += "<details><summary><img src=\"" + img + "\"></summary><p><img src=\"" + original + "\"></p></details>";
+            if len(original) > 0 {
+                html += "<p><img src=\"" + original + "\"></p>";
             } else if len(img) > 0 {
                 html += "<p><img src=\"" + img + "\"></p>";
             }
@@ -218,8 +218,8 @@ for item in illusts {
             img = str_safe(json_path(item, "image_urls.square_medium"));
         }
         let original = str_safe(json_path(item, "meta_single_page.original_image_url"));
-        if len(img) > 0 && len(original) > 0 {
-            html += "<details><summary><img src=\"" + img + "\"></summary><p><img src=\"" + original + "\"></p></details>";
+        if len(original) > 0 {
+            html += "<p><img src=\"" + original + "\"></p>";
         } else if len(img) > 0 {
             html += "<p><img src=\"" + img + "\"></p>";
         }
