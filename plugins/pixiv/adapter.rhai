@@ -153,83 +153,136 @@ let hdrs = #{
     "User-Agent": UA,
     "Authorization": "Bearer " + token,
 };
-let url = "https://app-api.pixiv.net/v1/user/illusts?user_id=" + mid + "&type=illust";
-let resp = http_get(url, hdrs, "");
-if resp["status"] != 200 {
-    let hint = "";
-    if resp["status"] == 0 {
-        hint = "（连接失败：请检查代理服务是否运行、设置页代理地址是否正确）";
-    }
-    throw("pixiv user/illusts HTTP " + resp["status"] + " error=" + resp["error"] + hint);
-}
-let json = parse_json(resp["body"]);
-if type_of(json) != "map" {
-    throw("pixiv user/illusts 响应解析失败");
-}
-// app-api.pixiv.net/v1/user/illusts 返回 {"illusts":[...],"next_url":"..."}，
-// 顶层无 response 包层（response 包层是 oauth/token 接口的格式）。
-let illusts = json_path(json, "illusts");
-if type_of(illusts) != "array" {
-    // 兜底：兼容万一返回 response.illusts 结构
-    let nested = json_path(json, "response.illusts");
-    if type_of(nested) == "array" {
-        illusts = nested;
-    } else {
-        let clip = str_safe(resp["body"]);
-        if len(clip) > 200 { clip = clip.substring(0, 200); }
-        throw("pixiv user/illusts 返回数据异常（可能无公开作品或 user_id 错误）body=" + clip);
-    }
-}
 
+// app-api 分页：首屏 + next_url 跟进。
+// 不带 type= 时同时返回 illust 与 manga；每页约 30 条。
+// 上限 20 页（约 600 条），避免超长刷新与限流。
+let max_pages = 20;
+// 不带 type：同时返回 illust + manga（仅 type=illust 会漏掉漫画作品）。
+let url = "https://app-api.pixiv.net/v1/user/illusts?user_id=" + mid;
 let count = 0;
 let author = "";
-for item in illusts {
-    let id = json_path(item, "id");
-    if type_of(id) != "i64" { continue; }
-    let title = str_safe(json_path(item, "title"));
-    if len(title) == 0 { title = "Untitled"; }
-    let caption = str_safe(json_path(item, "caption"));
-    let item_author = str_safe(json_path(item, "user.name"));
-    if len(item_author) > 0 && len(author) == 0 {
-        author = item_author;
+let page_i = 0;
+while page_i < max_pages {
+    page_i += 1;
+    log("info", "pixiv user/illusts 第 " + page_i + " 页");
+    let resp = http_get(url, hdrs, "");
+    if resp["status"] != 200 {
+        let hint = "";
+        if resp["status"] == 0 {
+            hint = "（连接失败：请检查代理服务是否运行、设置页代理地址是否正确）";
+        }
+        // 第一页失败直接抛错；后续页失败保留已收集内容。
+        if page_i == 1 {
+            throw("pixiv user/illusts HTTP " + resp["status"] + " error=" + resp["error"] + hint);
+        }
+        log("warn", "pixiv user/illusts 第 " + page_i + " 页失败 HTTP " + resp["status"] + "，停止分页");
+        break;
     }
-    let published = iso_to_unix(str_safe(json_path(item, "create_date")));
+    let json = parse_json(resp["body"]);
+    if type_of(json) != "map" {
+        if page_i == 1 {
+            throw("pixiv user/illusts 响应解析失败");
+        }
+        log("warn", "pixiv user/illusts 第 " + page_i + " 页解析失败，停止分页");
+        break;
+    }
+    // {"illusts":[...],"next_url":"..."}；兜底 response.illusts。
+    let illusts = json_path(json, "illusts");
+    if type_of(illusts) != "array" {
+        let nested = json_path(json, "response.illusts");
+        if type_of(nested) == "array" {
+            illusts = nested;
+        } else {
+            if page_i == 1 {
+                let clip = str_safe(resp["body"]);
+                if len(clip) > 200 { clip = clip.substring(0, 200); }
+                throw("pixiv user/illusts 返回数据异常（可能无公开作品或 user_id 错误）body=" + clip);
+            }
+            log("warn", "pixiv user/illusts 第 " + page_i + " 页无 illusts，停止分页");
+            break;
+        }
+    }
 
-    set_field("guid", "pixiv-" + str_safe(id));
-    set_field("title", title);
-    set_field("url", "https://www.pixiv.net/artworks/" + str_safe(id));
-    set_field("author", item_author);
-    if published > 0 { set_field("published_at", published); }
-    let html = "";
-    let pages = json_path(item, "meta_pages");
-    if type_of(pages) == "array" && len(pages) > 0 {
-        for page in pages {
-            let img = str_safe(json_path(page, "image_urls.medium"));
-            let original = str_safe(json_path(page, "image_urls.original"));
+    // 从本页取作者名（仅首次）。
+    if len(author) == 0 {
+        for item in illusts {
+            let item_author = str_safe(json_path(item, "user.name"));
+            if len(item_author) > 0 {
+                author = item_author;
+                break;
+            }
+        }
+    }
+
+    let page_count = 0;
+    for item in illusts {
+        let id = json_path(item, "id");
+        if type_of(id) != "i64" { continue; }
+        let title = str_safe(json_path(item, "title"));
+        if len(title) == 0 { title = "Untitled"; }
+        let caption = str_safe(json_path(item, "caption"));
+        let item_author = str_safe(json_path(item, "user.name"));
+        let published = iso_to_unix(str_safe(json_path(item, "create_date")));
+
+        set_field("guid", "pixiv-" + str_safe(id));
+        set_field("title", title);
+        set_field("url", "https://www.pixiv.net/artworks/" + str_safe(id));
+        set_field("author", item_author);
+        if published > 0 { set_field("published_at", published); }
+        let html = "";
+        let pages = json_path(item, "meta_pages");
+        if type_of(pages) == "array" && len(pages) > 0 {
+            for page in pages {
+                let img = str_safe(json_path(page, "image_urls.medium"));
+                let original = str_safe(json_path(page, "image_urls.original"));
+                if len(original) > 0 {
+                    html += "<p><img src=\"" + original + "\"></p>";
+                } else if len(img) > 0 {
+                    html += "<p><img src=\"" + img + "\"></p>";
+                }
+            }
+        } else {
+            let img = str_safe(json_path(item, "image_urls.medium"));
+            if len(img) == 0 {
+                img = str_safe(json_path(item, "image_urls.square_medium"));
+            }
+            let original = str_safe(json_path(item, "meta_single_page.original_image_url"));
             if len(original) > 0 {
                 html += "<p><img src=\"" + original + "\"></p>";
             } else if len(img) > 0 {
                 html += "<p><img src=\"" + img + "\"></p>";
             }
         }
-    } else {
-        let img = str_safe(json_path(item, "image_urls.medium"));
-        if len(img) == 0 {
-            img = str_safe(json_path(item, "image_urls.square_medium"));
+        if len(caption) > 0 {
+            html += "<div>" + caption + "</div>";
         }
-        let original = str_safe(json_path(item, "meta_single_page.original_image_url"));
-        if len(original) > 0 {
-            html += "<p><img src=\"" + original + "\"></p>";
-        } else if len(img) > 0 {
-            html += "<p><img src=\"" + img + "\"></p>";
-        }
+        set_field("content_html", html);
+        add_entry();
+        page_count += 1;
+        count += 1;
     }
-    if len(caption) > 0 {
-        html += "<div>" + caption + "</div>";
+    log("info", "pixiv 第 " + page_i + " 页 +" + page_count + " 条，累计 " + count);
+
+    let next = str_safe(json_path(json, "next_url"));
+    if len(next) == 0 {
+        next = str_safe(json_path(json, "response.next_url"));
     }
-    set_field("content_html", html);
-    add_entry();
-    count += 1;
+    // 仅允许继续请求 app-api.pixiv.net，避免异常 next_url。
+    if len(next) == 0 {
+        break;
+    }
+    let prefix = "https://app-api.pixiv.net/";
+    if len(next) < len(prefix) || next.substring(0, len(prefix)) != prefix {
+        log("warn", "pixiv next_url 非 app-api 域名，停止分页: " + next);
+        break;
+    }
+    url = next;
+    // 轻微间隔，降低限流风险。
+    sleep_ms(300);
+}
+if page_i >= max_pages {
+    log("warn", "pixiv 已达分页上限 " + max_pages + " 页（约 " + count + " 条），更早作品未拉完");
 }
 log("info", "pixiv 收集 " + count + " 条");
 if len(author) > 0 {
