@@ -797,7 +797,8 @@ impl Store {
         Ok(())
     }
 
-    /// Insert or ignore by (feed_id, guid). Returns true if a new row was inserted.
+    /// Insert or refresh by (feed_id, guid). Returns true if a new row was inserted.
+    /// User state (`is_read`, `is_starred`) and extracted full text are preserved.
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_entry(
         &mut self,
@@ -810,11 +811,27 @@ impl Store {
         summary: Option<&str>,
         content_html: &str,
     ) -> Result<bool> {
+        let existing_id = self
+            .conn
+            .query_row(
+                "SELECT id FROM entries WHERE feed_id = ?1 AND guid = ?2",
+                params![feed_id.0, guid],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
         let fetched = now_secs();
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO entries(
+        self.conn.execute(
+            "INSERT INTO entries(
                 feed_id, guid, title, url, author, published_at, summary, content_html, fetched_at
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(feed_id, guid) DO UPDATE SET
+                title = excluded.title,
+                url = excluded.url,
+                author = excluded.author,
+                published_at = excluded.published_at,
+                summary = excluded.summary,
+                content_html = excluded.content_html,
+                fetched_at = excluded.fetched_at",
             params![
                 feed_id.0,
                 guid,
@@ -827,16 +844,17 @@ impl Store {
                 fetched
             ],
         )?;
-        if n == 0 {
-            return Ok(false);
-        }
-        let id = self.conn.last_insert_rowid();
+        let is_new = existing_id.is_none();
+        let id = existing_id.unwrap_or_else(|| self.conn.last_insert_rowid());
+        let _ = self
+            .conn
+            .execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id]);
         let _ = self.conn.execute(
             "INSERT INTO entries_fts(rowid, title, summary, content_html) VALUES(?1, ?2, ?3, ?4)",
             params![id, title, summary.unwrap_or(""), content_html],
         );
         self.write_entry_cache(EntryId(id), content_html);
-        Ok(true)
+        Ok(is_new)
     }
 
     pub fn list_feed_ids(&self) -> Result<Vec<FeedId>> {
@@ -1128,6 +1146,66 @@ mod tests {
         let cache_file = cache_dir.join(id.0.to_string()).join("body.html");
         assert_eq!(std::fs::read_to_string(&cache_file).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn debug_reports_existing_entry_refresh_content() {
+        let mut store = Store::open_in_memory().unwrap();
+        let fid = store
+            .add_feed(
+                "Pixiv",
+                "https://www.pixiv.net/users/1",
+                None,
+                FeedCategory::Image,
+            )
+            .unwrap();
+        assert!(store
+            .upsert_entry(
+                fid,
+                "pixiv-1",
+                "Old",
+                None,
+                None,
+                None,
+                None,
+                "<p>caption</p>"
+            )
+            .unwrap());
+        let inserted = store
+            .upsert_entry(
+                fid,
+                "pixiv-1",
+                "New",
+                None,
+                None,
+                None,
+                None,
+                r#"<img src="https://i.pximg.net/new.jpg"><p>caption</p>"#,
+            )
+            .unwrap();
+        let id = store.list_entries(EntryFilter::All).unwrap()[0].id;
+        let stored = store.get_entry(id).unwrap().content_html;
+        // #region debug-point H7:existing-entry-refresh
+        let event = serde_json::json!({
+            "sessionId": "pixiv-image-missing",
+            "runId": "post-fix-h7",
+            "hypothesisId": "H7",
+            "location": "crates/glean-core/src/store/mod.rs:debug_reports_existing_entry_refresh_content",
+            "msg": "[DEBUG] Existing entry content after refresh",
+            "data": {
+                "second_inserted": inserted,
+                "stored_content": stored,
+                "new_image_preserved": stored.contains("i.pximg.net")
+            }
+        });
+        let _ = reqwest::blocking::Client::new()
+            .post("http://127.0.0.1:7777/event")
+            .header("Content-Type", "application/json")
+            .body(event.to_string())
+            .send();
+        // #endregion
+        assert!(!inserted);
+        assert!(stored.contains("i.pximg.net"));
     }
 
     /// schema v9：entry_enhancements 写入/覆盖/读取/级联删除。
