@@ -12,6 +12,7 @@
 //!   on download, but never again.
 
 use crate::error::{CoreError, Result};
+use base64::Engine;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -120,8 +121,8 @@ impl ImageCache {
                         let filename = cached_filename(url, Some(&content_type));
                         let path = dir.join(&filename);
                         if std::fs::write(&path, &bytes).is_ok() {
-                            fetched.push((filename.clone(), bytes));
-                            rewritten.insert(url.clone(), scheme_url(&filename));
+                            rewritten.insert(url.clone(), data_url(&filename, &bytes));
+                            fetched.push((filename, bytes));
                         }
                     }
                     Err(e) => {
@@ -130,7 +131,9 @@ impl ImageCache {
                     }
                 }
             } else {
-                rewritten.insert(url.clone(), scheme_url(&filename));
+                if let Ok(bytes) = std::fs::read(&path) {
+                    rewritten.insert(url.clone(), data_url(&filename, &bytes));
+                }
             }
         }
 
@@ -207,8 +210,12 @@ impl ImageCache {
     }
 }
 
-fn scheme_url(filename: &str) -> String {
-    format!("{CUSTOM_SCHEME}://localhost/{filename}")
+fn data_url(filename: &str, bytes: &[u8]) -> String {
+    format!(
+        "data:{};base64,{}",
+        ImageCache::mime_for(filename),
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
 }
 
 fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>, String)> {
@@ -398,10 +405,10 @@ mod tests {
     }
 
     #[test]
-    fn custom_scheme_uses_localhost_authority() {
+    fn data_url_encodes_cached_image() {
         assert_eq!(
-            scheme_url("50ef2c4a4a047187.jpg"),
-            "glean-img://localhost/50ef2c4a4a047187.jpg"
+            data_url("50ef2c4a4a047187.jpg", b"hello"),
+            "data:image/jpeg;base64,aGVsbG8="
         );
     }
 
