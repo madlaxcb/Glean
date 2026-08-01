@@ -68,24 +68,39 @@ fn guess_extension(url: &str, content_type: Option<&str>) -> &'static str {
 }
 
 /// Cache for a single entry. Owns the cache dir (None in memory mode).
+///
+/// When `serve_base` is set (e.g. `http://127.0.0.1:PORT`), rewritten `src`
+/// values point at that local HTTP origin instead of embedding base64 data
+/// URLs. This keeps large originals (Pixiv img-original) displayable in
+/// WebView without blowing up document size.
 pub struct ImageCache {
     dir: Option<PathBuf>,
+    serve_base: Option<String>,
 }
 
 impl ImageCache {
     pub fn new(dir: Option<PathBuf>) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            serve_base: None,
+        }
+    }
+
+    /// Serve cached files via a local HTTP base URL (`http://127.0.0.1:PORT`).
+    pub fn with_serve_base(mut self, base: Option<String>) -> Self {
+        self.serve_base = base.filter(|s| !s.is_empty());
+        self
     }
 
     pub fn enabled(&self) -> bool {
         self.dir.is_some()
     }
 
-    /// Download all remote images in `html` and rewrite their `src` to
-    /// `glean-img://<filename>`. Returns the rewritten HTML and the list of
-    /// (filename, bytes) pairs that were freshly downloaded (already-cached
-    /// files are not re-downloaded). On per-image failure the original URL
-    /// is left in place.
+    /// Download all remote images in `html` and rewrite their `src` to a local
+    /// URL (HTTP base when configured, otherwise `data:`). Returns the
+    /// rewritten HTML and the list of (filename, bytes) pairs that were
+    /// freshly downloaded (already-cached files are not re-downloaded). On
+    /// per-image failure the original URL is left in place.
     ///
     /// Uses a blocking reqwest client (call from a worker thread).
     pub fn cache_images_in_html(
@@ -107,8 +122,16 @@ impl ImageCache {
         let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
 
         for url in &urls {
-            // Skip non-http(s) (data:, file:, already-rewritten glean-img:).
+            // Skip non-http(s) (data:, file:, already-rewritten local URLs).
             if !(url.starts_with("http://") || url.starts_with("https://")) {
+                continue;
+            }
+            // Already pointing at our local image server.
+            if self
+                .serve_base
+                .as_ref()
+                .is_some_and(|base| url.starts_with(base))
+            {
                 continue;
             }
             let filename = cached_filename(url, None);
@@ -121,7 +144,7 @@ impl ImageCache {
                         let filename = cached_filename(url, Some(&content_type));
                         let path = dir.join(&filename);
                         if std::fs::write(&path, &bytes).is_ok() {
-                            rewritten.insert(url.clone(), data_url(&filename, &bytes));
+                            rewritten.insert(url.clone(), self.local_url(&filename, &bytes));
                             fetched.push((filename, bytes));
                         }
                     }
@@ -130,10 +153,8 @@ impl ImageCache {
                         // Leave original URL on failure.
                     }
                 }
-            } else {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    rewritten.insert(url.clone(), data_url(&filename, &bytes));
-                }
+            } else if let Some(local) = self.cached_local_url(&filename, &path) {
+                rewritten.insert(url.clone(), local);
             }
         }
 
@@ -141,6 +162,22 @@ impl ImageCache {
             return (html.to_string(), fetched);
         }
         (rewrite_img_src(html, &rewritten), fetched)
+    }
+
+    fn local_url(&self, filename: &str, bytes: &[u8]) -> String {
+        if let Some(base) = &self.serve_base {
+            format!("{}/{filename}", base.trim_end_matches('/'))
+        } else {
+            data_url(filename, bytes)
+        }
+    }
+
+    fn cached_local_url(&self, filename: &str, path: &std::path::Path) -> Option<String> {
+        if let Some(base) = &self.serve_base {
+            return Some(format!("{}/{filename}", base.trim_end_matches('/')));
+        }
+        let bytes = std::fs::read(path).ok()?;
+        Some(data_url(filename, &bytes))
     }
 
     /// Look up a cached file by filename (used by the WebView scheme handler).
@@ -410,6 +447,30 @@ mod tests {
             data_url("50ef2c4a4a047187.jpg", b"hello"),
             "data:image/jpeg;base64,aGVsbG8="
         );
+    }
+
+    #[test]
+    fn serve_base_rewrites_to_local_http() {
+        let tmp = std::env::temp_dir().join(format!(
+            "glean-img-serve-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let url = "https://i.pximg.net/img-original/img/x.png";
+        let filename = cached_filename(url, Some("image/png"));
+        std::fs::write(tmp.join(&filename), b"png-bytes").unwrap();
+        let cache =
+            ImageCache::new(Some(tmp.clone())).with_serve_base(Some("http://127.0.0.1:9".into()));
+        let client = reqwest::blocking::Client::new();
+        let html = format!(r#"<p><img src="{url}"></p>"#);
+        let (out, fetched) = cache.cache_images_in_html(&html, &client);
+        assert!(fetched.is_empty());
+        assert!(out.contains(&format!("http://127.0.0.1:9/{filename}")));
+        assert!(!out.contains("data:image"));
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

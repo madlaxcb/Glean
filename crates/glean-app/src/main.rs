@@ -5,6 +5,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod fonts;
+mod img_server;
 mod reader;
 mod tray;
 mod ui;
@@ -211,6 +212,9 @@ pub struct SpikeState {
     enhance_in_flight: Option<(EntryId, String)>,
     /// Background image-cache receiver: (rewritten_html, dark, image_policy).
     img_cache_rx: Option<mpsc::Receiver<(String, bool, ImagePolicy)>>,
+    /// Loopback HTTP origin that serves files from the local image cache
+    /// (`http://127.0.0.1:PORT`). Keeps large originals out of data URLs.
+    img_serve_base: Option<String>,
     /// Background favicon download receiver: (feed_id, rgba_bytes, width, height).
     favicon_rx: Option<mpsc::Receiver<(FeedId, Vec<u8>, u32, u32)>>,
     /// Set of feed IDs whose favicon download is already in flight.
@@ -299,11 +303,18 @@ impl SpikeState {
             enhance_rx: None,
             enhance_in_flight: None,
             img_cache_rx: None,
+            img_serve_base: None,
             favicon_rx: None,
             favicon_pending: std::collections::HashSet::new(),
             collapsed_categories: std::collections::HashSet::new(),
             plugin_cred_edits: std::collections::HashMap::new(),
         };
+        // Local loopback server for cached images (full-res Pixiv originals etc.).
+        if let Some(dir) = glean_core::cache_images_dir() {
+            if let Some(server) = img_server::LocalImageServer::start(dir) {
+                s.img_serve_base = Some(server.base_url);
+            }
+        }
         // Sync the reader's title bar dark state with the loaded config.
         s.reader.set_dark_title(s.dark);
         // 若配置了 AI，把配置注入 service（供同步 fallback 命令使用）。
@@ -985,11 +996,12 @@ impl SpikeState {
             .http_proxy()
             .map(|c| c.inner.clone())
             .unwrap_or_else(|| self.service.http().inner.clone());
+        let serve_base = self.img_serve_base.clone();
         let (tx, rx) = mpsc::channel::<(String, bool, ImagePolicy)>();
         self.img_cache_rx = Some(rx);
         thread::spawn(move || {
             let img_dir = glean_core::cache_images_dir();
-            let cache = glean_core::ImageCache::new(img_dir);
+            let cache = glean_core::ImageCache::new(img_dir).with_serve_base(serve_base);
             let (rewritten, _fetched) = cache.cache_images_in_html(&body, &client);
             // Re-render the full document with the rewritten body.
             let html = glean_core::reader_document(
@@ -1030,7 +1042,8 @@ impl SpikeState {
                 let policy = self.effective_image_policy();
                 // Synchronous rewrite (images already cached locally → no network).
                 let img_dir = glean_core::cache_images_dir();
-                let cache = glean_core::ImageCache::new(img_dir);
+                let cache = glean_core::ImageCache::new(img_dir)
+                    .with_serve_base(self.img_serve_base.clone());
                 // 用带代理的 client：后台下载失败时这里会尝试重下，需要代理才能
                 // 访问 i.pximg.net。已缓存的图片不会重新下载，不影响性能。
                 let client = self
