@@ -31,6 +31,25 @@ fn str_safe(v) {
     return "";
 }
 
+/// 从 HTTP 非 200 的响应中提取 Pixiv 返回的错误详情（body JSON）。
+/// Pixiv 常见格式：errors.system.message / error.message / error。
+fn extract_api_error(resp) {
+    let body = str_safe(resp["body"]);
+    if len(body) == 0 { return ""; }
+    let clip = if len(body) > 160 { body.substring(0, 160) } else { body };
+    try {
+        let j = parse_json(body);
+        if type_of(j) != "map" { return clip; }
+        let msg = str_safe(json_path(j, "errors.system.message"));
+        if len(msg) == 0 { msg = str_safe(json_path(j, "error.message")); }
+        if len(msg) == 0 { msg = str_safe(json_path(j, "error")); }
+        if len(msg) == 0 { msg = clip; }
+        return msg;
+    } catch {
+        return clip;
+    }
+}
+
 /// ISO8601 → unix 秒（忽略时区偏移，取本地字段）。失败返回 0。
 fn iso_to_unix(s) {
     if type_of(s) != "string" || len(s) < 19 { return 0; }
@@ -80,9 +99,10 @@ fn get_access_token() {
         "App-Version": "5.0.234",
     };
     let body = "client_id=MOBrBDS8blbauoSck0ZfDbtuzpyT"
-        + "&client_secret=lsACyCD94FhDUtGTXi3QrFE3cK2zB"
+        + "&client_secret=lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
         + "&grant_type=refresh_token"
         + "&get_secure_url=1"
+        + "&include_policy=true"
         + "&refresh_token={{pixiv_refresh_token}}";
     let tries = 3;
     let attempt = 0;
@@ -100,8 +120,14 @@ fn get_access_token() {
                 attempt += 1;
                 continue;
             }
-            let hint = "（连接失败：请检查 1) 代理服务是否正在运行 2) 设置页代理地址是否正确 3) 插件已勾选「使用代理」）";
-            throw("pixiv oauth/token HTTP " + resp["status"] + " error=" + resp["error"] + hint);
+            if resp["status"] == 0 {
+                throw("pixiv oauth/token 连接失败 error=" + resp["error"]
+                    + "（请检查 1) 代理服务是否正在运行 2) 设置页代理地址是否正确 3) 插件已勾选「使用代理」）");
+            }
+            // 非 200：读取 Pixiv 返回的具体错误（400 多为 Refresh Token 无效）。
+            let detail = extract_api_error(resp);
+            throw("pixiv oauth/token HTTP " + resp["status"] + " " + detail
+                + "（400/401 多为 Refresh Token 无效或已过期，请重新获取后更新凭证）");
         }
         let json = parse_json(resp["body"]);
         if type_of(json) != "map" {
