@@ -175,13 +175,16 @@ fn register_pure_fns(engine: &mut Engine) {
     // 语义与 Rust/Python 切片一致（end 是结束位置，不是长度），
     // 负数/越界自动夹紧。Rhai 内置的 `sub_string(start, len)` 语义不同，
     // 脚本统一用 `substring` 避免混淆。
-    engine.register_fn("substring", |s: ImmutableString, start: i64, end: i64| -> String {
-        let chars: Vec<char> = s.chars().collect();
-        let len = chars.len() as i64;
-        let s = start.max(0).min(len) as usize;
-        let e = end.max(s as i64).min(len) as usize;
-        chars[s..e].iter().collect()
-    });
+    engine.register_fn(
+        "substring",
+        |s: ImmutableString, start: i64, end: i64| -> String {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len() as i64;
+            let s = start.max(0).min(len) as usize;
+            let e = end.max(s as i64).min(len) as usize;
+            chars[s..e].iter().collect()
+        },
+    );
 }
 
 /// 注册 HTTP host 函数（仅当 manifest 声明 `feed_fetch` 域名白名单时）。
