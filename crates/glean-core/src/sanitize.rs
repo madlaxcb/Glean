@@ -23,7 +23,7 @@ pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
         ImagePolicy::Allow => {
             builder.rm_tags(["video", "audio", "iframe", "object", "embed", "form"]);
             // Keep remote images and the local image-cache custom protocol.
-            builder.add_url_schemes(&["glean-img"]);
+            builder.add_url_schemes(&["data", "glean-img"]);
         }
     }
     builder.clean(html).to_string()
@@ -82,5 +82,12 @@ mod tests {
             .send();
         // #endregion
         assert!(output.contains(r#"src="glean-img://abc123.jpg""#));
+    }
+
+    #[test]
+    fn allow_policy_keeps_inlined_image_data() {
+        let input = r#"<img src="data:image/jpeg;base64,aGVsbG8=">"#;
+        let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
+        assert!(output.contains(r#"src="data:image/jpeg;base64,aGVsbG8=""#));
     }
 }
