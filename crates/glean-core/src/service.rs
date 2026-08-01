@@ -98,20 +98,27 @@ impl GleanService {
     }
 
     /// 更新代理设置并重建带代理的 HTTP 客户端（设置页保存时调用，立即生效）。
-    /// 代理 URL 非法时保留旧客户端并在 stderr 提示，不影响直连。
-    pub fn set_proxy_url(&mut self, proxy_url: &str) {
-        self.proxy_url = proxy_url.to_string();
-        self.http_proxy = if proxy_url.is_empty() {
-            None
-        } else {
-            match HttpClient::with_proxy(Some(proxy_url)) {
-                Ok(c) => Some(Arc::new(c)),
-                Err(e) => {
-                    eprintln!("glean: invalid proxy {proxy_url:?}: {e}");
-                    None
-                }
+    /// 代理 URL 非法时保留旧客户端并返回错误（UI 提示用户，不再静默失效）。
+    /// URL 无 scheme 时自动补 `http://`（见 `HttpClient::with_proxy`）。
+    pub fn set_proxy_url(&mut self, proxy_url: &str) -> Result<()> {
+        let trimmed = proxy_url.trim().to_string();
+        self.proxy_url = trimmed.clone();
+        if trimmed.is_empty() {
+            self.http_proxy = None;
+            return Ok(());
+        }
+        match HttpClient::with_proxy(Some(&trimmed)) {
+            Ok(c) => {
+                self.http_proxy = Some(Arc::new(c));
+                Ok(())
             }
-        };
+            Err(e) => {
+                eprintln!("glean: invalid proxy {trimmed:?}: {e}");
+                Err(CoreError::Message(format!(
+                    "代理地址无效：{e}（示例 http://127.0.0.1:7890）"
+                )))
+            }
+        }
     }
 
     /// 访问插件管理器（§11.5）。
@@ -1098,15 +1105,22 @@ impl GleanService {
 }
 
 /// 构建直连 + 带代理两套 HTTP 客户端。代理 URL 为空时 `http_proxy = None`。
+/// 代理 URL 非法时不阻塞核心功能：stderr 记录并回退直连（启动时配置可能已损坏）。
 fn build_http_clients(
     proxy_url: Option<&str>,
 ) -> Result<(String, Arc<HttpClient>, Option<Arc<HttpClient>>)> {
-    let proxy_url = proxy_url.unwrap_or("").to_string();
+    let proxy_url = proxy_url.unwrap_or("").trim().to_string();
     let http = Arc::new(HttpClient::new()?);
     let http_proxy = if proxy_url.is_empty() {
         None
     } else {
-        Some(Arc::new(HttpClient::with_proxy(Some(&proxy_url))?))
+        match HttpClient::with_proxy(Some(&proxy_url)) {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                eprintln!("glean: invalid proxy {proxy_url:?}: {e}");
+                None
+            }
+        }
     };
     Ok((proxy_url, http, http_proxy))
 }

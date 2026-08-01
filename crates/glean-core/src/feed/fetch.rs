@@ -16,13 +16,21 @@ impl HttpClient {
 
     /// Create an HTTP client with an optional proxy URL.
     /// Proxy format: "http://host:port" or "socks5://host:port".
+    /// 无 scheme 时自动补 `http://`（如 `127.0.0.1:7890`），
+    /// 避免 `Proxy::all` 因缺 scheme 报错导致代理静默失效。
     pub fn with_proxy(proxy_url: Option<&str>) -> Result<Self> {
         let mut builder = Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::limited(5));
         if let Some(proxy) = proxy_url {
-            if !proxy.is_empty() {
-                let parsed = reqwest::Proxy::all(proxy)
+            let p = proxy.trim();
+            if !p.is_empty() {
+                let normalized = if p.contains("://") {
+                    p.to_string()
+                } else {
+                    format!("http://{p}")
+                };
+                let parsed = reqwest::Proxy::all(normalized)
                     .map_err(|e| CoreError::Http(format!("invalid proxy: {e}")))?;
                 builder = builder.proxy(parsed);
             }
@@ -108,4 +116,23 @@ pub fn fetch_feed_bytes(
         last_modified,
         final_url,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_proxy_accepts_scheme_less_url() {
+        // 无 scheme 的地址自动补 http://，否则 Proxy::all 会报错
+        // 导致代理静默失效（§11.5.10 常见问题）。
+        HttpClient::with_proxy(Some("127.0.0.1:7890")).expect("scheme auto-added");
+        HttpClient::with_proxy(Some(" 127.0.0.1:7890 ")).expect("trimmed");
+        HttpClient::with_proxy(Some("http://127.0.0.1:7890")).expect("explicit scheme");
+        HttpClient::with_proxy(Some("socks5://127.0.0.1:1080")).expect("socks5");
+        // 明显非法的地址仍报错。
+        assert!(HttpClient::with_proxy(Some("::not a proxy::")).is_err());
+        assert!(HttpClient::with_proxy(Some("")).is_ok());
+        assert!(HttpClient::with_proxy(None).is_ok());
+    }
 }

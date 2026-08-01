@@ -69,7 +69,7 @@ fn extract_user_id(url) {
     return "";
 }
 
-/// refresh_token → access_token。
+/// refresh_token → access_token。连接失败（status=0）自动重试 3 次。
 /// 注意：Rhai 函数内不能引用顶层 const（变量作用域限制），常量需内联。
 fn get_access_token() {
     let hdrs = #{
@@ -84,28 +84,36 @@ fn get_access_token() {
         + "&grant_type=refresh_token"
         + "&get_secure_url=1"
         + "&refresh_token={{pixiv_refresh_token}}";
-    let resp = http_post(
-        "https://oauth.secure.pixiv.net/auth/token",
-        body,
-        hdrs,
-        "pixiv_refresh_token"
-    );
-    if resp["status"] != 200 {
-        let hint = "";
-        if resp["status"] == 0 {
-            hint = "（连接失败：请给该订阅右键开启「使用代理」后重试）";
+    let tries = 3;
+    let attempt = 0;
+    while attempt < tries {
+        let resp = http_post(
+            "https://oauth.secure.pixiv.net/auth/token",
+            body,
+            hdrs,
+            "pixiv_refresh_token"
+        );
+        if resp["status"] != 200 {
+            if resp["status"] == 0 && attempt < tries - 1 {
+                log("warn", "pixiv oauth/token 连接失败，第 " + attempt + " 次重试");
+                sleep_ms(1000);
+                attempt += 1;
+                continue;
+            }
+            let hint = "（连接失败：请检查 1) 代理服务是否正在运行 2) 设置页代理地址是否正确 3) 插件已勾选「使用代理」）";
+            throw("pixiv oauth/token HTTP " + resp["status"] + " error=" + resp["error"] + hint);
         }
-        throw("pixiv oauth/token HTTP " + resp["status"] + " error=" + resp["error"] + hint);
+        let json = parse_json(resp["body"]);
+        if type_of(json) != "map" {
+            throw("pixiv oauth/token 响应解析失败");
+        }
+        let token = json_path(json, "response.access_token");
+        if type_of(token) != "string" || len(token) == 0 {
+            throw("pixiv oauth/token 未返回 access_token（请检查凭证槽 pixiv_refresh_token 是否有效）");
+        }
+        return token;
     }
-    let json = parse_json(resp["body"]);
-    if type_of(json) != "map" {
-        throw("pixiv oauth/token 响应解析失败");
-    }
-    let token = json_path(json, "response.access_token");
-    if type_of(token) != "string" || len(token) == 0 {
-        throw("pixiv oauth/token 未返回 access_token（请检查凭证槽 pixiv_refresh_token 是否有效）");
-    }
-    return token;
+    throw("pixiv oauth/token 连接多次失败");
 }
 
 let mid = extract_user_id(SOURCE_URL);
@@ -124,7 +132,7 @@ let resp = http_get(url, hdrs, "");
 if resp["status"] != 200 {
     let hint = "";
     if resp["status"] == 0 {
-        hint = "（连接失败：请给该订阅右键开启「使用代理」后重试）";
+        hint = "（连接失败：请检查代理服务是否运行、设置页代理地址是否正确）";
     }
     throw("pixiv user/illusts HTTP " + resp["status"] + " error=" + resp["error"] + hint);
 }

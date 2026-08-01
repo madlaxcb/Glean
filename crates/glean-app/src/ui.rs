@@ -929,7 +929,19 @@ impl eframe::App for SpikeApp {
                                 if resp.lost_focus() {
                                     // 立即重建带代理的 HTTP 客户端，无需重启。
                                     let proxy = self.state.config.proxy_url.clone();
-                                    self.state.service.set_proxy_url(&proxy);
+                                    match self.state.service.set_proxy_url(&proxy) {
+                                        Ok(()) => {
+                                            self.state.status = if proxy.trim().is_empty() {
+                                                "代理已清除".into()
+                                            } else {
+                                                "代理已生效（开启「使用代理」的插件/订阅会走此代理）".into()
+                                            };
+                                        }
+                                        Err(e) => {
+                                            self.state.status = e.to_string();
+                                            // 配置里保留原值，用户可看到后修正。
+                                        }
+                                    }
                                     self.state.sync_config();
                                     self.state.save_config();
                                 }
