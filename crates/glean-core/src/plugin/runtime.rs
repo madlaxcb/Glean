@@ -359,13 +359,17 @@ fn do_http(
         }
     }
     // §11.5.4 凭证注入：脚本永远拿不到明文，Host 在请求前注入 Header。
+    // header_name 为空表示该凭证仅供 body 占位符注入（如 Pixiv refresh_token），
+    // 此时不做 header 注入。
     if !credential_slot.is_empty() {
         if let Some(cred) = creds.get(plugin_id, credential_slot) {
-            if let (Ok(name), Ok(val)) = (
-                reqwest::header::HeaderName::from_bytes(cred.header_name.as_bytes()),
-                reqwest::header::HeaderValue::from_str(&cred.header_value),
-            ) {
-                hdrs.insert(name, val);
+            if !cred.header_name.is_empty() {
+                if let (Ok(name), Ok(val)) = (
+                    reqwest::header::HeaderName::from_bytes(cred.header_name.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(&cred.header_value),
+                ) {
+                    hdrs.insert(name, val);
+                }
             }
         }
     }

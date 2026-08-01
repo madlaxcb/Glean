@@ -70,9 +70,10 @@ fn extract_user_id(url) {
 }
 
 /// refresh_token → access_token。
+/// 注意：Rhai 函数内不能引用顶层 const（变量作用域限制），常量需内联。
 fn get_access_token() {
     let hdrs = #{
-        "User-Agent": UA,
+        "User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     };
     let body = "client_id=MOBrBDS8blbauoSck0ZfDbtuzpyT"

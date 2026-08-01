@@ -1247,6 +1247,8 @@ impl SpikeState {
     }
 
     /// 保存插件凭证槽（§11.5.9 UI 入口）。落盘加密（Windows DPAPI）。
+    /// Header 名可留空（body 占位符注入场景，如 Pixiv refresh_token）；
+    /// 凭证值必填。
     pub fn save_plugin_credential(&mut self, plugin_id: &str, slot: &str) {
         let key = format!("{plugin_id}:{slot}");
         let (name, value) = self
@@ -1254,13 +1256,13 @@ impl SpikeState {
             .get(&key)
             .cloned()
             .unwrap_or_default();
-        if name.trim().is_empty() {
-            self.status = format!("凭证 {plugin_id}:{slot} 未保存：Header 名为空");
+        if value.trim().is_empty() {
+            self.status = format!("凭证 {plugin_id}:{slot} 未保存：凭证值为空");
             return;
         }
         match self
             .service
-            .set_credential(plugin_id, slot, name.trim(), &value)
+            .set_credential(plugin_id, slot, name.trim(), value.trim())
         {
             Ok(()) => self.status = format!("凭证已保存: {plugin_id}:{slot}"),
             Err(e) => self.status = format!("凭证保存失败: {e}"),

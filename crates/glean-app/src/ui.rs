@@ -1215,23 +1215,23 @@ impl eframe::App for SpikeApp {
                                                     .entry(key.clone())
                                                     .or_default();
                                                 ui.horizontal(|ui| {
-                                                    ui.label("Header");
+                                                    ui.label("Header 名");
                                                     ui.add(
                                                         egui::TextEdit::singleline(&mut entry.0)
                                                             .id(egui::Id::new(format!(
                                                                 "plugin_cred_name_{key}"
                                                             )))
-                                                            .desired_width(110.0)
-                                                            .hint_text("Cookie"),
+                                                            .desired_width(100.0)
+                                                            .hint_text("可选，如 Cookie"),
                                                     );
-                                                    ui.label("值");
+                                                    ui.label("凭证值");
                                                     ui.add(
                                                         egui::TextEdit::singleline(&mut entry.1)
                                                             .id(egui::Id::new(format!(
                                                                 "plugin_cred_val_{key}"
                                                             )))
                                                             .password(true)
-                                                            .desired_width(160.0),
+                                                            .desired_width(180.0),
                                                     );
                                                 });
                                             }
@@ -1242,8 +1242,9 @@ impl eframe::App for SpikeApp {
                                                 if has_cred && ui.button("清除").clicked() {
                                                     do_remove = true;
                                                 }
-                                                hint(ui, "凭证由 Host 注入请求头，插件脚本不可见");
+                                                hint(ui, "凭证由 Host 注入，插件脚本不可见");
                                             });
+                                            hint(ui, "Pixiv 场景：把 Refresh Token 填入「凭证值」，Header 名留空即可");
                                             if do_save {
                                                 self.state.save_plugin_credential(id, slot);
                                             }
