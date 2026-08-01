@@ -62,25 +62,6 @@ mod tests {
     fn allow_policy_keeps_custom_image_scheme() {
         let input = r#"<img src="glean-img://abc123.jpg">"#;
         let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
-        // #region debug-point H5:ammonia-custom-scheme
-        let event = serde_json::json!({
-            "sessionId": "pixiv-image-missing",
-            "runId": "post-fix",
-            "hypothesisId": "H5",
-            "location": "crates/glean-core/src/sanitize.rs:allow_policy_keeps_custom_image_scheme",
-            "msg": "[DEBUG] Ammonia custom scheme sanitization result",
-            "data": {
-                "input": input,
-                "output": output,
-                "scheme_preserved": output.contains("glean-img://")
-            }
-        });
-        let _ = reqwest::blocking::Client::new()
-            .post("http://127.0.0.1:7777/event")
-            .header("Content-Type", "application/json")
-            .body(event.to_string())
-            .send();
-        // #endregion
         assert!(output.contains(r#"src="glean-img://abc123.jpg""#));
     }
 

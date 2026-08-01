@@ -1185,25 +1185,6 @@ mod tests {
             .unwrap();
         let id = store.list_entries(EntryFilter::All).unwrap()[0].id;
         let stored = store.get_entry(id).unwrap().content_html;
-        // #region debug-point H7:existing-entry-refresh
-        let event = serde_json::json!({
-            "sessionId": "pixiv-image-missing",
-            "runId": "post-fix-h7",
-            "hypothesisId": "H7",
-            "location": "crates/glean-core/src/store/mod.rs:debug_reports_existing_entry_refresh_content",
-            "msg": "[DEBUG] Existing entry content after refresh",
-            "data": {
-                "second_inserted": inserted,
-                "stored_content": stored,
-                "new_image_preserved": stored.contains("i.pximg.net")
-            }
-        });
-        let _ = reqwest::blocking::Client::new()
-            .post("http://127.0.0.1:7777/event")
-            .header("Content-Type", "application/json")
-            .body(event.to_string())
-            .send();
-        // #endregion
         assert!(!inserted);
         assert!(stored.contains("i.pximg.net"));
     }
