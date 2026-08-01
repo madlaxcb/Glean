@@ -21,11 +21,12 @@ use rhai::{Dynamic, Engine, ImmutableString, Map};
 use std::sync::{Arc, Mutex};
 
 /// 单次 Rhai 脚本执行的最大操作数（防止死循环）。
-const MAX_OPERATIONS: u64 = 200_000;
+/// Pixiv 分页拉取（20 页 × 30 条/页 × 多字段操作）约需 500k+ 操作数。
+const MAX_OPERATIONS: u64 = 2_000_000;
 /// 最大调用栈深度。
 const MAX_CALL_LEVELS: usize = 64;
-/// 单次脚本执行软超时（秒）。Host 在 worker 线程之外另加硬超时。
-const SCRIPT_TIMEOUT_SECS: u64 = 10;
+/// 单次脚本执行软超时（秒）。分页拉取可能耗时较长，放宽到 120 秒。
+const SCRIPT_TIMEOUT_SECS: u64 = 120;
 
 /// Rhai 脚本执行的运行时上下文。一个 `Runtime` 实例对应一个加载的插件。
 pub struct Runtime {
