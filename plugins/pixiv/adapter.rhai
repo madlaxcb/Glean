@@ -188,13 +188,6 @@ for item in illusts {
     if type_of(id) != "i64" { continue; }
     let title = str_safe(json_path(item, "title"));
     if len(title) == 0 { title = "Untitled"; }
-    // 封面：medium 优先，其次 square_medium。
-    // Pixiv app-api illust 结构为 image_urls.{square_medium,medium,large}，
-    // 不是 images.*（早期写错字段名导致 img 永远为空，图片不显示）。
-    let img = str_safe(json_path(item, "image_urls.medium"));
-    if len(img) == 0 {
-        img = str_safe(json_path(item, "image_urls.square_medium"));
-    }
     let caption = str_safe(json_path(item, "caption"));
     let item_author = str_safe(json_path(item, "user.name"));
     if len(item_author) > 0 && len(author) == 0 {
@@ -208,8 +201,28 @@ for item in illusts {
     set_field("author", item_author);
     if published > 0 { set_field("published_at", published); }
     let html = "";
-    if len(img) > 0 {
-        html += "<p><img src=\"" + img + "\"></p>";
+    let pages = json_path(item, "meta_pages");
+    if type_of(pages) == "array" && len(pages) > 0 {
+        for page in pages {
+            let img = str_safe(json_path(page, "image_urls.medium"));
+            let original = str_safe(json_path(page, "image_urls.original"));
+            if len(img) > 0 && len(original) > 0 {
+                html += "<p><a href=\"" + original + "\"><img src=\"" + img + "\"></a></p>";
+            } else if len(img) > 0 {
+                html += "<p><img src=\"" + img + "\"></p>";
+            }
+        }
+    } else {
+        let img = str_safe(json_path(item, "image_urls.medium"));
+        if len(img) == 0 {
+            img = str_safe(json_path(item, "image_urls.square_medium"));
+        }
+        let original = str_safe(json_path(item, "meta_single_page.original_image_url"));
+        if len(img) > 0 && len(original) > 0 {
+            html += "<p><a href=\"" + original + "\"><img src=\"" + img + "\"></a></p>";
+        } else if len(img) > 0 {
+            html += "<p><img src=\"" + img + "\"></p>";
+        }
     }
     if len(caption) > 0 {
         html += "<div>" + caption + "</div>";
