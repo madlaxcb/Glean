@@ -293,6 +293,10 @@ pub struct AppConfig {
     /// 已停用的插件 id 列表（「插件管理」界面启停；路由跳过停用插件）。
     #[serde(default)]
     pub disabled_plugins: Vec<String>,
+    /// 开启「使用代理」的插件 id 列表（§11.5.10）。命中插件后其请求走代理，
+    /// 覆盖订阅级开关。
+    #[serde(default)]
+    pub plugin_proxy: Vec<String>,
     /// UI 主题强调色（设置页色板可选）。
     #[serde(default)]
     pub accent: AccentColor,
@@ -342,6 +346,7 @@ impl Default for AppConfig {
             window_maximized: false,
             ai: None,
             disabled_plugins: Vec::new(),
+            plugin_proxy: Vec::new(),
             accent: AccentColor::default(),
         }
     }

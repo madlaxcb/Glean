@@ -50,6 +50,9 @@ pub struct PluginManager {
     plugins_dir: PathBuf,
     /// 已停用的插件 id。路由（`find_for_url`）跳过；启停不删除文件。
     disabled: HashSet<String>,
+    /// 显式开启「使用代理」的插件 id。命中后插件请求走代理 client，
+    /// 覆盖订阅级开关（见 service::fetch_via_plugin）。
+    proxy: HashSet<String>,
 }
 
 impl PluginManager {
@@ -59,6 +62,7 @@ impl PluginManager {
             plugins: Vec::new(),
             plugins_dir,
             disabled: HashSet::new(),
+            proxy: HashSet::new(),
         };
         mgr.scan()?;
         Ok(mgr)
@@ -78,6 +82,7 @@ impl PluginManager {
             plugins,
             plugins_dir: PathBuf::new(),
             disabled: HashSet::new(),
+            proxy: HashSet::new(),
         }
     }
 
@@ -160,9 +165,37 @@ impl PluginManager {
 
     /// 整体应用停用集合（service 重建 manager 后，用 AppConfig 的
     /// `disabled_plugins` 同步状态）。不校验 id 存在：容忍集合里残留
-    /// 已卸载插件的 id。
+    /// 的 id（对应插件可能已被卸载）。
     pub fn set_disabled(&mut self, ids: &HashSet<String>) {
         self.disabled = ids.clone();
+    }
+
+    /// 插件级「使用代理」开关是否开启（§11.5.10）。
+    pub fn uses_proxy(&self, id: &str) -> bool {
+        self.proxy.contains(id)
+    }
+
+    /// 当前开启「使用代理」的插件 id（供 UI 写回 `AppConfig.plugin_proxy`）。
+    pub fn proxy_ids(&self) -> &HashSet<String> {
+        &self.proxy
+    }
+
+    /// 设置插件级「使用代理」开关（存在性校验）。
+    pub fn set_proxy(&mut self, id: &str, use_proxy: bool) -> Result<()> {
+        if !self.plugins.iter().any(|p| p.manifest.plugin.id == id) {
+            return Err(CoreError::Message(format!("插件不存在: {id}")));
+        }
+        if use_proxy {
+            self.proxy.insert(id.to_string());
+        } else {
+            self.proxy.remove(id);
+        }
+        Ok(())
+    }
+
+    /// 用 `AppConfig.plugin_proxy` 同步插件代理开关集合（不校验 id 存在）。
+    pub fn set_proxy_set(&mut self, ids: &HashSet<String>) {
+        self.proxy = ids.clone();
     }
 
     /// 按 URL 匹配规则找到对应插件（跳过停用插件）。§11.5.8 `[[match]]` 段。
@@ -530,6 +563,27 @@ title = "$.name"
             .r#match
             .iter()
             .any(|r| r.url_pattern == "pixiv.net/users/*"));
+    }
+
+    #[test]
+    fn plugin_proxy_switch_roundtrip() {
+        // 插件级「使用代理」开关：set → 查询 → 外部同步（set_proxy_set）。
+        let mut mgr = PluginManager::from_manifests(vec![make_manifest(
+            "my-plugin",
+            "my.example.com/*",
+            Tier::Config,
+        )]);
+        assert!(!mgr.uses_proxy("my-plugin"));
+        mgr.set_proxy("my-plugin", true).unwrap();
+        assert!(mgr.uses_proxy("my-plugin"));
+        assert!(mgr.proxy_ids().contains("my-plugin"));
+        // 未知 id 报错。
+        assert!(mgr.set_proxy("no-such", true).is_err());
+        // 外部同步（AppConfig 启动加载路径）。
+        mgr.set_proxy_set(&HashSet::from(["my-plugin".to_string()]));
+        assert!(mgr.uses_proxy("my-plugin"));
+        mgr.set_proxy("my-plugin", false).unwrap();
+        assert!(!mgr.uses_proxy("my-plugin"));
     }
 
     #[test]

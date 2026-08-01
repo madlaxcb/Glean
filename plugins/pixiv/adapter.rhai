@@ -75,6 +75,9 @@ fn get_access_token() {
     let hdrs = #{
         "User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "App-OS": "android",
+        "App-OS-Version": "11",
+        "App-Version": "5.0.234",
     };
     let body = "client_id=MOBrBDS8blbauoSck0ZfDbtuzpyT"
         + "&client_secret=lsACyCD94FhDUtGTXi3QrFE3cK2zB"
@@ -88,7 +91,11 @@ fn get_access_token() {
         "pixiv_refresh_token"
     );
     if resp["status"] != 200 {
-        throw("pixiv oauth/token HTTP " + resp["status"] + " error=" + resp["error"]);
+        let hint = "";
+        if resp["status"] == 0 {
+            hint = "（连接失败：请给该订阅右键开启「使用代理」后重试）";
+        }
+        throw("pixiv oauth/token HTTP " + resp["status"] + " error=" + resp["error"] + hint);
     }
     let json = parse_json(resp["body"]);
     if type_of(json) != "map" {
@@ -115,7 +122,11 @@ let hdrs = #{
 let url = "https://app-api.pixiv.net/v1/user/illusts?user_id=" + mid + "&type=illust";
 let resp = http_get(url, hdrs, "");
 if resp["status"] != 200 {
-    throw("pixiv user/illusts HTTP " + resp["status"] + " error=" + resp["error"]);
+    let hint = "";
+    if resp["status"] == 0 {
+        hint = "（连接失败：请给该订阅右键开启「使用代理」后重试）";
+    }
+    throw("pixiv user/illusts HTTP " + resp["status"] + " error=" + resp["error"] + hint);
 }
 let json = parse_json(resp["body"]);
 if type_of(json) != "map" {

@@ -310,9 +310,10 @@ impl SpikeState {
         if let Some(ai) = s.config.ai.clone() {
             s.service.set_ai_config(ai);
         }
-        // 同步插件启停状态（AppConfig.disabled_plugins → PluginManager）。
+        // 同步插件启停状态与代理开关（AppConfig → PluginManager）。
         let disabled = s.config.disabled_plugins.clone();
-        if let Err(e) = s.service.reload_plugins(&disabled) {
+        let proxy = s.config.plugin_proxy.clone();
+        if let Err(e) = s.service.reload_plugins(&disabled, &proxy) {
             s.status = format!("插件加载失败: {e}");
         }
         s.dispatch(AppCommand::Bootstrap);
@@ -1212,6 +1213,23 @@ impl SpikeState {
                     self.status = format!("插件已启用: {id}");
                 } else {
                     self.status = format!("插件已停用: {id}");
+                }
+            }
+            Err(e) => self.status = format!("插件操作失败: {e}"),
+        }
+    }
+
+    /// 设置插件级「使用代理」开关（§11.5.10）。变化写回
+    /// `config.plugin_proxy`。插件请求（含添加订阅时）会走设置页配置的代理。
+    pub fn set_plugin_proxy(&mut self, id: &str, use_proxy: bool) {
+        match self.service.set_plugin_proxy(id, use_proxy) {
+            Ok(()) => {
+                self.config.plugin_proxy = self.service.proxy_plugins();
+                self.save_config();
+                if use_proxy {
+                    self.status = format!("插件已开启使用代理: {id}");
+                } else {
+                    self.status = format!("插件已关闭代理: {id}");
                 }
             }
             Err(e) => self.status = format!("插件操作失败: {e}"),

@@ -1258,6 +1258,12 @@ impl eframe::App for SpikeApp {
                                         if ui.checkbox(&mut enabled, "启用").changed() {
                                             self.state.toggle_plugin(id, enabled);
                                         }
+                                        // 插件级「使用代理」（§11.5.10）：命中该插件
+                                        // 的请求（含添加订阅时）走设置页配置的代理。
+                                        let mut proxy = self.state.config.plugin_proxy.contains(id);
+                                        if ui.checkbox(&mut proxy, "使用代理").changed() {
+                                            self.state.set_plugin_proxy(id, proxy);
+                                        }
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {

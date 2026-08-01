@@ -36,6 +36,9 @@ pub struct GleanService {
     /// 已停用的插件 id（启停状态源）。重建 manager 时应用给它；UI 通过
     /// [`disabled_plugins`](Self::disabled_plugins) 读回写进 `AppConfig`。
     plugin_disabled: HashSet<String>,
+    /// 开启「使用代理」的插件 id（§11.5.10）。重建 manager 时应用；
+    /// 命中插件后其请求走代理 client，覆盖订阅级开关。
+    plugin_proxy: HashSet<String>,
     /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。owned 在此负责可变写入 + 落盘；
     /// worker 线程通过 `Clone` 取快照。
     credentials: Option<CredentialStore>,
@@ -61,6 +64,7 @@ impl GleanService {
             proxy_url,
             plugin_mgr: None,
             plugin_disabled: HashSet::new(),
+            plugin_proxy: HashSet::new(),
             credentials: None,
             ai_config: None,
         })
@@ -87,6 +91,7 @@ impl GleanService {
             proxy_url,
             plugin_mgr,
             plugin_disabled: HashSet::new(),
+            plugin_proxy: HashSet::new(),
             credentials,
             ai_config: None,
         })
@@ -114,10 +119,11 @@ impl GleanService {
         self.plugin_mgr.as_deref()
     }
 
-    /// 用 `AppConfig.disabled_plugins` 同步插件启停状态并重建 manager。
-    /// UI 启动时调用一次。
-    pub fn reload_plugins(&mut self, disabled: &[String]) -> Result<()> {
+    /// 用 `AppConfig.disabled_plugins` / `plugin_proxy` 同步插件启停状态与
+    /// 代理开关，并重建 manager。UI 启动时调用一次。
+    pub fn reload_plugins(&mut self, disabled: &[String], proxy: &[String]) -> Result<()> {
         self.plugin_disabled = disabled.iter().cloned().collect();
+        self.plugin_proxy = proxy.iter().cloned().collect();
         self.rebuild_plugins()
     }
 
@@ -143,6 +149,30 @@ impl GleanService {
     /// 当前停用的插件 id（供 UI 写回 `AppConfig.disabled_plugins`）。
     pub fn disabled_plugins(&self) -> Vec<String> {
         self.plugin_disabled.iter().cloned().collect()
+    }
+
+    /// 设置插件级「使用代理」开关（§11.5.10）。变化通过
+    /// [`proxy_plugins`](Self::proxy_plugins) 读回写进 `AppConfig.plugin_proxy`。
+    pub fn set_plugin_proxy(&mut self, id: &str, use_proxy: bool) -> Result<()> {
+        let exists = self
+            .plugin_mgr
+            .as_ref()
+            .map(|m| m.list().iter().any(|p| p.manifest.plugin.id == id))
+            .unwrap_or(false);
+        if !exists {
+            return Err(CoreError::Message(format!("插件不存在: {id}")));
+        }
+        if use_proxy {
+            self.plugin_proxy.insert(id.to_string());
+        } else {
+            self.plugin_proxy.remove(id);
+        }
+        self.rebuild_plugins()
+    }
+
+    /// 当前开启「使用代理」的插件 id（供 UI 写回 `AppConfig.plugin_proxy`）。
+    pub fn proxy_plugins(&self) -> Vec<String> {
+        self.plugin_proxy.iter().cloned().collect()
     }
 
     /// 安装插件（文件夹导入）。返回插件 id；失败时（manifest 无效 /
@@ -178,6 +208,7 @@ impl GleanService {
         }
         let mut rebuilt = PluginManager::new(mgr.plugins_dir().to_path_buf())?;
         rebuilt.set_disabled(&self.plugin_disabled);
+        rebuilt.set_proxy_set(&self.plugin_proxy);
         self.plugin_mgr = Some(Arc::new(rebuilt));
         Ok(())
     }
@@ -270,17 +301,28 @@ impl GleanService {
 
     /// §11.5 刷新时的插件路由：URL 命中已加载插件则走 Tier 1/2，否则返回 `None`
     /// 让调用方走默认 RSS。返回 `Some(Err)` 表示插件命中但执行失败。
-    /// `client` 由调用方按订阅的 use_proxy 选定（直连或代理）。
+    /// `client` 由调用方按订阅的 use_proxy 选定（直连或代理）；
+    /// 若插件自身开启了「使用代理」（§11.5.10），则覆盖为代理 client。
     fn fetch_via_plugin(&self, url: &str, client: &Arc<HttpClient>) -> Option<Result<ParsedFeed>> {
         let mgr = self.plugin_mgr.as_deref()?;
+        // 命中插件后按插件级代理开关覆盖订阅级选择；未配置代理时回退直连。
+        let effective = mgr
+            .find_for_url(url)
+            .map(|p| {
+                if mgr.uses_proxy(&p.manifest.plugin.id) {
+                    Arc::clone(pick_client(true, &self.http, &self.http_proxy))
+                } else {
+                    Arc::clone(client)
+                }
+            })
+            .unwrap_or_else(|| Arc::clone(client));
         // Tier 1：纯配置驱动，无需凭证。
-        if let Some(res) = mgr.run_tier1_for_url(url, client).transpose() {
+        if let Some(res) = mgr.run_tier1_for_url(url, &effective).transpose() {
             return Some(res);
         }
         // Tier 2：Rhai 脚本，需要凭证快照（如有）。
         let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        mgr.run_tier2_for_url(url, Arc::clone(client), creds)
-            .transpose()
+        mgr.run_tier2_for_url(url, effective, creds).transpose()
     }
 
     pub fn handle(&mut self, cmd: AppCommand) -> Vec<AppEvent> {
