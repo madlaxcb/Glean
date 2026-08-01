@@ -102,8 +102,13 @@ pub fn should_extract(feed_content_html: &str, entry_url: Option<&str>) -> bool 
     if feed_content_html.len() >= SUMMARY_THRESHOLD {
         return false;
     }
-    match entry_url {
-        Some(u) => u.starts_with("http://") || u.starts_with("https://"),
+    match entry_url.and_then(|u| url::Url::parse(u).ok()) {
+        Some(url) if matches!(url.scheme(), "http" | "https") => {
+            let host = url.host_str().unwrap_or_default();
+            !(host == "pixiv.net" || host == "www.pixiv.net")
+                || !url.path().starts_with("/artworks/")
+        }
+        Some(_) => false,
         None => false,
     }
 }
@@ -258,6 +263,10 @@ mod tests {
         ));
         assert!(!should_extract("short", Some("ftp://x")));
         assert!(!should_extract("short", None));
+        assert!(!should_extract(
+            "short",
+            Some("https://www.pixiv.net/artworks/147652038")
+        ));
     }
 
     #[test]

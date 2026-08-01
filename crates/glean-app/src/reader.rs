@@ -5,9 +5,20 @@
 
 use glean_core::ReaderHostMode;
 
+#[cfg(any(windows, test))]
+fn custom_image_filename(uri: &str) -> Option<&str> {
+    let value = uri
+        .strip_prefix("glean-img://")
+        .or_else(|| uri.strip_prefix("http://glean-img.localhost/"))
+        .or_else(|| uri.strip_prefix("https://glean-img.localhost/"))?
+        .trim_matches('/');
+    let filename = value.rsplit('/').next()?;
+    (!filename.is_empty()).then_some(filename)
+}
+
 #[cfg(windows)]
 mod win {
-    use super::ReaderHostMode;
+    use super::{custom_image_filename, ReaderHostMode};
     use egui::Rect;
     use raw_window_handle::{
         DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
@@ -209,14 +220,7 @@ mod win {
                     glean_core::IMAGE_CUSTOM_SCHEME.into(),
                     move |_id, request| {
                         let url = request.uri().to_string();
-                        // URL is like glean-img://filename or glean-img://host/filename
-                        let path = url.trim_start_matches("glean-img://");
-                        // Strip host part if present (glean-img://host/filename → filename)
-                        let filename = if path.contains('/') {
-                            path.split('/').last().unwrap_or(path)
-                        } else {
-                            path
-                        };
+                        let filename = custom_image_filename(&url).unwrap_or("");
                         match img_cache.read(filename) {
                             Some(bytes) => {
                                 let mime = glean_core::ImageCache::mime_for(filename);
@@ -641,4 +645,29 @@ impl ReaderHost {
     pub fn apply_theme(&mut self, _dark: bool) {}
     pub fn reclaim_shell_focus(&mut self) {}
     pub fn set_hidden(&mut self, _hidden: bool) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::custom_image_filename;
+
+    #[test]
+    fn extracts_custom_image_filename_from_webview_uri_forms() {
+        assert_eq!(
+            custom_image_filename("glean-img://50ef2c4a4a047187.jpg"),
+            Some("50ef2c4a4a047187.jpg")
+        );
+        assert_eq!(
+            custom_image_filename("glean-img://50ef2c4a4a047187.jpg/"),
+            Some("50ef2c4a4a047187.jpg")
+        );
+        assert_eq!(
+            custom_image_filename("glean-img:///50ef2c4a4a047187.jpg"),
+            Some("50ef2c4a4a047187.jpg")
+        );
+        assert_eq!(
+            custom_image_filename("http://glean-img.localhost/50ef2c4a4a047187.jpg"),
+            Some("50ef2c4a4a047187.jpg")
+        );
+    }
 }

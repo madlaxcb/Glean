@@ -208,7 +208,7 @@ impl ImageCache {
 }
 
 fn scheme_url(filename: &str) -> String {
-    format!("{CUSTOM_SCHEME}://{filename}")
+    format!("{CUSTOM_SCHEME}:///{filename}")
 }
 
 fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>, String)> {
