@@ -166,9 +166,19 @@ let json = parse_json(resp["body"]);
 if type_of(json) != "map" {
     throw("pixiv user/illusts 响应解析失败");
 }
-let illusts = json_path(json, "response.illusts");
+// app-api.pixiv.net/v1/user/illusts 返回 {"illusts":[...],"next_url":"..."}，
+// 顶层无 response 包层（response 包层是 oauth/token 接口的格式）。
+let illusts = json_path(json, "illusts");
 if type_of(illusts) != "array" {
-    throw("pixiv user/illusts 返回数据异常（可能无公开作品或 user_id 错误）");
+    // 兜底：兼容万一返回 response.illusts 结构
+    let nested = json_path(json, "response.illusts");
+    if type_of(nested) == "array" {
+        illusts = nested;
+    } else {
+        let clip = str_safe(resp["body"]);
+        if len(clip) > 200 { clip = clip.substring(0, 200); }
+        throw("pixiv user/illusts 返回数据异常（可能无公开作品或 user_id 错误）body=" + clip);
+    }
 }
 
 let count = 0;
