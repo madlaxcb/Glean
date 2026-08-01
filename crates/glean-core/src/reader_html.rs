@@ -56,8 +56,8 @@ pub fn reader_document(
     // LoadOnDemand strips img at render (like Block); the host re-renders with
     // Allow on a per-article "显示图片" click, which swaps CSP too.
     let img_src = match image_policy {
-        ImagePolicy::Block | ImagePolicy::LoadOnDemand => "img-src data:;",
-        ImagePolicy::Allow => "img-src data: https: http:;",
+        ImagePolicy::Block | ImagePolicy::LoadOnDemand => "img-src data: glean-img:;",
+        ImagePolicy::Allow => "img-src data: glean-img: https: http:;",
     };
 
     format!(

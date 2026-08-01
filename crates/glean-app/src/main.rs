@@ -622,6 +622,8 @@ impl SpikeState {
                 self.config.line_width_rem,
             );
             self.reader.show_html(&html);
+            // 主题切换后正文恢复为原始 URL，需重新触发缓存重写（防盗链图片）。
+            self.maybe_cache_images();
         } else {
             // No article open: reload the themed placeholder so the empty
             // reader area follows the theme switch.
@@ -779,6 +781,10 @@ impl SpikeState {
             self.reader.show_html(&html);
         }
         self.status = "已显示当前文章图片".into();
+        // 触发后台图片缓存：i.pximg.net 等防盗链域名需要后端带 Referer 代理下载，
+        // 否则 WebView 直接加载会 403。OpenEntry 时若 policy 非 Allow 会跳过缓存，
+        // 这里是 LoadOnDemand 模式下唯一触发缓存的入口。
+        self.maybe_cache_images();
     }
 
     /// Maybe spawn a background full-text extraction for the currently open
@@ -1025,7 +1031,13 @@ impl SpikeState {
                 // Synchronous rewrite (images already cached locally → no network).
                 let img_dir = glean_core::cache_images_dir();
                 let cache = glean_core::ImageCache::new(img_dir);
-                let client = reqwest::blocking::Client::new();
+                // 用带代理的 client：后台下载失败时这里会尝试重下，需要代理才能
+                // 访问 i.pximg.net。已缓存的图片不会重新下载，不影响性能。
+                let client = self
+                    .service
+                    .http_proxy()
+                    .map(|c| c.inner.clone())
+                    .unwrap_or_else(|| self.service.http().inner.clone());
                 let (rewritten, _) = cache.cache_images_in_html(&body, &client);
                 let html = render_entry_body(
                     &entry.summary.title,
