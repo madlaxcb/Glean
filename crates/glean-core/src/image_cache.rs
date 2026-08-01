@@ -208,7 +208,7 @@ impl ImageCache {
 }
 
 fn scheme_url(filename: &str) -> String {
-    format!("{CUSTOM_SCHEME}:///{filename}")
+    format!("{CUSTOM_SCHEME}://localhost/{filename}")
 }
 
 fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>, String)> {
@@ -395,6 +395,14 @@ mod tests {
         assert!(!out.contains("https://a.com/x.jpg"));
         // Other attributes preserved.
         assert!(out.contains(r#"alt="x""#));
+    }
+
+    #[test]
+    fn custom_scheme_uses_localhost_authority() {
+        assert_eq!(
+            scheme_url("50ef2c4a4a047187.jpg"),
+            "glean-img://localhost/50ef2c4a4a047187.jpg"
+        );
     }
 
     #[test]
