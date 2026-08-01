@@ -256,13 +256,17 @@ while page_i < max_pages {
         let html = "";
         let pages = json_path(item, "meta_pages");
         if type_of(pages) == "array" && len(pages) > 0 {
+            let total = len(pages);
+            let page_idx = 0;
             for page in pages {
+                page_idx += 1;
                 let img = str_safe(json_path(page, "image_urls.medium"));
                 let original = str_safe(json_path(page, "image_urls.original"));
+                let page_label = "<p class=\"pixiv-page\">" + page_idx + " / " + total + "</p>";
                 if len(original) > 0 {
-                    html += "<p><img src=\"" + original + "\"></p>";
+                    html += page_label + "<p><img src=\"" + original + "\"></p>";
                 } else if len(img) > 0 {
-                    html += "<p><img src=\"" + img + "\"></p>";
+                    html += page_label + "<p><img src=\"" + img + "\"></p>";
                 }
             }
         } else {

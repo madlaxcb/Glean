@@ -84,6 +84,7 @@ pub fn reader_document(
   p, li {{ font-size: inherit; }}
   a {{ color: var(--link); }}
   img {{ max-width: 100%; height: auto; }}
+  .pixiv-page {{ color: var(--muted); font-size: 0.82rem; margin: 1rem 0 0.25rem; }}
   .ai-enhancement {{ margin-top: 2rem; padding: 0.85rem 1rem; border-left: 3px solid var(--link);
     background: color-mix(in srgb, var(--link) 6%, var(--bg)); border-radius: 4px; }}
   .ai-label {{ font-size: 0.8rem; font-weight: 600; color: var(--link); margin: 0 0 0.4rem;
