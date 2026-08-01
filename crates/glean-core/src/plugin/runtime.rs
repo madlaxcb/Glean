@@ -17,7 +17,7 @@ use crate::feed::parse::{ParsedEntry, ParsedFeed};
 use crate::feed::HttpClient;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Capabilities, Manifest, Tier};
-use rhai::{Dynamic, Engine, Map};
+use rhai::{Dynamic, Engine, ImmutableString, Map};
 use std::sync::{Arc, Mutex};
 
 /// 单次 Rhai 脚本执行的最大操作数（防止死循环）。
@@ -170,6 +170,17 @@ fn register_pure_fns(engine: &mut Engine) {
         let mut hasher = Md5::new();
         hasher.update(s.as_bytes());
         format!("{:x}", hasher.finalize())
+    });
+    // 字符串切片：`s.substring(start, end)` 返回 chars[start..end]。
+    // 语义与 Rust/Python 切片一致（end 是结束位置，不是长度），
+    // 负数/越界自动夹紧。Rhai 内置的 `sub_string(start, len)` 语义不同，
+    // 脚本统一用 `substring` 避免混淆。
+    engine.register_fn("substring", |s: ImmutableString, start: i64, end: i64| -> String {
+        let chars: Vec<char> = s.chars().collect();
+        let len = chars.len() as i64;
+        let s = start.max(0).min(len) as usize;
+        let e = end.max(s as i64).min(len) as usize;
+        chars[s..e].iter().collect()
     });
 }
 
@@ -785,6 +796,38 @@ mod tests {
         let rt = Runtime::build(m, http, creds);
         let hash: String = rt.engine.eval(r#"md5("hello")"#).expect("md5 eval");
         assert_eq!(hash, "5d41402abc4b2a76b9719d911017c592");
+    }
+
+    /// `substring(start, end)` 按字符切片，end 是结束位置（非长度），
+    /// 负数/越界自动夹紧。脚本用 `s.substring(0, 10)` 取前 10 字符。
+    #[test]
+    fn substring_host_fn_returns_char_range() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let s: String = rt
+            .engine
+            .eval(r#""2026-08-01T12:34:56".substring(0, 10)"#)
+            .expect("substring eval");
+        assert_eq!(s, "2026-08-01");
+        let s: String = rt
+            .engine
+            .eval(r#""2026-08-01T12:34:56".substring(11, 19)"#)
+            .expect("substring eval");
+        assert_eq!(s, "12:34:56");
+        // 越界夹紧
+        let s: String = rt
+            .engine
+            .eval(r#""abc".substring(0, 100)"#)
+            .expect("substring eval");
+        assert_eq!(s, "abc");
+        // 负 start 夹紧到 0
+        let s: String = rt
+            .engine
+            .eval(r#""abc".substring(-5, 2)"#)
+            .expect("substring eval");
+        assert_eq!(s, "ab");
     }
 
     /// wbi 签名算法（与仓库 `plugins/bilibili/adapter.rhai` 中 `wbi_sign` 同实现）
