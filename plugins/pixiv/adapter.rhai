@@ -188,10 +188,12 @@ for item in illusts {
     if type_of(id) != "i64" { continue; }
     let title = str_safe(json_path(item, "title"));
     if len(title) == 0 { title = "Untitled"; }
-    // 封面：medium 优先，其次 square_medium
-    let img = str_safe(json_path(item, "images.medium"));
+    // 封面：medium 优先，其次 square_medium。
+    // Pixiv app-api illust 结构为 image_urls.{square_medium,medium,large}，
+    // 不是 images.*（早期写错字段名导致 img 永远为空，图片不显示）。
+    let img = str_safe(json_path(item, "image_urls.medium"));
     if len(img) == 0 {
-        img = str_safe(json_path(item, "images.square_medium"));
+        img = str_safe(json_path(item, "image_urls.square_medium"));
     }
     let caption = str_safe(json_path(item, "caption"));
     let item_author = str_safe(json_path(item, "user.name"));
