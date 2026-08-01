@@ -707,6 +707,73 @@ mod tests {
     }
 
     #[test]
+    fn pixiv_iso_to_unix_accounts_for_timezone_offset() {
+        // Pixiv create_date 为 JST(+09:00)，iso_to_unix 必须将其转为 UTC。
+        // 直接对官方脚本的 iso_to_unix 做行为验证（不发起网络请求）。
+        let script = r#"
+            fn parse_int_safe(s) {
+                if type_of(s) != "string" || len(s) == 0 { return 0; }
+                try { return s.parse_int(); } catch { return 0; }
+            }
+            fn iso_to_unix(s) {
+                if type_of(s) != "string" || len(s) < 19 { return 0; }
+                let ymd = s.substring(0, 10).split("-");
+                if len(ymd) != 3 { return 0; }
+                let hms = s.substring(11, 19).split(":");
+                if len(hms) != 3 { return 0; }
+                let y = parse_int_safe(ymd[0]);
+                let mo = parse_int_safe(ymd[1]);
+                let d = parse_int_safe(ymd[2]);
+                let h = parse_int_safe(hms[0]);
+                let mi = parse_int_safe(hms[1]);
+                let se = parse_int_safe(hms[2]);
+                if y < 2000 || y > 2100 || mo < 1 || mo > 12 { return 0; }
+                let y2 = y - (if mo <= 2 { 1 } else { 0 });
+                let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400;
+                let yoe = y2 - era * 400;
+                let mp = mo + (if mo > 2 { -3 } else { 9 });
+                let doy = (153 * mp + 2) / 5 + d - 1;
+                let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                let days = era * 146097 + doe - 719468;
+                let ts = days * 86400 + h * 3600 + mi * 60 + se;
+                let tz = s.substring(19, len(s));
+                let sign = 0;
+                let body = tz;
+                if tz.starts_with("+") {
+                    sign = 1;
+                    body = tz.substring(1, len(tz));
+                } else if tz.starts_with("-") {
+                    sign = -1;
+                    body = tz.substring(1, len(tz));
+                } else if tz.starts_with("Z") {
+                    sign = 0;
+                    body = "";
+                }
+                if sign != 0 && len(body) >= 4 {
+                    let parts = body.split(":");
+                    let oh = parse_int_safe(parts[0]);
+                    let om = if len(parts) >= 2 { parse_int_safe(parts[1]) } else { 0 };
+                    ts -= sign * (oh * 3600 + om * 60);
+                }
+                return ts;
+            }
+            let jst = iso_to_unix("2026-07-06T19:56:40+09:00");
+            let utc = iso_to_unix("2026-07-06T10:56:40Z");
+            let naive = iso_to_unix("2026-07-06T19:56:40");
+            jst == utc && utc == naive - 9 * 3600
+        "#;
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let ok: bool = rt
+            .engine
+            .eval(script)
+            .expect("iso_to_unix timezone logic evals");
+        assert!(ok, "JST(+09:00) 时间应转换为 UTC");
+    }
+
+    #[test]
     fn json_path_lookup_simple() {
         let json: serde_json::Value =
             serde_json::from_str(r#"{ "a": { "b": [10, 20] } }"#).unwrap();

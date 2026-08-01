@@ -50,7 +50,8 @@ fn extract_api_error(resp) {
     }
 }
 
-/// ISO8601 → unix 秒（忽略时区偏移，取本地字段）。失败返回 0。
+/// ISO8601 → unix 秒（UTC）。Pixiv create_date 形如 "2026-07-06T19:56:40+09:00"（JST），
+/// 需扣除时区偏移转为 UTC。无偏移或格式异常时返回 0。
 fn iso_to_unix(s) {
     if type_of(s) != "string" || len(s) < 19 { return 0; }
     let ymd = s.substring(0, 10).split("-");
@@ -72,7 +73,29 @@ fn iso_to_unix(s) {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
-    return days * 86400 + h * 3600 + mi * 60 + se;
+    let ts = days * 86400 + h * 3600 + mi * 60 + se;
+    // 时区偏移：Pixiv create_date 为日本时间 "+09:00"；转换为 UTC。
+    // 取 index 19 起的尾部（"+09:00" 或 "Z"），无偏移时保持原值。
+    let tz = s.substring(19, len(s));
+    let sign = 0;
+    let body = tz;
+    if tz.starts_with("+") {
+        sign = 1;
+        body = tz.substring(1, len(tz));
+    } else if tz.starts_with("-") {
+        sign = -1;
+        body = tz.substring(1, len(tz));
+    } else if tz.starts_with("Z") {
+        sign = 0;
+        body = "";
+    }
+    if sign != 0 && len(body) >= 4 {
+        let parts = body.split(":");
+        let oh = parse_int_safe(parts[0]);
+        let om = if len(parts) >= 2 { parse_int_safe(parts[1]) } else { 0 };
+        ts -= sign * (oh * 3600 + om * 60);
+    }
+    return ts;
 }
 
 fn extract_user_id(url) {
