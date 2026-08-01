@@ -22,7 +22,8 @@ pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
         }
         ImagePolicy::Allow => {
             builder.rm_tags(["video", "audio", "iframe", "object", "embed", "form"]);
-            // Keep img, picture, source for image display.
+            // Keep remote images and the local image-cache custom protocol.
+            builder.add_url_schemes(&["glean-img"]);
         }
     }
     builder.clean(html).to_string()
@@ -55,5 +56,31 @@ mod tests {
         let raw = r#"<p>hi</p><img src="https://example.com/a.png"/>"#;
         let out = sanitize_html_with_policy(raw, ImagePolicy::Block);
         assert!(!out.contains("<img"));
+    }
+
+    #[test]
+    fn allow_policy_keeps_custom_image_scheme() {
+        let input = r#"<img src="glean-img://abc123.jpg">"#;
+        let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
+        // #region debug-point H5:ammonia-custom-scheme
+        let event = serde_json::json!({
+            "sessionId": "pixiv-image-missing",
+            "runId": "post-fix",
+            "hypothesisId": "H5",
+            "location": "crates/glean-core/src/sanitize.rs:allow_policy_keeps_custom_image_scheme",
+            "msg": "[DEBUG] Ammonia custom scheme sanitization result",
+            "data": {
+                "input": input,
+                "output": output,
+                "scheme_preserved": output.contains("glean-img://")
+            }
+        });
+        let _ = reqwest::blocking::Client::new()
+            .post("http://127.0.0.1:7777/event")
+            .header("Content-Type", "application/json")
+            .body(event.to_string())
+            .send();
+        // #endregion
+        assert!(output.contains(r#"src="glean-img://abc123.jpg""#));
     }
 }
