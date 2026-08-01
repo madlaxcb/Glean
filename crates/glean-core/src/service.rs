@@ -295,6 +295,13 @@ impl GleanService {
         Arc::clone(&self.http)
     }
 
+    /// 带代理的 HTTP 客户端（`proxy_url` 非空时存在）。图片缓存等需要
+    /// 访问防盗链域名（如 i.pximg.net）的场景应优先用此 client，否则
+    /// 用户开了代理但图片下载走直连会失败。
+    pub fn http_proxy(&self) -> Option<&Arc<HttpClient>> {
+        self.http_proxy.as_ref()
+    }
+
     /// 构建一份刷新上下文快照供 worker 线程使用：共享 `PluginManager`/`HttpClient`，
     /// 克隆 `CredentialStore`（凭证集很小）。`None` 字段表示该能力不可用，worker 走默认 RSS。
     pub fn refresh_ctx(&self) -> RefreshCtx {

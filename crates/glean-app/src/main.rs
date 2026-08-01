@@ -940,7 +940,7 @@ impl SpikeState {
     /// Only when cache_images is on and images are being shown (Allow or
     /// LoadOnDemand+override) and no caching task is already in flight.
     pub fn maybe_cache_images(&mut self) {
-        if !self.config.cache_images || self.img_cache_rx.is_some() {
+        if self.img_cache_rx.is_some() {
             return;
         }
         let entry = match &self.open_detail {
@@ -959,18 +959,29 @@ impl SpikeState {
         if body.is_empty() {
             return;
         }
+        // cache_images=false 时，如果 HTML 含防盗链域名（i.pximg.net 等），
+        // 仍然触发缓存——这类图片 WebView 直接加载会 403，必须后端代理
+        // （带 Referer）下载。其他情况尊重 cache_images 开关。
+        let has_hotlink = body.contains("pximg.net/");
+        let should_cache = self.config.cache_images || has_hotlink;
+        if !should_cache {
+            return;
+        }
         let dark = self.dark;
         let policy = self.effective_image_policy();
         let font_size_px = self.config.font_size_px;
         let line_width_rem = self.config.line_width_rem;
+        // 用 service 的 HTTP client（含代理配置），避免图片下载不走代理。
+        // i.pximg.net 等防盗链域名在国内常需代理才能访问；新建无代理 client
+        // 会导致 cache_images=true 时图片下载仍然失败。
+        let client = self
+            .service
+            .http_proxy()
+            .map(|c| c.inner.clone())
+            .unwrap_or_else(|| self.service.http().inner.clone());
         let (tx, rx) = mpsc::channel::<(String, bool, ImagePolicy)>();
         self.img_cache_rx = Some(rx);
         thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .build()
-                .expect("img cache client");
             let img_dir = glean_core::cache_images_dir();
             let cache = glean_core::ImageCache::new(img_dir);
             let (rewritten, _fetched) = cache.cache_images_in_html(&body, &client);
