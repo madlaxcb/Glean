@@ -168,8 +168,20 @@ fn register_pure_fns(engine: &mut Engine) {
         std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
     });
     engine.register_fn("log", |level: String, msg: String| {
-        // 输出到 stderr：GUI 模式下从终端启动可见，便于诊断插件执行失败。
         eprintln!("[plugin:{level}] {msg}");
+        let line = format!("[plugin:{level}] {msg}\n");
+        let path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))
+            .unwrap_or_else(|| std::path::PathBuf::from("glean-debug.log"));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = file.write_all(line.as_bytes());
+        }
     });
     engine.register_fn("parse_json", |s: String| -> Dynamic {
         serde_json::from_str::<serde_json::Value>(&s)

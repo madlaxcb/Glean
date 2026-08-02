@@ -1547,7 +1547,7 @@ fn render_entry_body(
 }
 
 fn load_config(path: &std::path::Path) -> AppConfig {
-    match std::fs::read_to_string(path) {
+    let result = match std::fs::read_to_string(path) {
         Ok(json) => match serde_json::from_str(&json) {
             Ok(config) => config,
             Err(e) => {
@@ -1560,7 +1560,18 @@ fn load_config(path: &std::path::Path) -> AppConfig {
             eprintln!("无法读取配置 {}: {e}", path.display());
             AppConfig::default()
         }
-    }
+    };
+    write_debug_log(&format!(
+        "[config-load] path={} dark={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        path.display(),
+        result.dark,
+        result.window_x,
+        result.window_y,
+        result.window_w,
+        result.window_h,
+        result.window_maximized,
+    ));
+    result
 }
 
 fn save_config(path: &std::path::Path, config: &AppConfig) {
@@ -1577,5 +1588,30 @@ fn save_config(path: &std::path::Path, config: &AppConfig) {
             }
         }
         Err(e) => eprintln!("无法序列化配置 {}: {e}", path.display()),
+    }
+    write_debug_log(&format!(
+        "[config-save] path={} dark={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        path.display(),
+        config.dark,
+        config.window_x,
+        config.window_y,
+        config.window_w,
+        config.window_h,
+        config.window_maximized,
+    ));
+}
+
+fn write_debug_log(message: &str) {
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("glean-debug.log"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{message}");
     }
 }
