@@ -1841,9 +1841,11 @@ impl SpikeApp {
     }
 
     fn draw_list_contents(&mut self, ui: &mut Ui) {
-        // Virtual scrolling: only render visible rows.  Each row is ~20px
-        // (selectable_label default height). show_rows handles the offset.
-        let row_height = 38.0_f32;
+        // Virtual scrolling: only render visible rows.
+        // row_height must match the actual rendered row height (excluding
+        // item_spacing) to avoid phantom blank space at scroll bottom.
+        // Measured: 30px image/space allocation dominates the row height.
+        let row_height = 30.0_f32;
         let num_rows = self.state.entries.len();
         let before = ui.available_rect_before_wrap();
         crate::write_debug_log(&format!(
