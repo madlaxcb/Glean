@@ -364,7 +364,20 @@ impl eframe::App for SpikeApp {
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("订阅 URL");
+                    let feed_id = egui::Id::new("feed_url_input");
+                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
+                        .id(feed_id)
+                        .desired_width(260.0)
+                        .hint_text("https://…/rss.xml");
+                    let resp = ui.add(te);
+                    if resp.clicked() || resp.gained_focus() {
+                        self.state.reader.reclaim_shell_focus();
+                        resp.request_focus();
+                    }
+                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.label("分类");
                     let cur_cat = self.state.feed_add_category;
                     let cur_icon = cur_cat.map(|c| c.icon()).unwrap_or("●");
                     let cur_label = cur_cat.map(|c| c.label()).unwrap_or("自动");
@@ -389,6 +402,7 @@ impl eframe::App for SpikeApp {
                             }
                         });
 
+                    ui.label("文件夹");
                     let folder_label = match self.state.feed_add_folder {
                         Some(fid) => self
                             .state
@@ -429,18 +443,6 @@ impl eframe::App for SpikeApp {
                             }
                         });
 
-                    ui.label("订阅");
-                    let feed_id = egui::Id::new("feed_url_input");
-                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
-                        .id(feed_id)
-                        .desired_width(240.0)
-                        .hint_text("https://…/rss.xml");
-                    let resp = ui.add(te);
-                    if resp.clicked() || resp.gained_focus() {
-                        self.state.reader.reclaim_shell_focus();
-                        resp.request_focus();
-                    }
-                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.label("新建");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.feed_add_new_folder)
@@ -2075,25 +2077,21 @@ impl SpikeApp {
                 } else {
                     ui.label("🌐");
                 }
-                let check_width = if multi { 24.0 } else { 0.0 };
                 if multi {
-                    let check = ui.add_sized(
-                        [check_width, ui.spacing().interact_size.y],
-                        egui::Button::new(if selected { "☑" } else { "☐" })
-                            .frame(false)
-                            .selected(selected),
-                    );
+                    let check_text = if selected { "☑" } else { "☐" };
+                    let check = ui.button(check_text);
                     clicked |= check.clicked();
                 }
-                let text_width = (width
+                let _text_width = (width
                     - if indent { 12.0 } else { 0.0 }
                     - FAVICON_SIZE
                     - ui.spacing().item_spacing.x
-                    - check_width)
-                    .max(1.0);
-                let text = ui.add_sized(
-                    [text_width, ui.spacing().interact_size.y],
-                    egui::Button::new(rich).truncate().selected(selected),
+                    - if multi { 24.0 } else { 0.0 })
+                .max(1.0);
+                let text = ui.add(
+                    egui::Label::new(rich)
+                        .truncate()
+                        .wrap_mode(egui::TextWrapMode::Truncate),
                 );
                 clicked |= text.clicked();
             });
