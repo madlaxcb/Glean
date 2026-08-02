@@ -1,6 +1,6 @@
 # Debug Session: list-blank-space
 
-Status: [OPEN]
+Status: [RESOLVED]
 
 ## Symptom
 
