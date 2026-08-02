@@ -80,6 +80,20 @@ impl SpikeApp {
 
 impl eframe::App for SpikeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // First-frame: restore window position/size via ViewportCommand
+        // (ViewportBuilder hints are unreliable on Windows).
+        if !self.primed {
+            if let (Some(x), Some(y)) = (self.state.config.window_x, self.state.config.window_y) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+            }
+            if let (Some(w), Some(h)) = (self.state.config.window_w, self.state.config.window_h) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            }
+            if self.state.config.window_maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+        }
+
         // Auto-refresh timer.
         let dt = ctx.input(|i| i.stable_dt);
         self.state.tick_auto_refresh(dt);
@@ -1810,8 +1824,7 @@ impl SpikeApp {
         let row_height = 38.0_f32;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height())
-            .auto_shrink([false, false])
+            .auto_shrink([true, true])
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;

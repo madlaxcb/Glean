@@ -40,7 +40,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CoreError::Message(e.to_string()))?;
         }
-        let conn = Connection::open(path)?;
+        let conn = Self::open_conn_with_repair(path)?;
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;",
@@ -48,6 +48,79 @@ impl Store {
         let mut s = Self { conn, cache_dir };
         s.migrate()?;
         Ok(s)
+    }
+
+    /// Open a database connection, auto-repairing if the file is corrupted.
+    /// Uses SQLite `.dump` + re-import to rebuild a damaged DB file.
+    fn open_conn_with_repair(path: &Path) -> Result<Connection> {
+        match Connection::open(path) {
+            Ok(conn) => {
+                // Quick integrity check.
+                let ok: bool = conn
+                    .prepare("PRAGMA integrity_check")
+                    .and_then(|mut stmt| stmt.query_row([], |r| r.get::<_, String>(0)))
+                    .map(|s| s == "ok")
+                    .unwrap_or(false);
+                if ok {
+                    Ok(conn)
+                } else {
+                    eprintln!("glean: 数据库损坏，尝试自动修复 {}", path.display());
+                    drop(conn);
+                    Self::repair_database(path)
+                }
+            }
+            Err(e) => {
+                // If the file is so corrupted it can't even open, try removing it.
+                eprintln!("glean: 无法打开数据库 {}: {e}", path.display());
+                let _ = std::fs::remove_file(path);
+                Connection::open(path).map_err(|e| e.into())
+            }
+        }
+    }
+
+    /// Dump salvageable data from the corrupted DB and rebuild it.
+    fn repair_database(path: &Path) -> Result<Connection> {
+        let backup = path.with_extension("db.bak");
+        let _ = std::fs::rename(path, &backup);
+
+        // Try to dump from the backup using the `recover` approach:
+        // Open the backup, dump all readable tables, write to a new DB.
+        let new_conn = Connection::open(path)?;
+        if let Ok(backup_conn) = Connection::open(&backup) {
+            // Copy whatever rows we can read from each table.
+            let tables: Vec<String> = backup_conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |r| r.get::<_, String>(0))
+                        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                })
+                .unwrap_or_default();
+            for table in &tables {
+                if table.starts_with("sqlite_") {
+                    continue;
+                }
+                let create_sql: Option<String> = backup_conn
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                        rusqlite::params![table],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                let Some(create_sql) = create_sql else {
+                    continue;
+                };
+                let _ = new_conn.execute_batch(&create_sql);
+                // Best-effort copy rows.
+                let _ = backup_conn.execute_batch(&format!(
+                    "ATTACH DATABASE '{}' AS dst; INSERT OR IGNORE INTO dst.{table} SELECT * FROM main.{table}; DETACH DATABASE dst;",
+                    path.display()
+                ));
+            }
+        }
+        // Re-apply WAL and foreign keys on the new DB.
+        new_conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        eprintln!("glean: 数据库修复完成，备份保存在 {}", backup.display());
+        Ok(new_conn)
     }
 
     /// Path to the cached body for an entry: `<cache_dir>/<id>/body.html`.
