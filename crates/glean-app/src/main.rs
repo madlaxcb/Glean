@@ -326,7 +326,7 @@ impl SpikeState {
             }
         }
         // Sync the reader's title bar dark state with the loaded config.
-        s.reader.set_dark_title(s.dark);
+        s.reader.set_titlebar_dark(s.dark);
         // 若配置了 AI，把配置注入 service（供同步 fallback 命令使用）。
         if let Some(ai) = s.config.ai.clone() {
             s.service.set_ai_config(ai);
@@ -494,6 +494,7 @@ impl SpikeState {
                 self.unread_per_feed = unread_per_feed;
             }
             AppEvent::EntriesUpdated { entries } => {
+                write_debug_log(&format!("[ui-entries-updated] count={}", entries.len()));
                 self.entries = entries;
                 if let Some(i) = self.selected {
                     if i >= self.entries.len() {

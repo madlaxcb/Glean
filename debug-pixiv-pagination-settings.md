@@ -32,3 +32,23 @@
 3. 关闭并重新启动程序。
 4. 检查 Pixiv 条目数、主题、弹窗尺寸和位置。
 
+## 首份证据（用户日志）
+
+关键结论：
+
+- `[config-load]` / `[config-save]` 始终使用同一路径
+  `C:\Users\tomcb\AppData\Roaming\Glean\config.json`，且 `dark`、窗口尺寸位置与
+  `maximized` 均成功写入并读回。
+- Pixiv 分页正常：第 1~20 页累计 `587` 条（`pixiv 收集 587 条`）。
+- **界面仍只显示 30 条、主题/窗体状态不恢复**。
+
+因此已排除“插件仍为旧版只拉首屏”的假设：Pixiv 适配器确实返回 587 条。
+真正问题位于「写入数据库 → 重新查询列表 → UI 显示」链路，需用新增日志定位：
+
+- `[refresh-updated] feed_id=… parsed=… new_items=…`
+- `[entries-updated] filter=… search=… count=…`
+- `[ui-entries-updated] count=…`
+
+另已修正：启动时改为调用真正执行 DWM 标题栏主题的
+`set_titlebar_dark(s.dark)`（此前只用 `set_dark_title` 设置内部标志）。
+

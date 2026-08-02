@@ -711,6 +711,12 @@ impl GleanService {
                         new_items += 1;
                     }
                 }
+                write_debug_log(&format!(
+                    "[refresh-updated] feed_id={} parsed={} new_items={}",
+                    feed_id.0,
+                    parsed.entries.len(),
+                    new_items
+                ));
                 Ok(vec![AppEvent::Status {
                     message: format!("「{}」+{} 篇", parsed.title, new_items),
                 }])
@@ -1118,7 +1124,28 @@ impl GleanService {
         } else {
             self.store.search_entries(q, 500)?
         };
+        write_debug_log(&format!(
+            "[entries-updated] filter={:?} search={} count={}",
+            self.filter,
+            !q.is_empty(),
+            entries.len()
+        ));
         Ok(vec![AppEvent::EntriesUpdated { entries }])
+    }
+}
+
+fn write_debug_log(message: &str) {
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("glean-debug.log"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{message}");
     }
 }
 
