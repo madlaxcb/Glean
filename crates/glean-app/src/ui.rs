@@ -2115,11 +2115,8 @@ impl SpikeApp {
                     )
                 })
             });
-            let resp = row.response;
-            if resp.hovered() && !resp.dragged() {
-                resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
-            }
-            (resp, row.inner.inner.clicked())
+            let resp = row.response.interact(egui::Sense::click());
+            (resp, false)
         };
 
         let mut action = None;
@@ -2288,7 +2285,7 @@ impl SpikeApp {
                             ui.visuals().selection.bg_fill,
                         );
                     }
-                    let row = ui.horizontal(|ui| {
+                    let row = ui.horizontal_top(|ui| {
                         if let Some(tex) = &thumb {
                             ui.add(
                                 egui::Image::new(tex).fit_to_exact_size(Vec2::splat(thumb_size)),
@@ -2298,13 +2295,19 @@ impl SpikeApp {
                         }
                         let text_width =
                             (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
-                        ui.add_sized(
-                            [text_width, thumb_size],
-                            egui::Button::new(rich)
-                                .truncate()
-                                .selected(selected)
-                                .frame(false),
+                        // 用 Layout::left_to_right(Align::TOP) 强制水平居左
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(text_width, thumb_size),
+                            egui::Layout::left_to_right(egui::Align::TOP),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(rich)
+                                        .truncate()
+                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                )
+                            },
                         )
+                        .inner
                     });
                     let resp = row.response;
                     let label_resp = row.inner;
