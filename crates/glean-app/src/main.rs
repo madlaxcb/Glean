@@ -1574,9 +1574,14 @@ fn load_config(path: &std::path::Path) -> AppConfig {
         }
     };
     write_debug_log(&format!(
-        "[config-load] path={} dark={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        "[config-load] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} window=({:?},{:?},{:?},{:?}) maximized={}",
         path.display(),
         result.dark,
+        result.accent,
+        result.nav_width,
+        result.list_width,
+        result.font_size_px,
+        result.line_width_rem,
         result.window_x,
         result.window_y,
         result.window_w,
@@ -1602,9 +1607,14 @@ fn save_config(path: &std::path::Path, config: &AppConfig) {
         Err(e) => eprintln!("无法序列化配置 {}: {e}", path.display()),
     }
     write_debug_log(&format!(
-        "[config-save] path={} dark={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        "[config-save] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} window=({:?},{:?},{:?},{:?}) maximized={}",
         path.display(),
         config.dark,
+        config.accent,
+        config.nav_width,
+        config.list_width,
+        config.font_size_px,
+        config.line_width_rem,
         config.window_x,
         config.window_y,
         config.window_w,

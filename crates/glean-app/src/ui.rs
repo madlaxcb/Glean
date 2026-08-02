@@ -92,6 +92,16 @@ impl eframe::App for SpikeApp {
             if self.state.config.window_maximized {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             }
+            // Apply system theme for native title bar.
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.state.dark {
+                egui::viewport::SystemTheme::Dark
+            } else {
+                egui::viewport::SystemTheme::Light
+            }));
+            // Force-apply egui visuals (accent color, dark mode) in case
+            // eframe's default initialization overrode our SpikeApp::new() call.
+            apply_style(ctx, self.state.dark, self.state.config.accent);
+            self.applied_style = Some((self.state.dark, self.state.config.accent));
         }
 
         // Auto-refresh timer.
@@ -1824,7 +1834,7 @@ impl SpikeApp {
         let row_height = 38.0_f32;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
-            .auto_shrink([true, true])
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;
