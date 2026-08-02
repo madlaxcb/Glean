@@ -420,7 +420,7 @@ impl eframe::App for SpikeApp {
         const BIT_COMMA: u16 = 5;
 
         #[cfg(windows)]
-        let (async_pressed, async_just_pressed) = {
+        let async_just_pressed = {
             use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
             let vk_j = 0x4A_i32; // VK_J
             let vk_k = 0x4B_i32; // VK_K
@@ -437,7 +437,7 @@ impl eframe::App for SpikeApp {
                 | (((unsafe { GetAsyncKeyState(vk_comma) } as u16) >> 15) & 1) << BIT_COMMA;
             let just = now & !self.prev_async_keys;
             self.prev_async_keys = now;
-            (just)
+            just
         };
 
         #[cfg(not(windows))]
@@ -1616,31 +1616,66 @@ impl eframe::App for SpikeApp {
 
 impl SpikeApp {
     fn draw_nav_contents(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(format!("未读：{}", self.state.unread_total)).strong());
-        if ui
-            .selectable_label(matches!(self.state.filter, EntryFilter::All), "全部文章")
-            .clicked()
-        {
-            self.state.set_filter(EntryFilter::All);
-        }
-        if ui
-            .selectable_label(matches!(self.state.filter, EntryFilter::Unread), "仅未读")
-            .clicked()
-        {
-            self.state.set_filter(EntryFilter::Unread);
-        }
-        if ui
-            .selectable_label(matches!(self.state.filter, EntryFilter::Starred), "星标")
-            .clicked()
-        {
-            self.state.set_filter(EntryFilter::Starred);
-        }
-        if ui
-            .selectable_label(matches!(self.state.filter, EntryFilter::Today), "今日")
-            .clicked()
-        {
-            self.state.set_filter(EntryFilter::Today);
-        }
+        // --- 过滤器行：未读总数 + 全部/未读/星标/今日 ---
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("未读 {}", self.state.unread_total))
+                    .strong()
+                    .size(12.5),
+            );
+            ui.separator();
+            let filters: [(EntryFilter, &str); 4] = [
+                (EntryFilter::All, "全部"),
+                (EntryFilter::Unread, "未读"),
+                (EntryFilter::Starred, "星标"),
+                (EntryFilter::Today, "今日"),
+            ];
+            for (f, label) in filters {
+                let active =
+                    std::mem::discriminant(&self.state.filter) == std::mem::discriminant(&f);
+                if ui.selectable_label(active, label).clicked() {
+                    self.state.set_filter(f);
+                }
+            }
+        });
+
+        // --- 分类 Tab 行：水平排列，显示各分类未读计数 ---
+        ui.horizontal_wrapped(|ui| {
+            let all_active = self.state.nav_active_category.is_none();
+            let all_unread: u64 = self.state.unread_per_feed.values().sum();
+            let all_label = if all_unread > 0 {
+                format!("全部 ({})", all_unread)
+            } else {
+                "全部".to_string()
+            };
+            if ui.selectable_label(all_active, all_label).clicked() {
+                self.state.nav_active_category = None;
+            }
+            for category in FEED_CATEGORIES {
+                let cat_unread: u64 = self
+                    .state
+                    .feeds
+                    .iter()
+                    .filter(|f| f.category == category)
+                    .map(|f| self.state.unread_per_feed.get(&f.id).copied().unwrap_or(0))
+                    .sum();
+                let has_feeds = self.state.feeds.iter().any(|f| f.category == category);
+                if !has_feeds && cat_unread == 0 {
+                    continue;
+                }
+                let active = self.state.nav_active_category == Some(category);
+                let label = if cat_unread > 0 {
+                    format!("{} {}", category.icon(), cat_unread)
+                } else {
+                    category.icon().to_string()
+                };
+                let resp = ui.selectable_label(active, label);
+                resp.clone().on_hover_text(category.label());
+                if resp.clicked() {
+                    self.state.nav_active_category = Some(category);
+                }
+            }
+        });
         ui.separator();
 
         // Collect action requests from the closure.
@@ -1650,7 +1685,7 @@ impl SpikeApp {
         // Context menu on "订阅" header for creating folders.
         let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
         ui.label(RichText::new("订阅").size(12.5).color(color));
-        ui.menu_button("＋ 新建文件夹", |ui| {
+        ui.menu_button("＋ 文件夹", |ui| {
             let te = egui::TextEdit::singleline(&mut self.state.new_folder_input)
                 .id(egui::Id::new("new_folder_input"))
                 .desired_width(120.0)
@@ -1667,60 +1702,123 @@ impl SpikeApp {
             }
         });
 
-        // 按内容类型分类分组（文章/社交媒体/图片/音乐/视频），组内再按文件夹分组。
-        let folders = self.state.folders.clone();
-        let feeds = self.state.feeds.clone();
+        // --- 订阅列表（可滚动） ---
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .max_height(ui.available_height())
+            .show(ui, |ui| {
+                let folders = self.state.folders.clone();
+                let active_cat = self.state.nav_active_category;
+                let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
 
-        for category in FEED_CATEGORIES {
-            let cat_feeds: Vec<_> = feeds.iter().filter(|f| f.category == category).collect();
-            if cat_feeds.is_empty() {
-                continue;
-            }
-            let cat_unread: u64 = cat_feeds
-                .iter()
-                .map(|f| self.state.unread_per_feed.get(&f.id).copied().unwrap_or(0))
-                .sum();
-            let collapsed = self.state.collapsed_categories.contains(&category);
-            let header = format!("{} {} ({})", category.icon(), category.label(), cat_unread);
-            let header_resp = ui.selectable_label(!collapsed, header);
-            if header_resp.clicked() {
-                if collapsed {
-                    self.state.collapsed_categories.remove(&category);
-                } else {
-                    self.state.collapsed_categories.insert(category);
-                }
-            }
-            if collapsed {
-                continue;
-            }
-
-            // 组内：无文件夹的订阅平铺在前，再按文件夹分组。
-            let orphans: Vec<_> = cat_feeds.iter().filter(|f| f.folder_id.is_none()).collect();
-            for feed in &orphans {
-                if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
-                    action = Some(a);
-                }
-            }
-            for folder in &folders {
-                let folder_feeds: Vec<_> = cat_feeds
+                // 过滤当前分类的订阅
+                let feeds: Vec<glean_core::Feed> = self
+                    .state
+                    .feeds
                     .iter()
-                    .filter(|f| f.folder_id == Some(folder.id))
+                    .filter(|f| active_cat.map_or(true, |c| f.category == c))
+                    .cloned()
                     .collect();
-                if folder_feeds.is_empty() {
-                    continue;
+
+                // 拖动中：自动收起所有展开的文件夹
+                if dragging {
+                    self.state.expanded_folders.clear();
                 }
-                ui.label(
-                    RichText::new(format!("📁 {}", folder.name))
-                        .size(13.5)
-                        .strong(),
-                );
-                for feed in &folder_feeds {
-                    if let Some(a) = self.draw_feed_item(ui, feed, &folders, true) {
+
+                // 无文件夹的订阅（orphans）在前
+                for feed in feeds.iter().filter(|f| f.folder_id.is_none()) {
+                    if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
                         action = Some(a);
                     }
                 }
-            }
-        }
+
+                // 文件夹分组
+                for folder in &folders {
+                    let folder_feeds: Vec<glean_core::Feed> = feeds
+                        .iter()
+                        .filter(|f| f.folder_id == Some(folder.id))
+                        .cloned()
+                        .collect();
+                    if folder_feeds.is_empty() && !dragging {
+                        continue;
+                    }
+
+                    let expanded = self.state.expanded_folders.contains(&folder.id);
+                    let arrow = if expanded { "▾" } else { "▸" };
+                    let folder_unread: u64 = folder_feeds
+                        .iter()
+                        .map(|f| self.state.unread_per_feed.get(&f.id).copied().unwrap_or(0))
+                        .sum();
+                    let header = if folder_unread > 0 {
+                        format!("{} 📁 {} ({})", arrow, folder.name, folder_unread)
+                    } else {
+                        format!("{} 📁 {}", arrow, folder.name)
+                    };
+
+                    let folder_id = folder.id;
+                    // 文件夹作为拖放目标
+                    let frame = if dragging {
+                        Frame::new()
+                            .stroke(Stroke::new(1.0_f32, ui.visuals().selection.stroke.color))
+                    } else {
+                        Frame::new()
+                    };
+                    let mut inner_action: Option<FeedRowAction> = None;
+                    let (resp_inner, dropped) = ui.dnd_drop_zone::<i64, _>(frame, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        let r = ui.selectable_label(false, RichText::new(header.clone()).strong());
+                        if expanded {
+                            for feed in &folder_feeds {
+                                if let Some(a) = self.draw_feed_item(ui, feed, &folders, true) {
+                                    inner_action = Some(a);
+                                }
+                            }
+                        }
+                        r
+                    });
+                    if let Some(a) = inner_action {
+                        action = Some(a);
+                    }
+                    if resp_inner.inner.clicked() {
+                        if expanded {
+                            self.state.expanded_folders.remove(&folder_id);
+                        } else {
+                            self.state.expanded_folders.insert(folder_id);
+                        }
+                    }
+                    if let Some(payload) = dropped {
+                        action = Some(FeedRowAction::MoveFolder(
+                            glean_core::FeedId(*payload.as_ref()),
+                            Some(folder_id),
+                        ));
+                    }
+                }
+
+                // 拖动中：空白区域作为"移出文件夹"的目标
+                if dragging {
+                    let frame = Frame::new()
+                        .stroke(Stroke::new(1.0_f32, ui.visuals().selection.stroke.color));
+                    let (_resp, dropped) = ui.dnd_drop_zone::<i64, _>(frame, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.set_min_height(40.0);
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new("拖到此处移出文件夹")
+                                    .size(12.0)
+                                    .color(ui.visuals().hyperlink_color),
+                            );
+                            ui.add_space(10.0);
+                        });
+                    });
+                    if let Some(payload) = dropped {
+                        action = Some(FeedRowAction::MoveFolder(
+                            glean_core::FeedId(*payload.as_ref()),
+                            None,
+                        ));
+                    }
+                }
+            });
 
         // Apply actions after the closure borrows are released.
         match action {
@@ -1797,18 +1895,22 @@ impl SpikeApp {
         } else {
             RichText::new(title)
         };
-        let row = ui.horizontal(|ui| {
-            if indent {
-                ui.add_space(12.0);
-            }
-            if let Some(tex) = self.favicons.get(&feed.id) {
-                ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(FAVICON_SIZE)));
-            } else {
-                ui.label("🌐");
-            }
-            ui.selectable_label(selected, rich)
+        let feed_id_for_drag = feed.id;
+        let drag_id = ui.id().with(("feed_drag", feed.id));
+        let row = ui.dnd_drag_source(drag_id, feed_id_for_drag.0, |ui| {
+            ui.horizontal(|ui| {
+                if indent {
+                    ui.add_space(12.0);
+                }
+                if let Some(tex) = self.favicons.get(&feed.id) {
+                    ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(FAVICON_SIZE)));
+                } else {
+                    ui.label("🌐");
+                }
+                let _ = ui.selectable_label(selected, rich);
+            });
         });
-        let resp = row.inner;
+        let resp = row.response;
         let mut action = None;
         if resp.clicked() {
             action = Some(FeedRowAction::Click(feed.id));

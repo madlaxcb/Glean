@@ -229,6 +229,10 @@ pub struct SpikeState {
     thumbnail_loaded: std::collections::HashSet<EntryId>,
     /// 导航栏分类组折叠状态（会话内有效，不持久化）。
     pub collapsed_categories: std::collections::HashSet<glean_core::FeedCategory>,
+    /// 导航栏当前选中的分类 tab（None = 显示全部）。
+    pub nav_active_category: Option<glean_core::FeedCategory>,
+    /// 导航栏文件夹展开状态（会话内有效）。展开的文件夹 id 集合。
+    pub expanded_folders: std::collections::HashSet<glean_core::FolderId>,
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
     /// 跨帧存活，避免输入被每帧重绘覆盖。
     pub plugin_cred_edits: std::collections::HashMap<String, (String, String)>,
@@ -332,6 +336,8 @@ impl SpikeState {
             thumbnail_failed: std::collections::HashSet::new(),
             thumbnail_loaded: std::collections::HashSet::new(),
             collapsed_categories: std::collections::HashSet::new(),
+            nav_active_category: None,
+            expanded_folders: std::collections::HashSet::new(),
             plugin_cred_edits: std::collections::HashMap::new(),
         };
         // Local loopback server for cached images (full-res Pixiv originals etc.).
