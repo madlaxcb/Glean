@@ -493,6 +493,17 @@ impl eframe::App for SpikeApp {
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
+                crate::write_debug_log(&format!(
+                    "[list-geometry] outer=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1}) list_width={:.1} full_height={:.1}",
+                    list_rect.min.x,
+                    list_rect.min.y,
+                    list_rect.max.x,
+                    list_rect.max.y,
+                    list_rect.width(),
+                    list_rect.height(),
+                    list_w,
+                    h,
+                ));
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                     column_contents(ui, "列表", |ui| {
                         self.draw_list_contents(ui);
@@ -1834,6 +1845,18 @@ impl SpikeApp {
         // (selectable_label default height). show_rows handles the offset.
         let row_height = 38.0_f32;
         let num_rows = self.state.entries.len();
+        let before = ui.available_rect_before_wrap();
+        crate::write_debug_log(&format!(
+            "[list-contents] before=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1}) rows={} row_height={:.1}",
+            before.min.x,
+            before.min.y,
+            before.max.x,
+            before.max.y,
+            before.width(),
+            before.height(),
+            num_rows,
+            row_height,
+        ));
         egui::ScrollArea::vertical()
             .max_height(ui.available_height())
             .auto_shrink([false, false])
@@ -1914,6 +1937,16 @@ impl SpikeApp {
                     self.state.select_index(i);
                 }
             });
+        let after = ui.available_rect_before_wrap();
+        crate::write_debug_log(&format!(
+            "[list-contents-after] after=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1})",
+            after.min.x,
+            after.min.y,
+            after.max.x,
+            after.max.y,
+            after.width(),
+            after.height(),
+        ));
         // Footer: total entry count (fills remaining space, no blank gap).
         let color = ui.visuals().weak_text_color();
         ui.add_space(2.0);

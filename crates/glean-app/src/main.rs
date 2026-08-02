@@ -1623,7 +1623,7 @@ fn save_config(path: &std::path::Path, config: &AppConfig) {
     ));
 }
 
-fn write_debug_log(message: &str) {
+pub(crate) fn write_debug_log(message: &str) {
     let path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))
