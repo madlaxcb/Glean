@@ -369,7 +369,7 @@ impl eframe::App for SpikeApp {
                     let feed_id = egui::Id::new("feed_url_input");
                     let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
                         .id(feed_id)
-                        .desired_width(360.0)
+                        .desired_width(260.0)
                         .hint_text("https://…/rss.xml");
                     let resp = ui.add(te);
                     if resp.clicked() || resp.gained_focus() {
@@ -384,7 +384,7 @@ impl eframe::App for SpikeApp {
                     let cur_label = cur_cat.map(|c| c.label()).unwrap_or("自动");
                     egui::ComboBox::from_id_salt("feed_add_category")
                         .selected_text(format!("{cur_icon} {cur_label}"))
-                        .width(120.0)
+                        .width(100.0)
                         .show_ui(ui, |ui| {
                             for c in FEED_CATEGORIES {
                                 if ui
@@ -416,7 +416,7 @@ impl eframe::App for SpikeApp {
                     };
                     egui::ComboBox::from_id_salt("feed_add_folder")
                         .selected_text(&folder_label)
-                        .width(120.0)
+                        .width(100.0)
                         .show_ui(ui, |ui| {
                             for f in &self.state.folders {
                                 if ui
@@ -427,6 +427,7 @@ impl eframe::App for SpikeApp {
                                     .clicked()
                                 {
                                     self.state.feed_add_folder = Some(f.id);
+                                    self.state.feed_add_new_folder.clear();
                                 }
                             }
                             ui.separator();
@@ -448,7 +449,7 @@ impl eframe::App for SpikeApp {
                         egui::TextEdit::singleline(&mut self.state.feed_add_new_folder)
                             .id(egui::Id::new("feed_add_new_folder"))
                             .hint_text("新建或留空")
-                            .desired_width(120.0),
+                            .desired_width(100.0),
                     );
 
                     if ui.button("添加").clicked() || enter {
@@ -697,7 +698,9 @@ impl eframe::App for SpikeApp {
             || self.show_errors
             || self.show_plugins
             || self.show_settings
-            || self.state.update_available.is_some();
+            || self.state.update_available.is_some()
+            || egui::ComboBox::is_open(ctx, egui::Id::new("feed_add_category"))
+            || egui::ComboBox::is_open(ctx, egui::Id::new("feed_add_folder"));
         self.state.reader.set_hidden(has_popup);
 
         // --- Popups (after CentralPanel so they render on top) ---
@@ -2060,6 +2063,8 @@ impl SpikeApp {
         let feed_id_for_drag = feed.id;
         let drag_id = ui.id().with(("feed_drag", feed.id));
         let row = ui.dnd_drag_source(drag_id, feed_id_for_drag.0, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_max_width(ui.available_width());
             ui.horizontal(|ui| {
                 if indent {
                     ui.add_space(12.0);
@@ -2069,17 +2074,18 @@ impl SpikeApp {
                 } else {
                     ui.label("🌐");
                 }
-                let _ = ui.selectable_label(selected, rich);
-            });
+                ui.selectable_label(selected, rich)
+            })
         });
         let resp = row.response;
+        let label_resp = row.inner;
         // `dnd_drag_source` 在悬停订阅行时会把光标设为 Grab（Windows 上对应
         // 四向箭头，看起来像十字）。只在真正拖动时保留拖动光标，悬停恢复默认。
         if resp.hovered() && !resp.dragged() {
             resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
         }
         let mut action = None;
-        if resp.clicked() {
+        if resp.clicked() || label_resp.inner.clicked() {
             if multi {
                 // 多选：切换选中状态，不改变列表过滤。
                 if selected {
