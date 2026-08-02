@@ -1573,8 +1573,14 @@ fn load_config(path: &std::path::Path) -> AppConfig {
             AppConfig::default()
         }
     };
+    // Clamp thumbnail_size to valid range (defensive: config may be hand-edited).
+    let mut result = result;
+    result.thumbnail_size = result.thumbnail_size.clamp(
+        glean_core::THUMBNAIL_SIZE_MIN,
+        glean_core::THUMBNAIL_SIZE_MAX,
+    );
     write_debug_log(&format!(
-        "[config-load] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        "[config-load] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} thumbnail_size={} window=({:?},{:?},{:?},{:?}) maximized={}",
         path.display(),
         result.dark,
         result.accent,
@@ -1582,6 +1588,7 @@ fn load_config(path: &std::path::Path) -> AppConfig {
         result.list_width,
         result.font_size_px,
         result.line_width_rem,
+        result.thumbnail_size,
         result.window_x,
         result.window_y,
         result.window_w,
@@ -1607,7 +1614,7 @@ fn save_config(path: &std::path::Path, config: &AppConfig) {
         Err(e) => eprintln!("无法序列化配置 {}: {e}", path.display()),
     }
     write_debug_log(&format!(
-        "[config-save] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} window=({:?},{:?},{:?},{:?}) maximized={}",
+        "[config-save] path={} dark={} accent={:?} nav_width={} list_width={} font_size={} line_width={} thumbnail_size={} window=({:?},{:?},{:?},{:?}) maximized={}",
         path.display(),
         config.dark,
         config.accent,
@@ -1615,6 +1622,7 @@ fn save_config(path: &std::path::Path, config: &AppConfig) {
         config.list_width,
         config.font_size_px,
         config.line_width_rem,
+        config.thumbnail_size,
         config.window_x,
         config.window_y,
         config.window_w,

@@ -4,7 +4,7 @@ use crate::SpikeState;
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use glean_core::{
     AccentColor, AppCommand, EnhanceAction, EntryFilter, FeedCategory, FolderId, ImagePolicy,
-    ReaderHostMode, ACCENT_COLORS, FEED_CATEGORIES,
+    ReaderHostMode, ACCENT_COLORS, FEED_CATEGORIES, THUMBNAIL_SIZE_MAX, THUMBNAIL_SIZE_MIN,
 };
 
 const SPLIT_HIT: f32 = 6.0;
@@ -493,17 +493,6 @@ impl eframe::App for SpikeApp {
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
-                crate::write_debug_log(&format!(
-                    "[list-geometry] outer=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1}) list_width={:.1} full_height={:.1}",
-                    list_rect.min.x,
-                    list_rect.min.y,
-                    list_rect.max.x,
-                    list_rect.max.y,
-                    list_rect.width(),
-                    list_rect.height(),
-                    list_w,
-                    h,
-                ));
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                     column_contents(ui, "列表", |ui| {
                         self.draw_list_contents(ui);
@@ -1134,6 +1123,23 @@ impl eframe::App for SpikeApp {
                                 }
                             });
                             hint(ui, "修改后重新打开文章生效");
+
+                            settings_heading(ui, "列表");
+                            ui.horizontal(|ui| {
+                                ui.label("缩略图大小");
+                                let slider = egui::Slider::new(
+                                    &mut self.state.config.thumbnail_size,
+                                    THUMBNAIL_SIZE_MIN..=THUMBNAIL_SIZE_MAX,
+                                )
+                                .fixed_decimals(0)
+                                .suffix(" px");
+                                let resp = ui.add(slider);
+                                if resp.changed() {
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "列表条目缩略图边长（同时影响行高）");
 
                             settings_heading(ui, "存储");
                             if ui.button("清除所有缓存").clicked() {
@@ -1844,32 +1850,16 @@ impl SpikeApp {
         // Virtual scrolling: only render visible rows.
         // row_height must match the actual rendered row height (excluding
         // item_spacing) to avoid phantom blank space at scroll bottom.
-        // Measured: 30px image/space allocation dominates the row height.
-        let row_height = 30.0_f32;
+        // The row height is dominated by the thumbnail/space allocation.
+        let thumb_size = self.state.config.thumbnail_size;
+        let row_height = thumb_size;
         let num_rows = self.state.entries.len();
-        let before = ui.available_rect_before_wrap();
-        crate::write_debug_log(&format!(
-            "[list-contents] before=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1}) rows={} row_height={:.1}",
-            before.min.x,
-            before.min.y,
-            before.max.x,
-            before.max.y,
-            before.width(),
-            before.height(),
-            num_rows,
-            row_height,
-        ));
-        let scroll_out = egui::ScrollArea::vertical()
+        egui::ScrollArea::vertical()
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;
-                // Measure actual row height on first visible row
-                let measure_y = ui.min_rect().min.y;
-                let mut first_row_height: Option<f32> = None;
-                let range_start = row_range.start;
-                let range_end = row_range.end;
                 for i in row_range {
                     let entry = &self.state.entries[i];
                     let read_mark = if entry.is_read { "已读" } else { "未读" };
@@ -1883,20 +1873,17 @@ impl SpikeApp {
                     };
                     let selected = Some(i) == current;
                     let thumb = self.thumbnails.get(&entry.id).cloned();
-                    let row_before_y = ui.min_rect().min.y;
                     // 整行可点击：缩略图（如有）+ 文字标题水平排列。
                     let row = ui.horizontal(|ui| {
                         if let Some(tex) = &thumb {
-                            ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(30.0)));
+                            ui.add(
+                                egui::Image::new(tex).fit_to_exact_size(Vec2::splat(thumb_size)),
+                            );
                         } else {
-                            ui.allocate_space(Vec2::splat(30.0));
+                            ui.allocate_space(Vec2::splat(thumb_size));
                         }
                         ui.selectable_label(selected, rich)
                     });
-                    if first_row_height.is_none() {
-                        let row_after_y = row.response.rect.max.y;
-                        first_row_height = Some(row_after_y - row_before_y);
-                    }
                     let resp = row.response;
                     let label_resp = row.inner;
                     if resp.clicked() || label_resp.clicked() {
@@ -1948,36 +1935,7 @@ impl SpikeApp {
                 if let Some(i) = clicked {
                     self.state.select_index(i);
                 }
-                // Log actual measured row height (debug-list-blank-space H2)
-                crate::write_debug_log(&format!(
-                    "[list-row-height] actual_first={:.1} virtual={:.1} range=[{},{}] measure_y={:.1}",
-                    first_row_height.unwrap_or(-1.0),
-                    row_height,
-                    range_start,
-                    range_end,
-                    measure_y,
-                ));
             });
-        let content_size = scroll_out.content_size;
-        let state_offset = scroll_out.state.offset.y;
-        crate::write_debug_log(&format!(
-            "[list-scroll-out] content_size=({:.1},{:.1}) offset_y={:.1} virtual_total={:.1} viewport_h={:.1}",
-            content_size.x,
-            content_size.y,
-            state_offset,
-            row_height * num_rows as f32,
-            before.height(),
-        ));
-        let after = ui.available_rect_before_wrap();
-        crate::write_debug_log(&format!(
-            "[list-contents-after] after=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1})",
-            after.min.x,
-            after.min.y,
-            after.max.x,
-            after.max.y,
-            after.width(),
-            after.height(),
-        ));
         // Footer: total entry count (fills remaining space, no blank gap).
         let color = ui.visuals().weak_text_color();
         ui.add_space(2.0);

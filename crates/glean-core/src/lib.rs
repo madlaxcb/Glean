@@ -32,6 +32,7 @@ pub use image_cache::{ImageCache, CUSTOM_SCHEME as IMAGE_CUSTOM_SCHEME};
 pub use model::{
     AccentColor, AiConfig, AppConfig, EntryDetail, EntryFilter, EntryId, EntrySummary, Feed,
     FeedCategory, FeedId, Folder, FolderId, ImagePolicy, ACCENT_COLORS, FEED_CATEGORIES,
+    THUMBNAIL_SIZE_DEFAULT, THUMBNAIL_SIZE_MAX, THUMBNAIL_SIZE_MIN,
 };
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{

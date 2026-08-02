@@ -308,7 +308,16 @@ pub struct AppConfig {
     /// 键为弹窗标识，值为 (x, y, w, h)；None 表示未记录，使用默认布局。
     #[serde(default)]
     pub popup_geometry: std::collections::HashMap<String, [f32; 4]>,
+    /// 列表缩略图边长（px）。范围 [THUMBNAIL_SIZE_MIN, THUMBNAIL_SIZE_MAX]。
+    /// 同时作为虚拟滚动 row_height，必须与实际渲染行高一致以避免底部空白。
+    #[serde(default = "default_thumbnail_size")]
+    pub thumbnail_size: f32,
 }
+
+/// 缩略图大小范围限制（px）。
+pub const THUMBNAIL_SIZE_MIN: f32 = 16.0;
+pub const THUMBNAIL_SIZE_MAX: f32 = 60.0;
+pub const THUMBNAIL_SIZE_DEFAULT: f32 = 30.0;
 
 /// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。
 ///
@@ -334,6 +343,10 @@ fn default_line_width() -> u16 {
     42
 }
 
+fn default_thumbnail_size() -> f32 {
+    THUMBNAIL_SIZE_DEFAULT
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -357,6 +370,7 @@ impl Default for AppConfig {
             plugin_proxy: Vec::new(),
             accent: AccentColor::default(),
             popup_geometry: std::collections::HashMap::new(),
+            thumbnail_size: THUMBNAIL_SIZE_DEFAULT,
         }
     }
 }
