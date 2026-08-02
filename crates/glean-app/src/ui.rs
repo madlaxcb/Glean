@@ -1202,8 +1202,7 @@ impl eframe::App for SpikeApp {
                         hint(ui, "未安装任何插件。点击上方按钮安装，或从仓库 plugins/ 目录导入。");
                     }
                     egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(500.0)
+                        .auto_shrink([true, true])
                         .show(ui, |ui| {
                             for p in &plugin_list {
                                 let id = &p.manifest.plugin.id;
@@ -1915,6 +1914,14 @@ impl SpikeApp {
                     self.state.select_index(i);
                 }
             });
+        // Footer: total entry count (fills remaining space, no blank gap).
+        let color = ui.visuals().weak_text_color();
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(format!("共 {} 条", num_rows))
+                .size(12.0)
+                .color(color),
+        );
     }
 }
 
