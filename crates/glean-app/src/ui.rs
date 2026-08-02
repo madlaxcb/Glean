@@ -1168,7 +1168,8 @@ impl eframe::App for SpikeApp {
             let mut close = false;
             let mut win = egui::Window::new("插件管理")
                 .open(&mut open)
-                .default_size([560.0, 400.0]);
+                .default_size([560.0, 400.0])
+                .max_height(720.0);
             if let Some([x, y, w, h]) = self.state.popup_geom("plugins") {
                 win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
             }
@@ -1202,6 +1203,7 @@ impl eframe::App for SpikeApp {
                     }
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
+                        .max_height(500.0)
                         .show(ui, |ui| {
                             for p in &plugin_list {
                                 let id = &p.manifest.plugin.id;
@@ -1834,6 +1836,7 @@ impl SpikeApp {
         let row_height = 38.0_f32;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
+            .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
