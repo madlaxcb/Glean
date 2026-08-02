@@ -9,7 +9,7 @@ The Pixiv list contains all entries and can scroll, but a large blank region rem
 ## Hypotheses
 
 - H1: The outer list container height is fixed while the ScrollArea only occupies content height. — REJECTED: logs show `list-contents-after` height=0, ScrollArea fills container.
-- H2: `show_rows` `row_height=38.0` is larger than the actual rendered row height (~32px), creating phantom virtual content height that shows as blank when scrolled to bottom. — PENDING VERIFICATION.
+- H2: `show_rows` `row_height=38.0` is larger than the actual rendered row height (~32px), creating phantom virtual content height that shows as blank when scrolled to bottom. — CONFIRMED, FIXED.
 - H3: Extra height allocation inside the list column creates the blank region. — REJECTED: `list-contents-after` shows no remaining space.
 - H4: The scrollbar and separator use different rectangles in the parent layout. — REJECTED: geometry logs show consistent rects.
 
@@ -47,6 +47,28 @@ ui.horizontal(|ui| {
 ```
 Expected actual row height ≈ max(30, 22) + item_spacing.y(2) ≈ 32px.
 But `row_height=38.0` is passed to `show_rows`. Discrepancy = 6px/row × 687 rows ≈ 4122px phantom space.
+
+## Fix Applied (commit ad99f43)
+
+Changed `row_height` from `38.0` to `30.0` in `draw_list_contents` (ui.rs L1848).
+
+### Pre-fix vs Post-fix (expected)
+
+| Metric | Pre-fix (row_height=38) | Post-fix (row_height=30, expected) |
+|--------|------------------------|-------------------------------------|
+| actual_first | 30.0 | 30.0 |
+| virtual row_height | 38.0 | 30.0 |
+| virtual_total | 26106 (38×687) | 20610 (30×687) |
+| content_size.y | 27478 (pitch=40) | 21982 (pitch=32) |
+| phantom space | ~5496px | 0 |
+
+### Post-fix Verification Plan
+
+1. User runs new build, scrolls list to bottom
+2. Check `[list-row-height]`: `actual_first` should equal `virtual` (both 30.0)
+3. Check `[list-scroll-out]`: `content_size.y` should ≈ `virtual_total` (both ~20610)
+4. Visually confirm no blank space at bottom when scrolled to end
+5. If confirmed, clean up instrumentation logs
 
 ## Reproduction
 
