@@ -364,21 +364,7 @@ impl eframe::App for SpikeApp {
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("订阅 URL");
-                    let feed_id = egui::Id::new("feed_url_input");
-                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
-                        .id(feed_id)
-                        .desired_width(260.0)
-                        .hint_text("https://…/rss.xml");
-                    let resp = ui.add(te);
-                    if resp.clicked() || resp.gained_focus() {
-                        self.state.reader.reclaim_shell_focus();
-                        resp.request_focus();
-                    }
-                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    // 订阅选项：分类 / 文件夹 / 新建文件夹，统一放在"添加"按钮之前。
-                    ui.label("分类");
+                ui.horizontal_centered(|ui| {
                     let cur_cat = self.state.feed_add_category;
                     let cur_icon = cur_cat.map(|c| c.icon()).unwrap_or("●");
                     let cur_label = cur_cat.map(|c| c.label()).unwrap_or("自动");
@@ -403,7 +389,6 @@ impl eframe::App for SpikeApp {
                             }
                         });
 
-                    ui.label("文件夹");
                     let folder_label = match self.state.feed_add_folder {
                         Some(fid) => self
                             .state
@@ -444,12 +429,24 @@ impl eframe::App for SpikeApp {
                             }
                         });
 
-                    ui.label("新建文件夹");
+                    ui.label("订阅");
+                    let feed_id = egui::Id::new("feed_url_input");
+                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
+                        .id(feed_id)
+                        .desired_width(240.0)
+                        .hint_text("https://…/rss.xml");
+                    let resp = ui.add(te);
+                    if resp.clicked() || resp.gained_focus() {
+                        self.state.reader.reclaim_shell_focus();
+                        resp.request_focus();
+                    }
+                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.label("新建");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.feed_add_new_folder)
                             .id(egui::Id::new("feed_add_new_folder"))
                             .hint_text("新建或留空")
-                            .desired_width(100.0),
+                            .desired_width(90.0),
                     );
 
                     if ui.button("添加").clicked() || enter {
@@ -699,8 +696,7 @@ impl eframe::App for SpikeApp {
             || self.show_plugins
             || self.show_settings
             || self.state.update_available.is_some()
-            || egui::ComboBox::is_open(ctx, egui::Id::new("feed_add_category"))
-            || egui::ComboBox::is_open(ctx, egui::Id::new("feed_add_folder"));
+            || ctx.memory(|memory| memory.any_popup_open());
         self.state.reader.set_hidden(has_popup);
 
         // --- Popups (after CentralPanel so they render on top) ---
@@ -1861,6 +1857,7 @@ impl SpikeApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .max_width((ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0))
             .max_height(ui.available_height())
             .show(ui, |ui| {
                 let folders = self.state.folders.clone();
@@ -1922,7 +1919,13 @@ impl SpikeApp {
                     let mut inner_action: Option<FeedRowAction> = None;
                     let (resp_inner, dropped) = ui.dnd_drop_zone::<i64, _>(frame, |ui| {
                         ui.set_min_width(ui.available_width());
-                        let r = ui.selectable_label(false, RichText::new(header.clone()).strong());
+                        let width = ui.available_width();
+                        let r = ui.add_sized(
+                            [width, ui.spacing().interact_size.y],
+                            egui::Button::new(RichText::new(header.clone()).strong())
+                                .truncate()
+                                .selected(false),
+                        );
                         if expanded {
                             for feed in &folder_feeds {
                                 if let Some(a) = self.draw_feed_item(ui, feed, &folders, true) {
@@ -2051,10 +2054,6 @@ impl SpikeApp {
         if unread > 0 {
             title.push_str(&format!(" ({unread})"));
         }
-        // 多选模式：行首显示选择框标记。
-        if multi {
-            title.insert_str(0, if selected { "☑ " } else { "☐ " });
-        }
         let rich = if unread > 0 {
             RichText::new(title).strong()
         } else {
@@ -2063,8 +2062,10 @@ impl SpikeApp {
         let feed_id_for_drag = feed.id;
         let drag_id = ui.id().with(("feed_drag", feed.id));
         let row = ui.dnd_drag_source(drag_id, feed_id_for_drag.0, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.set_max_width(ui.available_width());
+            let width = ui.available_width();
+            ui.set_min_width(width);
+            ui.set_max_width(width);
+            let mut clicked = false;
             ui.horizontal(|ui| {
                 if indent {
                     ui.add_space(12.0);
@@ -2074,18 +2075,39 @@ impl SpikeApp {
                 } else {
                     ui.label("🌐");
                 }
-                ui.selectable_label(selected, rich)
-            })
+                let check_width = if multi { 24.0 } else { 0.0 };
+                if multi {
+                    let check = ui.add_sized(
+                        [check_width, ui.spacing().interact_size.y],
+                        egui::Button::new(if selected { "☑" } else { "☐" })
+                            .frame(false)
+                            .selected(selected),
+                    );
+                    clicked |= check.clicked();
+                }
+                let text_width = (width
+                    - if indent { 12.0 } else { 0.0 }
+                    - FAVICON_SIZE
+                    - ui.spacing().item_spacing.x
+                    - check_width)
+                    .max(1.0);
+                let text = ui.add_sized(
+                    [text_width, ui.spacing().interact_size.y],
+                    egui::Button::new(rich).truncate().selected(selected),
+                );
+                clicked |= text.clicked();
+            });
+            clicked
         });
         let resp = row.response;
-        let label_resp = row.inner;
+        let row_clicked = row.inner;
         // `dnd_drag_source` 在悬停订阅行时会把光标设为 Grab（Windows 上对应
         // 四向箭头，看起来像十字）。只在真正拖动时保留拖动光标，悬停恢复默认。
         if resp.hovered() && !resp.dragged() {
             resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
         }
         let mut action = None;
-        if resp.clicked() || label_resp.inner.clicked() {
+        if resp.clicked() || row_clicked {
             if multi {
                 // 多选：切换选中状态，不改变列表过滤。
                 if selected {
@@ -2219,6 +2241,7 @@ impl SpikeApp {
         let row_height = thumb_size;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
+            .max_width((ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0))
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
@@ -2239,6 +2262,9 @@ impl SpikeApp {
                     let selected = Some(i) == current;
                     let thumb = self.thumbnails.get(&entry.id).cloned();
                     // 整行可点击：缩略图（如有）+ 文字标题水平排列。
+                    let row_width = ui.available_width();
+                    ui.set_min_width(row_width);
+                    ui.set_max_width(row_width);
                     let row = ui.horizontal(|ui| {
                         if let Some(tex) = &thumb {
                             ui.add(
@@ -2247,7 +2273,12 @@ impl SpikeApp {
                         } else {
                             ui.allocate_space(Vec2::splat(thumb_size));
                         }
-                        ui.selectable_label(selected, rich)
+                        let text_width =
+                            (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
+                        ui.add_sized(
+                            [text_width, ui.spacing().interact_size.y],
+                            egui::Button::new(rich).truncate().selected(selected),
+                        )
                     });
                     let resp = row.response;
                     let label_resp = row.inner;
