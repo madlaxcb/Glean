@@ -364,19 +364,7 @@ impl eframe::App for SpikeApp {
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("订阅 URL");
-                    let feed_id = egui::Id::new("feed_url_input");
-                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
-                        .id(feed_id)
-                        .desired_width(260.0)
-                        .hint_text("https://…/rss.xml");
-                    let resp = ui.add(te);
-                    if resp.clicked() || resp.gained_focus() {
-                        self.state.reader.reclaim_shell_focus();
-                        resp.request_focus();
-                    }
-                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.label("分类");
                     let cur_cat = self.state.feed_add_category;
                     let cur_icon = cur_cat.map(|c| c.icon()).unwrap_or("●");
@@ -450,6 +438,19 @@ impl eframe::App for SpikeApp {
                             .hint_text("新建或留空")
                             .desired_width(90.0),
                     );
+
+                    ui.label("订阅 URL");
+                    let feed_id = egui::Id::new("feed_url_input");
+                    let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
+                        .id(feed_id)
+                        .desired_width(240.0)
+                        .hint_text("https://…/rss.xml");
+                    let resp = ui.add(te);
+                    if resp.clicked() || resp.gained_focus() {
+                        self.state.reader.reclaim_shell_focus();
+                        resp.request_focus();
+                    }
+                    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
                     if ui.button("添加").clicked() || enter {
                         self.state.add_feed_from_url();
@@ -2063,12 +2064,14 @@ impl SpikeApp {
         };
         let feed_id_for_drag = feed.id;
         let drag_id = ui.id().with(("feed_drag", feed.id));
-        let row = ui.dnd_drag_source(drag_id, feed_id_for_drag.0, |ui| {
+
+        // 多选模式下不使用 dnd_drag_source，因为它的 Sense::drag() 会拦截
+        // 鼠标事件，导致内部 button/label 的 clicked() 无法触发。
+        let (resp, row_clicked) = if multi {
             let width = ui.available_width();
             ui.set_min_width(width);
             ui.set_max_width(width);
-            let mut clicked = false;
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 if indent {
                     ui.add_space(12.0);
                 }
@@ -2077,37 +2080,51 @@ impl SpikeApp {
                 } else {
                     ui.label("🌐");
                 }
-                if multi {
-                    let check_text = if selected { "☑" } else { "☐" };
-                    let check = ui.button(check_text);
-                    clicked |= check.clicked();
-                }
-                let _text_width = (width
-                    - if indent { 12.0 } else { 0.0 }
-                    - FAVICON_SIZE
-                    - ui.spacing().item_spacing.x
-                    - if multi { 24.0 } else { 0.0 })
-                .max(1.0);
+                let check_text = if selected { "☑" } else { "☐" };
+                let check = ui.button(check_text);
+                let mut clicked = check.clicked();
                 let text = ui.add(
                     egui::Label::new(rich)
                         .truncate()
-                        .wrap_mode(egui::TextWrapMode::Truncate),
+                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .sense(egui::Sense::click()),
                 );
                 clicked |= text.clicked();
+                clicked
             });
-            clicked
-        });
-        let resp = row.response;
-        let row_clicked = row.inner;
-        // `dnd_drag_source` 在悬停订阅行时会把光标设为 Grab（Windows 上对应
-        // 四向箭头，看起来像十字）。只在真正拖动时保留拖动光标，悬停恢复默认。
-        if resp.hovered() && !resp.dragged() {
-            resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
-        }
+            (row.response, row.inner)
+        } else {
+            let row = ui.dnd_drag_source(drag_id, feed_id_for_drag.0, |ui| {
+                let width = ui.available_width();
+                ui.set_min_width(width);
+                ui.set_max_width(width);
+                ui.horizontal(|ui| {
+                    if indent {
+                        ui.add_space(12.0);
+                    }
+                    if let Some(tex) = self.favicons.get(&feed.id) {
+                        ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(FAVICON_SIZE)));
+                    } else {
+                        ui.label("🌐");
+                    }
+                    ui.add(
+                        egui::Label::new(rich)
+                            .truncate()
+                            .wrap_mode(egui::TextWrapMode::Truncate)
+                            .sense(egui::Sense::click()),
+                    )
+                })
+            });
+            let resp = row.response;
+            if resp.hovered() && !resp.dragged() {
+                resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
+            }
+            (resp, row.inner.inner.clicked())
+        };
+
         let mut action = None;
         if resp.clicked() || row_clicked {
             if multi {
-                // 多选：切换选中状态，不改变列表过滤。
                 if selected {
                     self.state.selected_feeds.remove(&feed.id);
                 } else {
@@ -2259,10 +2276,18 @@ impl SpikeApp {
                     };
                     let selected = Some(i) == current;
                     let thumb = self.thumbnails.get(&entry.id).cloned();
-                    // 整行可点击：缩略图（如有）+ 文字标题水平排列。
+                    // 整行：缩略图 + 文字，水平居左，垂直居中。
                     let row_width = ui.available_width();
                     ui.set_min_width(row_width);
                     ui.set_max_width(row_width);
+                    // 选中行用背景色高亮
+                    if selected {
+                        ui.painter().rect_filled(
+                            ui.max_rect(),
+                            0.0,
+                            ui.visuals().selection.bg_fill,
+                        );
+                    }
                     let row = ui.horizontal(|ui| {
                         if let Some(tex) = &thumb {
                             ui.add(
@@ -2274,8 +2299,11 @@ impl SpikeApp {
                         let text_width =
                             (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
                         ui.add_sized(
-                            [text_width, ui.spacing().interact_size.y],
-                            egui::Button::new(rich).truncate().selected(selected),
+                            [text_width, thumb_size],
+                            egui::Button::new(rich)
+                                .truncate()
+                                .selected(selected)
+                                .frame(false),
                         )
                     });
                     let resp = row.response;
