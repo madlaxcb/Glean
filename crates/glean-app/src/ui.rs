@@ -353,10 +353,6 @@ impl eframe::App for SpikeApp {
                             self.show_errors = !self.show_errors;
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let color = ui.visuals().strong_text_color().gamma_multiply(0.85);
-                        ui.label(RichText::new(&self.state.status).size(13.0).color(color));
-                    });
                 });
             });
 
@@ -388,18 +384,24 @@ impl eframe::App for SpikeApp {
                 });
             });
 
-        // --- Bottom hints ---
-        egui::TopBottomPanel::bottom("hints")
+        // --- Bottom status bar: 左=操作状态，右=快捷键说明（左右分隔，互不重叠） ---
+        egui::TopBottomPanel::bottom("status")
             .frame(
                 Frame::new()
                     .fill(panel_fill)
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                hint(
-                    ui,
-                    "j/k 换文 · r 刷新 · s 星标 · t 主题 · , 设置 · Esc 关闭弹窗",
-                );
+                ui.horizontal(|ui| {
+                    let color = ui.visuals().strong_text_color().gamma_multiply(0.85);
+                    ui.label(RichText::new(&self.state.status).size(13.0).color(color));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        hint(
+                            ui,
+                            "j/k 换文 · r 刷新 · s 星标 · t 主题 · , 设置 · Esc 关闭弹窗",
+                        );
+                    });
+                });
             });
 
         // --- Keyboard shortcuts ---
@@ -410,6 +412,11 @@ impl eframe::App for SpikeApp {
         let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
         let rename_focused = self.state.rename_feed.is_some() || self.state.edit_feed_url.is_some();
         let text_input_active = search_focused || feed_focused || rename_focused;
+
+        // 当前窗口是否获得焦点。GetAsyncKeyState 读取的是全局按键状态：即使
+        // 用户切换到其他软件，只要该键被按下也返回按下。因此快捷键整体必须以
+        // 窗口焦点为门槛，避免在别的软件里输入时误触发 Glean 的动作。
+        let app_focused = ctx.input(|i| i.focused);
 
         // Bit positions in async_keys bitmap: 0=J, 1=K, 2=T, 3=S, 4=R, 5=Comma
         const BIT_J: u16 = 0;
@@ -443,7 +450,7 @@ impl eframe::App for SpikeApp {
         #[cfg(not(windows))]
         let async_just_pressed = 0u16;
 
-        if !text_input_active {
+        if app_focused && !text_input_active {
             // Try egui input first; fall back to async detection on Windows.
             let j_pressed = ctx.input(|i| i.key_pressed(egui::Key::J))
                 || (async_just_pressed & (1 << BIT_J) != 0);
@@ -478,7 +485,7 @@ impl eframe::App for SpikeApp {
             }
         }
         // Esc closes topmost popup.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if app_focused && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.state.rename_feed.is_some() {
                 self.state.rename_feed = None;
             } else if self.state.edit_feed_url.is_some() {
@@ -530,11 +537,14 @@ impl eframe::App for SpikeApp {
                 let nav_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(nav_w, h));
                 paint_column_bg(ui, nav_rect, panel_fill, stroke_color);
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
-                    column_contents(ui, "导航", |ui| {
-                        self.draw_nav_contents(ui);
-                    });
-                });
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().id_salt("nav_col").max_rect(nav_rect),
+                    |ui| {
+                        column_contents(ui, "导航", |ui| {
+                            self.draw_nav_contents(ui);
+                        });
+                    },
+                );
                 x += nav_w;
 
                 let (hit, dragged) = splitter_drag(ui, ctx, x, full, "split_nav", |pos_x| {
@@ -549,11 +559,16 @@ impl eframe::App for SpikeApp {
                 let list_rect =
                     egui::Rect::from_min_size(egui::pos2(x, full.min.y), Vec2::new(list_w, h));
                 paint_column_bg(ui, list_rect, panel_fill, stroke_color);
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(list_rect), |ui| {
-                    column_contents(ui, "列表", |ui| {
-                        self.draw_list_contents(ui);
-                    });
-                });
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new()
+                        .id_salt("list_col")
+                        .max_rect(list_rect),
+                    |ui| {
+                        column_contents(ui, "列表", |ui| {
+                            self.draw_list_contents(ui);
+                        });
+                    },
+                );
                 x += list_w;
 
                 let list_left_x = full.min.x + nav_w + SPLIT_HIT;
@@ -578,19 +593,24 @@ impl eframe::App for SpikeApp {
                     stroke_color,
                 );
                 #[cfg(not(windows))]
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(reader_rect), |ui| {
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new()
+                        .id_salt("reader_col")
+                        .max_rect(reader_rect),
+                    |ui| {
                         ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("阅读区 (WebView)").strong());
-                            ui.colored_label(
-                                Color32::from_rgb(200, 80, 40),
-                                "非 Windows：WebView2 未启用。请下载 CI artifact。",
-                            );
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("阅读区 (WebView)").strong());
+                                ui.colored_label(
+                                    Color32::from_rgb(200, 80, 40),
+                                    "非 Windows：WebView2 未启用。请下载 CI artifact。",
+                                );
+                            });
                         });
-                    });
-                });
+                    },
+                );
             });
 
         // Hide WebView2 when any popup is open so it doesn't occlude.
