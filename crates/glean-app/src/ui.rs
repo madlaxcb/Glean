@@ -49,6 +49,9 @@ pub struct SpikeApp {
     geometry_timer: f32,
     /// 已应用到 ctx 的样式（dark, accent）；变化时才重建 style，避免每帧 set_style。
     applied_style: Option<(bool, AccentColor)>,
+    /// 上一帧的 Win32 异步按键状态（用于 WebView2 焦点时快捷键边沿检测）。
+    #[cfg(windows)]
+    prev_async_keys: u16,
 }
 
 impl SpikeApp {
@@ -74,6 +77,8 @@ impl SpikeApp {
             thumbnails: std::collections::HashMap::new(),
             geometry_timer: 0.0,
             applied_style,
+            #[cfg(windows)]
+            prev_async_keys: 0,
         }
     }
 }
@@ -398,26 +403,77 @@ impl eframe::App for SpikeApp {
             });
 
         // --- Keyboard shortcuts ---
+        // When WebView2 (reader) has focus, egui's ctx.input() doesn't receive
+        // key events. Use Win32 GetAsyncKeyState as a fallback to detect
+        // shortcuts regardless of focus. Edge-detect via prev_async_keys bitmap.
         let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
         let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
         let rename_focused = self.state.rename_feed.is_some() || self.state.edit_feed_url.is_some();
-        if !search_focused && !feed_focused && !rename_focused {
-            if ctx.input(|i| i.key_pressed(egui::Key::J)) {
+        let text_input_active = search_focused || feed_focused || rename_focused;
+
+        // Bit positions in async_keys bitmap: 0=J, 1=K, 2=T, 3=S, 4=R, 5=Comma
+        const BIT_J: u16 = 0;
+        const BIT_K: u16 = 1;
+        const BIT_T: u16 = 2;
+        const BIT_S: u16 = 3;
+        const BIT_R: u16 = 4;
+        const BIT_COMMA: u16 = 5;
+
+        #[cfg(windows)]
+        let (async_pressed, async_just_pressed) = {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            let vk_j = 0x4A_i32; // VK_J
+            let vk_k = 0x4B_i32; // VK_K
+            let vk_t = 0x54_i32; // VK_T
+            let vk_s = 0x53_i32; // VK_S
+            let vk_r = 0x52_i32; // VK_R
+            let vk_comma = 0xBC_i32; // VK_OEM_COMMA
+            let now = 0u16
+                | (((unsafe { GetAsyncKeyState(vk_j) } as u16) >> 15) & 1) << BIT_J
+                | (((unsafe { GetAsyncKeyState(vk_k) } as u16) >> 15) & 1) << BIT_K
+                | (((unsafe { GetAsyncKeyState(vk_t) } as u16) >> 15) & 1) << BIT_T
+                | (((unsafe { GetAsyncKeyState(vk_s) } as u16) >> 15) & 1) << BIT_S
+                | (((unsafe { GetAsyncKeyState(vk_r) } as u16) >> 15) & 1) << BIT_R
+                | (((unsafe { GetAsyncKeyState(vk_comma) } as u16) >> 15) & 1) << BIT_COMMA;
+            let just = now & !self.prev_async_keys;
+            self.prev_async_keys = now;
+            (just)
+        };
+
+        #[cfg(not(windows))]
+        let async_just_pressed = 0u16;
+
+        if !text_input_active {
+            // Try egui input first; fall back to async detection on Windows.
+            let j_pressed = ctx.input(|i| i.key_pressed(egui::Key::J))
+                || (async_just_pressed & (1 << BIT_J) != 0);
+            let k_pressed = ctx.input(|i| i.key_pressed(egui::Key::K))
+                || (async_just_pressed & (1 << BIT_K) != 0);
+            let t_pressed = ctx.input(|i| i.key_pressed(egui::Key::T))
+                || (async_just_pressed & (1 << BIT_T) != 0);
+            let s_pressed = ctx.input(|i| i.key_pressed(egui::Key::S))
+                || (async_just_pressed & (1 << BIT_S) != 0);
+            let r_pressed = ctx.input(|i| i.key_pressed(egui::Key::R))
+                || (async_just_pressed & (1 << BIT_R) != 0);
+            let comma_pressed = ctx.input(|i| i.key_pressed(egui::Key::Comma))
+                || (async_just_pressed & (1 << BIT_COMMA) != 0);
+
+            if j_pressed {
                 self.state.next();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::K)) {
+            if k_pressed {
                 self.state.prev();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::T)) {
+            if t_pressed {
                 self.state.toggle_theme(ctx);
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::S)) {
+            if s_pressed {
                 self.state.toggle_star_current();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::R)) {
+            if r_pressed {
                 self.state.refresh_all_feeds_async();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Comma)) {
+            if comma_pressed {
                 self.show_settings = !self.show_settings;
             }
         }
@@ -1149,6 +1205,30 @@ impl eframe::App for SpikeApp {
                                 self.state.status = format!("已清除 {} 个缓存文件", removed);
                             }
                             hint(ui, "清除正文缓存、图片缓存、Favicon 缓存（数据库不受影响）");
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("缓存位置");
+                                let te = egui::TextEdit::singleline(&mut self.state.cache_dir_input)
+                                    .id(egui::Id::new("cache_dir_input"))
+                                    .desired_width(280.0)
+                                    .hint_text("留空使用默认路径");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    let trimmed = self.state.cache_dir_input.trim().to_string();
+                                    if trimmed.is_empty() {
+                                        self.state.config.cache_dir = None;
+                                    } else {
+                                        self.state.config.cache_dir = Some(trimmed);
+                                    }
+                                    self.state.sync_config();
+                                    self.state.save_config();
+                                }
+                            });
+                            hint(ui, "自定义缓存根目录（需重启生效）；留空使用默认路径");
 
                             settings_heading(ui, "插件");
                             if ui.button("管理插件…").clicked() {

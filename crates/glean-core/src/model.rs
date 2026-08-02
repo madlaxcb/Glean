@@ -312,6 +312,10 @@ pub struct AppConfig {
     /// 同时作为虚拟滚动 row_height，必须与实际渲染行高一致以避免底部空白。
     #[serde(default = "default_thumbnail_size")]
     pub thumbnail_size: f32,
+    /// 自定义缓存根目录。None = 使用默认路径（%APPDATA%/Glean/cache 或 ~/.local/share/Glean/cache）。
+    /// 设置后，entries/images/favicons 缓存子目录均在此目录下创建。
+    #[serde(default)]
+    pub cache_dir: Option<String>,
 }
 
 /// 缩略图大小范围限制（px）。
@@ -371,6 +375,7 @@ impl Default for AppConfig {
             accent: AccentColor::default(),
             popup_geometry: std::collections::HashMap::new(),
             thumbnail_size: THUMBNAIL_SIZE_DEFAULT,
+            cache_dir: None,
         }
     }
 }

@@ -187,6 +187,8 @@ pub struct SpikeState {
     pub font_size_input: String,
     /// Buffer for line width input in settings.
     pub line_width_input: String,
+    /// Buffer for cache directory input in settings.
+    pub cache_dir_input: String,
     /// AI 设置缓冲：Base URL（TextEdit 需跨帧存活）。
     pub ai_base_url_input: String,
     /// AI 设置缓冲：模型名。
@@ -242,6 +244,18 @@ impl SpikeState {
         } else {
             Some(config.proxy_url.as_str())
         };
+
+        // Apply custom cache directory from config (must be set before
+        // GleanService::open, which calls cache_entries_dir() internally).
+        if let Some(ref dir) = config.cache_dir {
+            let path = std::path::PathBuf::from(dir);
+            if let Err(e) = std::fs::create_dir_all(&path) {
+                eprintln!("glean: cannot create cache dir {:?}: {e}", path);
+            } else {
+                glean_core::set_custom_cache_dir(path);
+            }
+        }
+
         let service = GleanService::open_path_with_proxy(&db, proxy).unwrap_or_else(|e| {
             eprintln!("glean: open db {:?}: {e}; falling back to memory", db);
             GleanService::open_in_memory_with_proxy(proxy).expect("memory store")
@@ -279,6 +293,7 @@ impl SpikeState {
             refresh_interval_input: config.refresh_interval_secs.to_string(),
             font_size_input: config.font_size_px.to_string(),
             line_width_input: config.line_width_rem.to_string(),
+            cache_dir_input: config.cache_dir.clone().unwrap_or_default(),
             // AI 设置缓冲：回填已存配置；api_key 解密回填便于查看/修改。
             ai_base_url_input: config
                 .ai

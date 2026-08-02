@@ -1,6 +1,18 @@
 //! Default on-disk locations (local-first).
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// Custom cache root directory (set via AppConfig.cache_dir).
+/// When set, cache subdirs (entries, images, favicons) are resolved
+/// relative to this instead of the default data_base_dir.
+static CUSTOM_CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set a custom cache root directory. Must be called before any cache_dir
+/// function is invoked. Returns `false` if already set.
+pub fn set_custom_cache_dir(dir: PathBuf) -> bool {
+    CUSTOM_CACHE_DIR.set(dir).is_ok()
+}
 
 /// Portable mode data dir: if a `data` folder sits next to the running exe,
 /// use it for the DB + config (dev plan §6.1 portable directory mode).
@@ -46,20 +58,32 @@ pub fn default_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("glean.db"))
 }
 
-/// Disk cache dir for entry bodies (dev plan §2.5): `<data_dir>/cache/entries/`.
-/// Returns `None` when no base data dir can be resolved.
+/// Disk cache dir for entry bodies (dev plan §2.5): `<cache_dir>/entries/`.
+/// Uses custom cache dir if set, otherwise `<data_dir>/cache/entries/`.
+/// Returns `None` when no base dir can be resolved.
 pub fn cache_entries_dir() -> Option<PathBuf> {
+    if let Some(custom) = CUSTOM_CACHE_DIR.get() {
+        return Some(custom.join("entries"));
+    }
     data_base_dir().map(|b| b.join("cache").join("entries"))
 }
 
-/// Disk cache dir for downloaded images (dev plan §2.5.2): `<data_dir>/cache/images/`.
-/// Returns `None` when no base data dir can be resolved.
+/// Disk cache dir for downloaded images (dev plan §2.5.2): `<cache_dir>/images/`.
+/// Uses custom cache dir if set, otherwise `<data_dir>/cache/images/`.
+/// Returns `None` when no base dir can be resolved.
 pub fn cache_images_dir() -> Option<PathBuf> {
+    if let Some(custom) = CUSTOM_CACHE_DIR.get() {
+        return Some(custom.join("images"));
+    }
     data_base_dir().map(|b| b.join("cache").join("images"))
 }
 
-/// Disk cache dir for favicons: `<data_dir>/cache/favicons/`.
+/// Disk cache dir for favicons: `<cache_dir>/favicons/`.
+/// Uses custom cache dir if set, otherwise `<data_dir>/cache/favicons/`.
 pub fn cache_favicons_dir() -> Option<PathBuf> {
+    if let Some(custom) = CUSTOM_CACHE_DIR.get() {
+        return Some(custom.join("favicons"));
+    }
     data_base_dir().map(|b| b.join("cache").join("favicons"))
 }
 

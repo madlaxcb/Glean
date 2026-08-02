@@ -37,7 +37,7 @@ pub use model::{
 pub use opml::{export_opml, parse_opml, OpmlOutline};
 pub use paths::{
     cache_entries_dir, cache_favicons_dir, cache_images_dir, clear_all_cache, credentials_path,
-    default_config_path, default_db_path, plugins_dir,
+    default_config_path, default_db_path, plugins_dir, set_custom_cache_dir,
 };
 pub use plugin::{
     Capabilities, Compliance, Credential, CredentialStore, Enhancer, EntryPatch, HostApi,
