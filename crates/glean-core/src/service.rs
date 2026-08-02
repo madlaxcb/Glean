@@ -1082,11 +1082,8 @@ impl GleanService {
 
     fn import_opml(&mut self, content: &str, overwrite: bool) -> Result<Vec<AppEvent>> {
         if overwrite {
-            // 覆盖导入：先删除现有全部订阅（starred 条目保留并脱离 feed）。
-            let exist: Vec<FeedId> = self.store.list_feeds()?.iter().map(|f| f.id).collect();
-            for id in exist {
-                self.store.delete_feed(id)?;
-            }
+            // 覆盖导入：先清空现有全部订阅(单事务,集合语句)。
+            self.store.clear_all_feeds()?;
         }
         let outlines = opml::parse_opml(content);
         let mut added = 0u32;

@@ -364,12 +364,12 @@ impl eframe::App for SpikeApp {
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("订阅 URL");
                     let feed_id = egui::Id::new("feed_url_input");
                     let te = egui::TextEdit::singleline(&mut self.state.feed_url_input)
                         .id(feed_id)
-                        .desired_width(400.0)
+                        .desired_width(360.0)
                         .hint_text("https://…/rss.xml");
                     let resp = ui.add(te);
                     if resp.clicked() || resp.gained_focus() {
@@ -377,13 +377,7 @@ impl eframe::App for SpikeApp {
                         resp.request_focus();
                     }
                     let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("添加").clicked() || enter {
-                        self.state.add_feed_from_url();
-                    }
-                    hint(ui, "示例: https://www.reddit.com/r/rust/.rss");
-                });
-                // 订阅选项：分类 / 文件夹 / 新建文件夹。
-                ui.horizontal(|ui| {
+                    // 订阅选项：分类 / 文件夹 / 新建文件夹，统一放在"添加"按钮之前。
                     ui.label("分类");
                     let cur_cat = self.state.feed_add_category;
                     let cur_icon = cur_cat.map(|c| c.icon()).unwrap_or("●");
@@ -453,9 +447,14 @@ impl eframe::App for SpikeApp {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.feed_add_new_folder)
                             .id(egui::Id::new("feed_add_new_folder"))
-                            .hint_text("留空则用上面所选")
-                            .desired_width(140.0),
+                            .hint_text("新建或留空")
+                            .desired_width(120.0),
                     );
+
+                    if ui.button("添加").clicked() || enter {
+                        self.state.add_feed_from_url();
+                    }
+                    hint(ui, "示例: https://www.reddit.com/r/rust/.rss");
                 });
             });
 
@@ -2345,6 +2344,20 @@ fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
     style.spacing.window_margin = Margin::same(14);
     style.spacing.menu_margin = Margin::same(8);
     style.spacing.indent = 20.0;
+
+    // 滚动条：让导航/列表的滚动条始终可见、高对比、可拖动。
+    // egui 默认是悬浮(floating)式滚动条,dormant 时几乎透明,浅色主题下难以察觉。
+    // 改为常驻厚实、前景色(文字色)高对比,配合各 ScrollArea 的 AlwaysVisible。
+    {
+        let s = &mut style.spacing.scroll;
+        s.floating = false;
+        s.foreground_color = true;
+        s.bar_width = 12.0;
+        s.floating_width = 12.0;
+        s.handle_min_length = 24.0;
+        s.bar_inner_margin = 3.0;
+        s.bar_outer_margin = 2.0;
+    }
 
     // 视觉：圆角 + 主题色。
     let mut visuals = if dark {

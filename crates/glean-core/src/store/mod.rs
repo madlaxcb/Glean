@@ -987,6 +987,26 @@ impl Store {
         Ok(())
     }
 
+    /// 覆盖导入用：在单事务里清空全部订阅。等价于逐条 delete_feed,
+    /// 但用集合语句 + 单事务,避免海量自动提交(源+条目)在 WAL 下的边角问题。
+    /// 星标条目保留,feed_id 由外键 ON DELETE SET NULL 置 NULL。
+    pub fn clear_all_feeds(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        // 1. 删除未星标条目的 FTS 行。
+        tx.execute(
+            "DELETE FROM entries_fts WHERE rowid IN (
+                SELECT id FROM entries WHERE is_starred = 0
+            )",
+            [],
+        )?;
+        // 2. 删除未星标条目。
+        tx.execute("DELETE FROM entries WHERE is_starred = 0", [])?;
+        // 3. 删除所有订阅;星标条目的 feed_id 由外键 SET NULL。
+        tx.execute("DELETE FROM feeds", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn rename_feed(&mut self, id: FeedId, title: &str) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE feeds SET title = ?1 WHERE id = ?2",
