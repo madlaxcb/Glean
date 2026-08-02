@@ -1857,12 +1857,17 @@ impl SpikeApp {
             num_rows,
             row_height,
         ));
-        egui::ScrollArea::vertical()
+        let scroll_out = egui::ScrollArea::vertical()
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;
+                // Measure actual row height on first visible row
+                let measure_y = ui.min_rect().min.y;
+                let mut first_row_height: Option<f32> = None;
+                let range_start = row_range.start;
+                let range_end = row_range.end;
                 for i in row_range {
                     let entry = &self.state.entries[i];
                     let read_mark = if entry.is_read { "已读" } else { "未读" };
@@ -1876,6 +1881,7 @@ impl SpikeApp {
                     };
                     let selected = Some(i) == current;
                     let thumb = self.thumbnails.get(&entry.id).cloned();
+                    let row_before_y = ui.min_rect().min.y;
                     // 整行可点击：缩略图（如有）+ 文字标题水平排列。
                     let row = ui.horizontal(|ui| {
                         if let Some(tex) = &thumb {
@@ -1885,6 +1891,10 @@ impl SpikeApp {
                         }
                         ui.selectable_label(selected, rich)
                     });
+                    if first_row_height.is_none() {
+                        let row_after_y = row.response.rect.max.y;
+                        first_row_height = Some(row_after_y - row_before_y);
+                    }
                     let resp = row.response;
                     let label_resp = row.inner;
                     if resp.clicked() || label_resp.clicked() {
@@ -1936,7 +1946,26 @@ impl SpikeApp {
                 if let Some(i) = clicked {
                     self.state.select_index(i);
                 }
+                // Log actual measured row height (debug-list-blank-space H2)
+                crate::write_debug_log(&format!(
+                    "[list-row-height] actual_first={:.1} virtual={:.1} range=[{},{}] measure_y={:.1}",
+                    first_row_height.unwrap_or(-1.0),
+                    row_height,
+                    range_start,
+                    range_end,
+                    measure_y,
+                ));
             });
+        let content_size = scroll_out.content_size;
+        let state_offset = scroll_out.state.offset.y;
+        crate::write_debug_log(&format!(
+            "[list-scroll-out] content_size=({:.1},{:.1}) offset_y={:.1} virtual_total={:.1} viewport_h={:.1}",
+            content_size.x,
+            content_size.y,
+            state_offset,
+            row_height * num_rows as f32,
+            before.height(),
+        ));
         let after = ui.available_rect_before_wrap();
         crate::write_debug_log(&format!(
             "[list-contents-after] after=({:.1},{:.1},{:.1},{:.1}) available=({:.1},{:.1})",
