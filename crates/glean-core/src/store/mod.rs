@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 pub struct Store {
     conn: Connection,
@@ -318,6 +318,17 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 12 {
+            // 条目缩略图/封面图 URL（列表预览用）。新库补列，重复列报错忽略。
+            let _ = self
+                .conn
+                .execute_batch("ALTER TABLE entries ADD COLUMN thumbnail_url TEXT;");
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '12')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -477,32 +488,32 @@ impl Store {
         let sql = match filter {
             EntryFilter::All => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                        (content_html != '' OR content_extracted != '') AS has_content
+                        (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Unread => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                        (content_html != '' OR content_extracted != '') AS has_content
+                        (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries WHERE is_read = 0
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Starred => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                        (content_html != '' OR content_extracted != '') AS has_content
+                        (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries WHERE is_starred = 1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             // Last 24h; fallback to fetched_at when published_at is missing.
             EntryFilter::Today => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                        (content_html != '' OR content_extracted != '') AS has_content
+                        (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries
                  WHERE COALESCE(published_at, fetched_at) >= ?1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
             EntryFilter::Feed(_) => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                        (content_html != '' OR content_extracted != '') AS has_content
+                        (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries WHERE feed_id = ?1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
@@ -518,6 +529,7 @@ impl Store {
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
                 has_content: r.get::<_, i64>(7)? != 0,
+                thumbnail_url: r.get(8)?,
             })
         };
         let list = match filter {
@@ -543,7 +555,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred, author,
-                        content_html, content_extracted
+                        content_html, content_extracted, thumbnail_url
                  FROM entries WHERE id = ?1",
                 params![id.0],
                 |r| {
@@ -558,6 +570,7 @@ impl Store {
                             is_starred: r.get::<_, i64>(6)? != 0,
                             has_content: !r.get::<_, String>(8)?.is_empty()
                                 || !r.get::<_, String>(9)?.is_empty(),
+                            thumbnail_url: r.get(10)?,
                         },
                         author: r.get(7)?,
                         content_html: r.get(8)?,
@@ -716,7 +729,7 @@ impl Store {
     fn search_fts(&self, q: &str, limit: i64) -> Result<Vec<EntrySummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.feed_id, e.title, e.url, e.published_at, e.is_read, e.is_starred,
-                    (e.content_html != '' OR e.content_extracted != '') AS has_content
+                    (e.content_html != '' OR e.content_extracted != '') AS has_content, e.thumbnail_url
              FROM entries_fts f
              JOIN entries e ON e.id = f.rowid
              WHERE entries_fts MATCH ?1
@@ -730,7 +743,7 @@ impl Store {
         let pattern = format!("%{q}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
-                    (content_html != '' OR content_extracted != '') AS has_content
+                    (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
              FROM entries
              WHERE title LIKE ?1 OR IFNULL(summary,'') LIKE ?1 OR content_html LIKE ?1
              ORDER BY id DESC LIMIT ?2",
@@ -749,6 +762,15 @@ impl Store {
             )
             .optional()?;
         Ok(id.map(FeedId))
+    }
+
+    /// 列出某订阅下所有条目的 guid（增量刷新提示用）。
+    pub fn list_guids_for_feed(&self, feed_id: FeedId) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT guid FROM entries WHERE feed_id = ?1")?;
+        let rows = stmt.query_map(params![feed_id.0], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     pub fn get_feed_fetch_meta(
@@ -810,6 +832,7 @@ impl Store {
         published_at: Option<i64>,
         summary: Option<&str>,
         content_html: &str,
+        thumbnail_url: Option<&str>,
     ) -> Result<bool> {
         let existing_id = self
             .conn
@@ -822,8 +845,8 @@ impl Store {
         let fetched = now_secs();
         self.conn.execute(
             "INSERT INTO entries(
-                feed_id, guid, title, url, author, published_at, summary, content_html, fetched_at
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                feed_id, guid, title, url, author, published_at, summary, content_html, fetched_at, thumbnail_url
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(feed_id, guid) DO UPDATE SET
                 title = excluded.title,
                 url = excluded.url,
@@ -831,7 +854,8 @@ impl Store {
                 published_at = excluded.published_at,
                 summary = excluded.summary,
                 content_html = excluded.content_html,
-                fetched_at = excluded.fetched_at",
+                fetched_at = excluded.fetched_at,
+                thumbnail_url = COALESCE(excluded.thumbnail_url, entries.thumbnail_url)",
             params![
                 feed_id.0,
                 guid,
@@ -841,7 +865,8 @@ impl Store {
                 published_at,
                 summary,
                 content_html,
-                fetched
+                fetched,
+                thumbnail_url
             ],
         )?;
         let is_new = existing_id.is_none();
@@ -1045,6 +1070,7 @@ fn map_summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntrySummary> {
         is_read: r.get::<_, i64>(5)? != 0,
         is_starred: r.get::<_, i64>(6)? != 0,
         has_content: r.get::<_, i64>(7)? != 0,
+        thumbnail_url: r.get(8)?,
     })
 }
 
@@ -1139,7 +1165,7 @@ mod tests {
             .unwrap();
         let body = "<p>upserted</p>";
         assert!(store
-            .upsert_entry(fid, "g1", "Title", None, None, None, None, body)
+            .upsert_entry(fid, "g1", "Title", None, None, None, None, body, None)
             .unwrap());
         let entries = store.list_entries(EntryFilter::All).unwrap();
         let id = entries[0].id;
@@ -1168,7 +1194,8 @@ mod tests {
                 None,
                 None,
                 None,
-                "<p>caption</p>"
+                "<p>caption</p>",
+                None
             )
             .unwrap());
         let inserted = store
@@ -1181,12 +1208,64 @@ mod tests {
                 None,
                 None,
                 r#"<img src="https://i.pximg.net/new.jpg"><p>caption</p>"#,
+                None,
             )
             .unwrap();
         let id = store.list_entries(EntryFilter::All).unwrap()[0].id;
         let stored = store.get_entry(id).unwrap().content_html;
         assert!(!inserted);
         assert!(stored.contains("i.pximg.net"));
+    }
+
+    /// schema v12：thumbnail_url 持久化并在 list_entries / get_entry 中读回。
+    #[test]
+    fn thumbnail_url_persists_and_lists() {
+        let mut store = Store::open_in_memory().unwrap();
+        let fid = store
+            .add_feed(
+                "Pixiv",
+                "https://www.pixiv.net/users/1",
+                None,
+                FeedCategory::Image,
+            )
+            .unwrap();
+        assert!(store
+            .upsert_entry(
+                fid,
+                "pixiv-1",
+                "T",
+                None,
+                None,
+                None,
+                None,
+                "<p>x</p>",
+                Some("https://i.pximg.net/c/thumb.jpg"),
+            )
+            .unwrap());
+        // list_entries 读回
+        let listed = store.list_entries(EntryFilter::All).unwrap();
+        assert_eq!(
+            listed[0].thumbnail_url.as_deref(),
+            Some("https://i.pximg.net/c/thumb.jpg")
+        );
+        // get_entry 读回
+        let detail = store.get_entry(listed[0].id).unwrap();
+        assert_eq!(
+            detail.summary.thumbnail_url.as_deref(),
+            Some("https://i.pximg.net/c/thumb.jpg")
+        );
+        // COALESCE：刷新时传 None 不覆盖已有缩略图
+        store
+            .upsert_entry(
+                fid, "pixiv-1", "T2", None, None, None, None, "<p>y</p>", None,
+            )
+            .unwrap();
+        let listed2 = store.list_entries(EntryFilter::All).unwrap();
+        assert_eq!(
+            listed2[0].thumbnail_url.as_deref(),
+            Some("https://i.pximg.net/c/thumb.jpg"),
+            "刷新传 None 时应保留原缩略图"
+        );
     }
 
     /// schema v9：entry_enhancements 写入/覆盖/读取/级联删除。

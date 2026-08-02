@@ -187,6 +187,9 @@ pub struct EntrySummary {
     pub is_starred: bool,
     /// True if content_html is non-empty (cached / offline-readable).
     pub has_content: bool,
+    /// 缩略图/封面图 URL（列表预览用，可能为空）。
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

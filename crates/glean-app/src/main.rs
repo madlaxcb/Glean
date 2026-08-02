@@ -219,6 +219,10 @@ pub struct SpikeState {
     favicon_rx: Option<mpsc::Receiver<(FeedId, Vec<u8>, u32, u32)>>,
     /// Set of feed IDs whose favicon download is already in flight.
     favicon_pending: std::collections::HashSet<FeedId>,
+    /// Background thumbnail download receiver: (entry_id, rgba_bytes, width, height).
+    thumbnail_rx: Option<mpsc::Receiver<(EntryId, Vec<u8>, u32, u32)>>,
+    /// Set of entry IDs whose thumbnail download is already in flight.
+    thumbnail_pending: std::collections::HashSet<EntryId>,
     /// 导航栏分类组折叠状态（会话内有效，不持久化）。
     pub collapsed_categories: std::collections::HashSet<glean_core::FeedCategory>,
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
@@ -306,6 +310,8 @@ impl SpikeState {
             img_serve_base: None,
             favicon_rx: None,
             favicon_pending: std::collections::HashSet::new(),
+            thumbnail_rx: None,
+            thumbnail_pending: std::collections::HashSet::new(),
             collapsed_categories: std::collections::HashSet::new(),
             plugin_cred_edits: std::collections::HashMap::new(),
         };
@@ -1172,6 +1178,81 @@ impl SpikeState {
             }
         }
         result
+    }
+
+    /// Spawn background thumbnail downloads for entries that have a thumbnail
+    /// URL but no texture yet. Pixiv thumbnails on i.pximg.net need a Referer
+    /// header and the configured proxy; we reuse the service's HTTP client.
+    pub fn maybe_download_thumbnails(&mut self) {
+        if self.thumbnail_rx.is_some() {
+            return;
+        }
+        let client = self
+            .service
+            .http_proxy()
+            .map(|c| c.inner.clone())
+            .unwrap_or_else(|| self.service.http().inner.clone());
+        let mut tasks = Vec::new();
+        for e in &self.entries {
+            let Some(url) = e.thumbnail_url.as_deref() else {
+                continue;
+            };
+            if url.is_empty() || self.thumbnail_pending.contains(&e.id) {
+                continue;
+            }
+            if tasks.len() >= 8 {
+                break;
+            }
+            tasks.push((e.id, url.to_string()));
+        }
+        if tasks.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<(EntryId, Vec<u8>, u32, u32)>();
+        self.thumbnail_rx = Some(rx);
+        for (eid, url) in tasks {
+            self.thumbnail_pending.insert(eid);
+            let tx = tx.clone();
+            let client = client.clone();
+            thread::spawn(move || {
+                let mut req = client.get(&url);
+                if url.contains("pximg.net") {
+                    req = req.header(reqwest::header::REFERER, "https://www.pixiv.net/");
+                }
+                let sent = match req.send().and_then(|r| r.error_for_status()) {
+                    Ok(resp) => match resp.bytes() {
+                        Ok(bytes) => match image::load_from_memory(&bytes) {
+                            Ok(img) => {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                tx.send((eid, rgba.into_raw(), w, h)).is_ok()
+                            }
+                            Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                        },
+                        Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                    },
+                    Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                };
+                let _ = sent;
+            });
+        }
+    }
+
+    /// Poll background thumbnail downloads. Returns all completed results.
+    pub fn poll_thumbnail_cache(&mut self) -> Vec<(EntryId, Vec<u8>, u32, u32)> {
+        let rx = match &self.thumbnail_rx {
+            Some(rx) => rx,
+            None => return Vec::new(),
+        };
+        let mut results = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            self.thumbnail_pending.remove(&r.0);
+            results.push(r);
+        }
+        if self.thumbnail_pending.is_empty() {
+            self.thumbnail_rx = None;
+        }
+        results
     }
 
     /// Entry currently being extracted (for UI button gating).

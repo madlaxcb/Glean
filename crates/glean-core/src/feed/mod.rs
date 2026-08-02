@@ -21,6 +21,8 @@ pub struct RefreshTask {
     pub last_modified: Option<String>,
     /// 是否走代理抓取（use_proxy = true 时使用设置页配置的代理）。
     pub use_proxy: bool,
+    /// 该订阅已存在条目的 guid 列表（增量刷新提示，供 Tier 2 脚本早停）。
+    pub existing_guids: Vec<String>,
 }
 
 /// Outcome of refreshing one feed (sent back from background thread).

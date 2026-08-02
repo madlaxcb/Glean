@@ -97,7 +97,12 @@ impl Runtime {
     /// `source_url` 是用户输入的原始订阅 URL（如
     /// `https://space.bilibili.com/12345`），通过 Rhai 全局常量 `SOURCE_URL`
     /// 暴露给脚本，脚本据此提取路径变量（如 mid）。
-    pub fn run_script(&self, script: &str, source_url: &str) -> Result<ParsedFeed> {
+    pub fn run_script(
+        &self,
+        script: &str,
+        source_url: &str,
+        existing_guids: &[String],
+    ) -> Result<ParsedFeed> {
         // 重置上次运行残留的 feed_title（同一 Runtime 可多次执行脚本，
         // 避免第一次 set_feed_title 的结果泄漏到第二次）。
         if let Some(c) = &self.collector {
@@ -105,6 +110,15 @@ impl Runtime {
         }
         let mut scope = rhai::Scope::new();
         scope.push_constant("SOURCE_URL", source_url.to_string());
+        // 增量刷新提示：该订阅已存在条目的 guid 集合，格式为 ",guid1,guid2,"
+        // （首尾补逗号，便于脚本用 contains 精确匹配）。空集合注入空串。
+        // 脚本可据此在按时间倒序的分页中遇到已存在条目时提前停止，减少请求。
+        let guid_set = if existing_guids.is_empty() {
+            String::new()
+        } else {
+            format!(",{},", existing_guids.join(","))
+        };
+        scope.push_constant("EXISTING_GUIDS", guid_set);
         let _ = self
             .engine
             .eval_with_scope::<rhai::Dynamic>(&mut scope, script)
@@ -264,6 +278,8 @@ struct CurrentEntry {
     summary: Option<String>,
     content_html: String,
     published_at: Option<i64>,
+    /// 缩略图/封面图 URL（列表预览用）。
+    thumbnail: Option<String>,
 }
 
 impl EntryCollector {
@@ -281,6 +297,7 @@ impl EntryCollector {
             published_at: cur.published_at,
             summary: cur.summary,
             content_html: cur.content_html,
+            thumbnail: cur.thumbnail,
         });
     }
 }
@@ -305,6 +322,7 @@ fn register_entry_fns(engine: &mut Engine, collector: Arc<Mutex<EntryCollector>>
             "guid" => g.current.guid = Some(s),
             "summary" => g.current.summary = Some(s),
             "content_html" => g.current.content_html = s,
+            "thumbnail" => g.current.thumbnail = Some(s),
             "published_at" => {
                 g.current.published_at = if let Ok(i) = value.as_int() {
                     Some(i)
@@ -801,7 +819,7 @@ mod tests {
             add_entry();
         "#;
         let parsed = rt
-            .run_script(script, "https://example.com/test")
+            .run_script(script, "https://example.com/test", &[])
             .expect("run_script");
         assert_eq!(parsed.title, "T");
         assert_eq!(parsed.entries.len(), 2);
@@ -828,7 +846,7 @@ mod tests {
             set_field("guid", "g1");
         "#;
         let parsed = rt
-            .run_script(script, "https://example.com/test")
+            .run_script(script, "https://example.com/test", &[])
             .expect("run_script");
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].title, "Only");
@@ -847,13 +865,17 @@ mod tests {
             add_entry();
         "#;
         let parsed = rt
-            .run_script(script, "https://space.bilibili.com/3428150")
+            .run_script(script, "https://space.bilibili.com/3428150", &[])
             .expect("run_script");
         assert_eq!(parsed.title, "Bilibili 某UP主");
         assert_eq!(parsed.entries.len(), 1);
         // 未调用 set_feed_title 时回退到 manifest.name
         let parsed2 = rt
-            .run_script(r#"set_field("title", "v2"); add_entry();"#, "https://x.com")
+            .run_script(
+                r#"set_field("title", "v2"); add_entry();"#,
+                "https://x.com",
+                &[],
+            )
             .expect("run_script");
         assert_eq!(parsed2.title, "T");
     }

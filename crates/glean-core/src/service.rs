@@ -317,7 +317,12 @@ impl GleanService {
     /// 让调用方走默认 RSS。返回 `Some(Err)` 表示插件命中但执行失败。
     /// `client` 由调用方按订阅的 use_proxy 选定（直连或代理）；
     /// 若插件自身开启了「使用代理」（§11.5.10），则覆盖为代理 client。
-    fn fetch_via_plugin(&self, url: &str, client: &Arc<HttpClient>) -> Option<Result<ParsedFeed>> {
+    fn fetch_via_plugin(
+        &self,
+        url: &str,
+        client: &Arc<HttpClient>,
+        existing_guids: &[String],
+    ) -> Option<Result<ParsedFeed>> {
         let mgr = self.plugin_mgr.as_deref()?;
         // 命中插件后按插件级代理开关覆盖订阅级选择；未配置代理时回退直连。
         let effective = mgr
@@ -336,7 +341,8 @@ impl GleanService {
         }
         // Tier 2：Rhai 脚本，需要凭证快照（如有）。
         let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        mgr.run_tier2_for_url(url, effective, creds).transpose()
+        mgr.run_tier2_for_url(url, effective, creds, existing_guids)
+            .transpose()
     }
 
     pub fn handle(&mut self, cmd: AppCommand) -> Vec<AppEvent> {
@@ -618,6 +624,7 @@ impl GleanService {
                 etag,
                 last_modified,
                 use_proxy,
+                existing_guids: self.store.list_guids_for_feed(id).unwrap_or_default(),
             });
         }
         Ok(tasks)
@@ -646,6 +653,7 @@ impl GleanService {
                 etag,
                 last_modified,
                 use_proxy,
+                existing_guids: self.store.list_guids_for_feed(id).unwrap_or_default(),
             });
         }
         Ok(tasks)
@@ -698,6 +706,7 @@ impl GleanService {
                         e.published_at,
                         e.summary.as_deref(),
                         &e.content_html,
+                        e.thumbnail.as_deref(),
                     )? {
                         new_items += 1;
                     }
@@ -860,7 +869,8 @@ impl GleanService {
         let client = pick_client(use_proxy, &self.http, &self.http_proxy);
         // §11.5 刷新时先做插件路由：URL 命中已加载插件则走 Tier 1/2，
         // 跳过 RSS fetch（插件不做条件请求，每次拉新）。未命中走默认 RSS。
-        if let Some(res) = self.fetch_via_plugin(&url, client) {
+        let existing = self.store.list_guids_for_feed(id).unwrap_or_default();
+        if let Some(res) = self.fetch_via_plugin(&url, client, &existing) {
             return Some(match res {
                 Ok(parsed) => RefreshOutcome::Updated {
                     feed_id: id,
@@ -967,7 +977,7 @@ impl GleanService {
     /// 返回 `Ok(None)` 表示未命中插件（调用方走 RSS 发现）；`Err` 表示插件命中但失败。
     fn try_add_via_plugin(&mut self, url: &str) -> Result<Option<Vec<AppEvent>>> {
         // 新订阅默认直连（use_proxy 之后可在右键菜单单独开启）。
-        let parsed = match self.fetch_via_plugin(url, &self.http) {
+        let parsed = match self.fetch_via_plugin(url, &self.http, &[]) {
             None => return Ok(None),
             Some(Err(e)) => return Err(e),
             Some(Ok(p)) => p,
@@ -1011,6 +1021,7 @@ impl GleanService {
                 e.published_at,
                 e.summary.as_deref(),
                 &e.content_html,
+                e.thumbnail.as_deref(),
             )? {
                 new_items += 1;
             }
@@ -1180,7 +1191,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
         }
         let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
         if let Some(res) = mgr
-            .run_tier2_for_url(&task.url, Arc::clone(client), creds)
+            .run_tier2_for_url(&task.url, Arc::clone(client), creds, &task.existing_guids)
             .transpose()
         {
             return match res {

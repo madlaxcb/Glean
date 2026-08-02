@@ -43,6 +43,8 @@ pub struct SpikeApp {
     confirm_uninstall: Option<String>,
     /// Cached favicon textures keyed by FeedId.
     favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
+    /// Cached thumbnail textures keyed by EntryId (列表预览图).
+    thumbnails: std::collections::HashMap<glean_core::EntryId, egui::TextureHandle>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
     geometry_timer: f32,
     /// 已应用到 ctx 的样式（dark, accent）；变化时才重建 style，避免每帧 set_style。
@@ -69,6 +71,7 @@ impl SpikeApp {
             show_plugins: false,
             confirm_uninstall: None,
             favicons: std::collections::HashMap::new(),
+            thumbnails: std::collections::HashMap::new(),
             geometry_timer: 0.0,
             applied_style,
         }
@@ -130,6 +133,23 @@ impl eframe::App for SpikeApp {
             );
             self.favicons.insert(fid, tex);
         }
+
+        // Poll background thumbnail downloads (列表预览图).
+        for (eid, rgba, w, h) in self.state.poll_thumbnail_cache() {
+            if w == 0 || h == 0 {
+                continue; // decode failed
+            }
+            let size = [w as usize, h as usize];
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+            let tex = ctx.load_texture(
+                format!("thumb_{}", eid.0),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.thumbnails.insert(eid, tex);
+        }
+        // Spawn thumbnail downloads for entries lacking a texture.
+        self.state.maybe_download_thumbnails();
 
         // Load cached favicons on first frame (after Bootstrap).
         if !self.primed {
@@ -1740,7 +1760,7 @@ impl SpikeApp {
     fn draw_list_contents(&mut self, ui: &mut Ui) {
         // Virtual scrolling: only render visible rows.  Each row is ~20px
         // (selectable_label default height). show_rows handles the offset.
-        let row_height = 20.0_f32;
+        let row_height = 38.0_f32;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
             .max_height(ui.available_height())
@@ -1759,7 +1779,18 @@ impl SpikeApp {
                     } else {
                         RichText::new(label).strong()
                     };
-                    let resp = ui.selectable_label(Some(i) == current, rich);
+                    let selected = Some(i) == current;
+                    let thumb = self.thumbnails.get(&entry.id).cloned();
+                    // 整行可点击：缩略图（如有）+ 文字标题水平排列。
+                    let row = ui.horizontal(|ui| {
+                        if let Some(tex) = &thumb {
+                            ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(30.0)));
+                        } else {
+                            ui.allocate_space(Vec2::splat(30.0));
+                        }
+                        ui.selectable_label(selected, rich)
+                    });
+                    let resp = row.response;
                     if resp.clicked() {
                         clicked = Some(i);
                     }

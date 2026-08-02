@@ -209,6 +209,7 @@ mod tests {
                     e.published_at,
                     e.summary.as_deref(),
                     &e.content_html,
+                    e.thumbnail.as_deref(),
                 )
                 .unwrap()
             {

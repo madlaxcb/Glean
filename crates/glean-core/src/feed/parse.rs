@@ -22,6 +22,8 @@ pub struct ParsedEntry {
     pub published_at: Option<i64>,
     pub summary: Option<String>,
     pub content_html: String,
+    /// 缩略图/封面图 URL（列表预览用，可能为空）。
+    pub thumbnail: Option<String>,
 }
 
 pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed> {
@@ -76,6 +78,7 @@ pub fn parse_feed(bytes: &[u8]) -> Result<ParsedFeed> {
             published_at,
             summary,
             content_html,
+            thumbnail: None,
         });
     }
 

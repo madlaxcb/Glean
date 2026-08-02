@@ -210,6 +210,7 @@ fn map_entry(item: &Value, fields: &crate::plugin::manifest::Tier1FieldMap) -> P
         published_at,
         summary,
         content_html,
+        thumbnail: None,
     }
 }
 

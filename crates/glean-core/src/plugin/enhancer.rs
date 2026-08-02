@@ -88,6 +88,7 @@ mod tests {
                 is_read: false,
                 is_starred: false,
                 has_content: false,
+                thumbnail_url: None,
             },
             author: None,
             content_html: String::new(),

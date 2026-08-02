@@ -239,6 +239,7 @@ while page_i < max_pages {
     }
 
     let page_count = 0;
+    let saw_existing = false;
     for item in illusts {
         let id = json_path(item, "id");
         if type_of(id) != "i64" { continue; }
@@ -247,12 +248,55 @@ while page_i < max_pages {
         let caption = str_safe(json_path(item, "caption"));
         let item_author = str_safe(json_path(item, "user.name"));
         let published = iso_to_unix(str_safe(json_path(item, "create_date")));
+        let guid = "pixiv-" + str_safe(id);
 
-        set_field("guid", "pixiv-" + str_safe(id));
-        set_field("title", title);
+        // 增量刷新：遇到已存在条目则标记，处理完本页后停止翻页。
+        // Pixiv 按时间倒序返回，更早的页必然也已存在。
+        if len(EXISTING_GUIDS) > 0 && EXISTING_GUIDS.contains("," + guid + ",") {
+            saw_existing = true;
+        }
+
+        // 作品类型标识：R-18 / R-18G / 多图页数
+        let type_tag = "";
+        let xr = json_path(item, "x_restrict");
+        if type_of(xr) == "i64" {
+            if xr == 1 { type_tag = "[R-18] "; }
+            else if xr == 2 { type_tag = "[R-18G] "; }
+        }
+        let pc = json_path(item, "page_count");
+        if type_of(pc) == "i64" && pc > 1 {
+            type_tag += "[×" + str_safe(pc) + "] ";
+        }
+
+        set_field("guid", guid);
+        set_field("title", type_tag + title);
         set_field("url", "https://www.pixiv.net/artworks/" + str_safe(id));
         set_field("author", item_author);
         if published > 0 { set_field("published_at", published); }
+
+        // 缩略图（列表预览用）：优先方形缩略图
+        let thumb = str_safe(json_path(item, "image_urls.square_medium"));
+        if len(thumb) == 0 { thumb = str_safe(json_path(item, "image_urls.medium")); }
+        if len(thumb) > 0 { set_field("thumbnail", thumb); }
+
+        // 元信息：收藏数 / 浏览量 / 标签
+        let meta = "";
+        let bm = json_path(item, "total_bookmarks");
+        if type_of(bm) == "i64" { meta += "<span>♥ " + str_safe(bm) + "</span> "; }
+        let vw = json_path(item, "total_view");
+        if type_of(vw) == "i64" { meta += "<span>👁 " + str_safe(vw) + "</span>"; }
+        let tags = json_path(item, "tags");
+        if type_of(tags) == "array" {
+            let tag_str = "";
+            let tag_n = 0;
+            for t in tags {
+                if tag_n >= 8 { break; }
+                let nm = str_safe(json_path(t, "name"));
+                if len(nm) > 0 { tag_str += "#" + nm + " "; tag_n += 1; }
+            }
+            if len(tag_str) > 0 { meta += "<span class=\"pixiv-tags\">" + tag_str + "</span>"; }
+        }
+
         let html = "";
         let pages = json_path(item, "meta_pages");
         if type_of(pages) == "array" && len(pages) > 0 {
@@ -281,6 +325,7 @@ while page_i < max_pages {
                 html += "<p><img src=\"" + img + "\"></p>";
             }
         }
+        if len(meta) > 0 { html = "<div class=\"pixiv-meta\">" + meta + "</div>" + html; }
         if len(caption) > 0 {
             html += "<div>" + caption + "</div>";
         }
@@ -290,6 +335,10 @@ while page_i < max_pages {
         count += 1;
     }
     log("info", "pixiv 第 " + page_i + " 页 +" + page_count + " 条，累计 " + count);
+    if saw_existing {
+        log("info", "pixiv 遇到已存在条目，停止翻页（增量刷新）");
+        break;
+    }
 
     let next = str_safe(json_path(json, "next_url"));
     if len(next) == 0 {
