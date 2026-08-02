@@ -79,6 +79,8 @@ pub enum AppCommand {
     },
     ImportOpml {
         content: String,
+        /// true = 覆盖导入（先清空现有订阅）；false = 追加。
+        overwrite: bool,
     },
     ExportOpml,
     /// Manually trigger full-text extraction for an entry (auto-extract can

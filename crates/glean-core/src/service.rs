@@ -560,7 +560,7 @@ impl GleanService {
                 });
                 Ok(ev)
             }
-            AppCommand::ImportOpml { content } => self.import_opml(&content),
+            AppCommand::ImportOpml { content, overwrite } => self.import_opml(&content, overwrite),
             AppCommand::ExportOpml => {
                 let feeds = self.store.list_feeds()?;
                 let xml = opml::export_opml(&feeds);
@@ -1080,7 +1080,14 @@ impl GleanService {
         }
     }
 
-    fn import_opml(&mut self, content: &str) -> Result<Vec<AppEvent>> {
+    fn import_opml(&mut self, content: &str, overwrite: bool) -> Result<Vec<AppEvent>> {
+        if overwrite {
+            // 覆盖导入：先删除现有全部订阅（starred 条目保留并脱离 feed）。
+            let exist: Vec<FeedId> = self.store.list_feeds()?.iter().map(|f| f.id).collect();
+            for id in exist {
+                self.store.delete_feed(id)?;
+            }
+        }
         let outlines = opml::parse_opml(content);
         let mut added = 0u32;
         for o in &outlines {
@@ -1100,8 +1107,20 @@ impl GleanService {
             }
         }
         let mut ev = self.emit_nav()?;
+        ev.extend(self.emit_entries()?);
+        ev.push(AppEvent::UnreadChanged {
+            total: self.store.unread_count()?,
+        });
+        let mode = if overwrite {
+            "覆盖导入"
+        } else {
+            "OPML 导入"
+        };
         ev.push(AppEvent::Status {
-            message: format!("OPML 导入：新增 {added} 个订阅（共 {} 条）", outlines.len()),
+            message: format!(
+                "{mode}：新增 {added} 个订阅（OPML 共 {} 条）",
+                outlines.len()
+            ),
         });
         Ok(ev)
     }

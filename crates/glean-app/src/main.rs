@@ -16,8 +16,8 @@ use glean_core::{
     default_config_path, default_db_path, run_enhance_task, run_extract_task,
     run_refresh_task_with_ctx, should_extract, AppCommand, AppConfig, AppEvent, EnhanceAction,
     EnhanceOutcome, EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome, ExtractTask,
-    FaviconCache, Feed, FeedId, Folder, FolderId, GleanService, ImagePolicy, ReaderHostMode,
-    RefreshCtx, RefreshOutcome, RefreshTask,
+    FaviconCache, Feed, FeedCategory, FeedId, Folder, FolderId, GleanService, ImagePolicy,
+    ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::mpsc;
@@ -159,6 +159,12 @@ pub struct SpikeState {
     pub reader: ReaderHost,
     pub splitting: bool,
     pub feed_url_input: String,
+    /// 添加订阅时选择的分类（None = 沿用自动分类 categorize）。
+    pub feed_add_category: Option<FeedCategory>,
+    /// 添加订阅时选择的目标文件夹（None = 无文件夹）。
+    pub feed_add_folder: Option<FolderId>,
+    /// 添加订阅时新建文件夹名（非空则新建并放入该文件夹）。
+    pub feed_add_new_folder: String,
     /// Background refresh state.
     refresh_rx: Option<mpsc::Receiver<RefreshOutcome>>,
     refresh_pending: usize,
@@ -233,6 +239,12 @@ pub struct SpikeState {
     pub nav_active_category: Option<glean_core::FeedCategory>,
     /// 导航栏文件夹展开状态（会话内有效）。展开的文件夹 id 集合。
     pub expanded_folders: std::collections::HashSet<glean_core::FolderId>,
+    /// 导航区多选开关（会话内有效）。开启时，点击订阅行切换选中状态。
+    pub feed_multi_select: bool,
+    /// 多选模式下选中的订阅 id 集合。
+    pub selected_feeds: std::collections::HashSet<glean_core::FeedId>,
+    /// OPML 导入是否覆盖（false = 追加）。
+    pub opml_import_overwrite: bool,
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
     /// 跨帧存活，避免输入被每帧重绘覆盖。
     pub plugin_cred_edits: std::collections::HashMap<String, (String, String)>,
@@ -286,6 +298,9 @@ impl SpikeState {
             reader: ReaderHost::new(),
             splitting: false,
             feed_url_input: String::new(),
+            feed_add_category: None,
+            feed_add_folder: None,
+            feed_add_new_folder: String::new(),
             refresh_rx: None,
             refresh_pending: 0,
             opml_export: None,
@@ -338,6 +353,9 @@ impl SpikeState {
             collapsed_categories: std::collections::HashSet::new(),
             nav_active_category: None,
             expanded_folders: std::collections::HashSet::new(),
+            feed_multi_select: false,
+            selected_feeds: std::collections::HashSet::new(),
+            opml_import_overwrite: false,
             plugin_cred_edits: std::collections::HashMap::new(),
         };
         // Local loopback server for cached images (full-res Pixiv originals etc.).
@@ -708,10 +726,51 @@ impl SpikeState {
             return;
         }
         self.status = format!("正在抓取 {url} …");
-        self.dispatch(AppCommand::AddFeedFromUrl { feed_url: url });
-        if !self.status.starts_with("Error") {
-            self.feed_url_input.clear();
+        self.dispatch(AppCommand::AddFeedFromUrl {
+            feed_url: url.clone(),
+        });
+        if self.status.starts_with("错误") {
+            return;
         }
+        self.feed_url_input.clear();
+        // 把订阅栏选择的分类 / 文件夹（含新建文件夹）应用到刚添加的订阅上。
+        self.apply_add_options(&url);
+    }
+
+    /// 把订阅栏选择的分类 / 文件夹（含新建文件夹）应用到刚添加的订阅上。
+    fn apply_add_options(&mut self, url: &str) {
+        let Some(feed) = self.feeds.iter().find(|f| f.feed_url == url).cloned() else {
+            // URL 规范化后与输入不一致（如 GitHub releases、YouTube），无法
+            // 定位到新源，此时跳过个性化设置，保持默认分类 / 无文件夹。
+            return;
+        };
+        if let Some(cat) = self.feed_add_category {
+            self.dispatch(AppCommand::SetFeedCategory {
+                id: feed.id,
+                category: cat,
+            });
+        }
+        let new_name = self.feed_add_new_folder.trim().to_string();
+        let folder = if !new_name.is_empty() {
+            // 复用同名文件夹，否则新建。
+            if let Some(f) = self.folders.iter().find(|f| f.name == new_name) {
+                Some(f.id)
+            } else {
+                self.dispatch(AppCommand::CreateFolder {
+                    name: new_name.clone(),
+                });
+                self.folders
+                    .iter()
+                    .find(|f| f.name == new_name)
+                    .map(|f| f.id)
+            }
+        } else {
+            self.feed_add_folder
+        };
+        if let Some(fid) = folder {
+            self.move_feed_to_folder(feed.id, Some(fid));
+        }
+        self.feed_add_new_folder.clear();
     }
 
     /// Launch background refresh: HTTP on threads, DB writes on UI thread.
@@ -744,6 +803,28 @@ impl SpikeState {
         self.dispatch(AppCommand::DeleteFeed { id });
     }
 
+    /// 批量删除多选的订阅，并清空选择。
+    pub fn batch_delete_feeds(&mut self, ids: Vec<glean_core::FeedId>) {
+        let n = ids.len();
+        for id in ids {
+            self.dispatch(AppCommand::DeleteFeed { id });
+        }
+        self.selected_feeds.clear();
+        self.status = format!("已删除 {n} 个订阅");
+    }
+
+    /// 批量移动多选的订阅到指定文件夹（None = 移出文件夹）。
+    pub fn batch_move_feeds(&mut self, ids: Vec<glean_core::FeedId>, folder_id: Option<FolderId>) {
+        for id in ids {
+            self.dispatch(AppCommand::MoveFeedToFolder {
+                feed_id: id,
+                folder_id,
+            });
+        }
+        self.selected_feeds.clear();
+        self.status = "已批量移动订阅".into();
+    }
+
     pub fn toggle_star_current(&mut self) {
         if let Some(e) = &self.open_detail {
             let id = e.summary.id;
@@ -772,7 +853,10 @@ impl SpikeState {
             self.status = "请粘贴 OPML 内容".into();
             return;
         }
-        self.dispatch(AppCommand::ImportOpml { content });
+        self.dispatch(AppCommand::ImportOpml {
+            content,
+            overwrite: self.opml_import_overwrite,
+        });
         if !self.status.starts_with("错误") {
             self.opml_import_input.clear();
         }

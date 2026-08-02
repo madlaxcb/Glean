@@ -382,6 +382,81 @@ impl eframe::App for SpikeApp {
                     }
                     hint(ui, "示例: https://www.reddit.com/r/rust/.rss");
                 });
+                // 订阅选项：分类 / 文件夹 / 新建文件夹。
+                ui.horizontal(|ui| {
+                    ui.label("分类");
+                    let cur_cat = self.state.feed_add_category;
+                    let cur_icon = cur_cat.map(|c| c.icon()).unwrap_or("●");
+                    let cur_label = cur_cat.map(|c| c.label()).unwrap_or("自动");
+                    egui::ComboBox::from_id_salt("feed_add_category")
+                        .selected_text(format!("{cur_icon} {cur_label}"))
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for c in FEED_CATEGORIES {
+                                if ui
+                                    .selectable_label(
+                                        cur_cat == Some(c),
+                                        format!("{} {}", c.icon(), c.label()),
+                                    )
+                                    .clicked()
+                                {
+                                    self.state.feed_add_category = Some(c);
+                                }
+                            }
+                            ui.separator();
+                            if ui.selectable_label(cur_cat.is_none(), "● 自动").clicked() {
+                                self.state.feed_add_category = None;
+                            }
+                        });
+
+                    ui.label("文件夹");
+                    let folder_label = match self.state.feed_add_folder {
+                        Some(fid) => self
+                            .state
+                            .folders
+                            .iter()
+                            .find(|f| f.id == fid)
+                            .map(|f| f.name.clone())
+                            .unwrap_or_else(|| "无文件夹".into()),
+                        None => "无文件夹".into(),
+                    };
+                    egui::ComboBox::from_id_salt("feed_add_folder")
+                        .selected_text(&folder_label)
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for f in &self.state.folders {
+                                if ui
+                                    .selectable_label(
+                                        self.state.feed_add_folder == Some(f.id),
+                                        &f.name,
+                                    )
+                                    .clicked()
+                                {
+                                    self.state.feed_add_folder = Some(f.id);
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .selectable_label(
+                                    self.state.feed_add_folder.is_none()
+                                        && self.state.feed_add_new_folder.trim().is_empty(),
+                                    "无文件夹",
+                                )
+                                .clicked()
+                            {
+                                self.state.feed_add_folder = None;
+                                self.state.feed_add_new_folder.clear();
+                            }
+                        });
+
+                    ui.label("新建文件夹");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.state.feed_add_new_folder)
+                            .id(egui::Id::new("feed_add_new_folder"))
+                            .hint_text("留空则用上面所选")
+                            .desired_width(140.0),
+                    );
+                });
             });
 
         // --- Bottom status bar: 左=操作状态，右=快捷键说明（左右分隔，互不重叠） ---
@@ -410,8 +485,10 @@ impl eframe::App for SpikeApp {
         // shortcuts regardless of focus. Edge-detect via prev_async_keys bitmap.
         let search_focused = ctx.memory(|m| m.has_focus(egui::Id::new("spike_search")));
         let feed_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_url_input")));
+        let feed_add_ff_focused = ctx.memory(|m| m.has_focus(egui::Id::new("feed_add_new_folder")));
         let rename_focused = self.state.rename_feed.is_some() || self.state.edit_feed_url.is_some();
-        let text_input_active = search_focused || feed_focused || rename_focused;
+        let text_input_active =
+            search_focused || feed_focused || feed_add_ff_focused || rename_focused;
 
         // 当前窗口是否获得焦点。GetAsyncKeyState 读取的是全局按键状态：即使
         // 用户切换到其他软件，只要该键被按下也返回按下。因此快捷键整体必须以
@@ -722,6 +799,13 @@ impl eframe::App for SpikeApp {
                     });
                 });
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("导入方式");
+                    ui.radio_value(&mut self.state.opml_import_overwrite, false, "追加")
+                        .on_hover_text("保留现有订阅，只添加 OPML 中不存在的新源");
+                    ui.radio_value(&mut self.state.opml_import_overwrite, true, "覆盖")
+                        .on_hover_text("先清空现有订阅，再按 OPML 导入（星标文章保留）");
+                });
                 ui.label("或粘贴 OPML XML：");
                 let te = egui::TextEdit::multiline(&mut self.state.opml_import_input)
                     .desired_width(f32::INFINITY)
@@ -1247,6 +1331,15 @@ impl eframe::App for SpikeApp {
                                     self.state.sync_config();
                                     self.state.save_config();
                                 }
+                                if ui.button("浏览…").clicked() {
+                                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                        let s = dir.to_string_lossy().to_string();
+                                        self.state.cache_dir_input = s.clone();
+                                        self.state.config.cache_dir = Some(s);
+                                        self.state.sync_config();
+                                        self.state.save_config();
+                                    }
+                                }
                             });
                             hint(ui, "自定义缓存根目录（需重启生效）；留空使用默认路径");
 
@@ -1722,9 +1815,50 @@ impl SpikeApp {
             }
         });
 
+        // 多选工具栏：批量移动 / 删除。
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.state.feed_multi_select, "多选")
+                .clicked()
+            {
+                self.state.feed_multi_select = !self.state.feed_multi_select;
+                if !self.state.feed_multi_select {
+                    self.state.selected_feeds.clear();
+                }
+            }
+            if self.state.feed_multi_select {
+                let n = self.state.selected_feeds.len();
+                ui.label(RichText::new(format!("已选 {n}")).size(12.0));
+                if n > 0 {
+                    let sel: Vec<_> = self.state.selected_feeds.iter().copied().collect();
+                    let mut move_to: Option<Option<FolderId>> = None;
+                    ui.menu_button("移入文件夹", |ui| {
+                        for f in &self.state.folders {
+                            let fid = f.id;
+                            if ui.button(&f.name).clicked() {
+                                move_to = Some(Some(fid));
+                                ui.close_menu();
+                            }
+                        }
+                        if ui.button("（无文件夹）").clicked() {
+                            move_to = Some(None);
+                            ui.close_menu();
+                        }
+                    });
+                    if let Some(target) = move_to {
+                        self.state.batch_move_feeds(sel.clone(), target);
+                    }
+                    if ui.button(format!("删除选中 ({n})")).clicked() {
+                        self.state.batch_delete_feeds(sel);
+                    }
+                }
+            }
+        });
+
         // --- 订阅列表（可滚动） ---
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .max_height(ui.available_height())
             .show(ui, |ui| {
                 let folders = self.state.folders.clone();
@@ -1893,7 +2027,12 @@ impl SpikeApp {
         folders: &[glean_core::Folder],
         indent: bool,
     ) -> Option<FeedRowAction> {
-        let selected = matches!(self.state.filter, EntryFilter::Feed(id) if id == feed.id);
+        let multi = self.state.feed_multi_select;
+        let selected = if multi {
+            self.state.selected_feeds.contains(&feed.id)
+        } else {
+            matches!(self.state.filter, EntryFilter::Feed(id) if id == feed.id)
+        };
         let unread = self
             .state
             .unread_per_feed
@@ -1909,6 +2048,10 @@ impl SpikeApp {
         }
         if unread > 0 {
             title.push_str(&format!(" ({unread})"));
+        }
+        // 多选模式：行首显示选择框标记。
+        if multi {
+            title.insert_str(0, if selected { "☑ " } else { "☐ " });
         }
         let rich = if unread > 0 {
             RichText::new(title).strong()
@@ -1931,9 +2074,23 @@ impl SpikeApp {
             });
         });
         let resp = row.response;
+        // `dnd_drag_source` 在悬停订阅行时会把光标设为 Grab（Windows 上对应
+        // 四向箭头，看起来像十字）。只在真正拖动时保留拖动光标，悬停恢复默认。
+        if resp.hovered() && !resp.dragged() {
+            resp.ctx.set_cursor_icon(egui::CursorIcon::Default);
+        }
         let mut action = None;
         if resp.clicked() {
-            action = Some(FeedRowAction::Click(feed.id));
+            if multi {
+                // 多选：切换选中状态，不改变列表过滤。
+                if selected {
+                    self.state.selected_feeds.remove(&feed.id);
+                } else {
+                    self.state.selected_feeds.insert(feed.id);
+                }
+            } else {
+                action = Some(FeedRowAction::Click(feed.id));
+            }
         }
         self.draw_feed_context_menu(&resp, feed, folders, &mut action);
         action
@@ -2059,6 +2216,7 @@ impl SpikeApp {
         egui::ScrollArea::vertical()
             .max_height(ui.available_height())
             .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show_rows(ui, row_height, num_rows, |ui, row_range| {
                 let current = self.state.selected;
                 let mut clicked = None;
