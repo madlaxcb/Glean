@@ -304,6 +304,10 @@ pub struct AppConfig {
     /// UI 主题强调色（设置页色板可选）。
     #[serde(default)]
     pub accent: AccentColor,
+    /// 弹窗（设置/插件管理/错误日志/OPML 导入导出）的位置与尺寸。
+    /// 键为弹窗标识，值为 (x, y, w, h)；None 表示未记录，使用默认布局。
+    #[serde(default)]
+    pub popup_geometry: std::collections::HashMap<String, [f32; 4]>,
 }
 
 /// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。
@@ -352,6 +356,7 @@ impl Default for AppConfig {
             disabled_plugins: Vec::new(),
             plugin_proxy: Vec::new(),
             accent: AccentColor::default(),
+            popup_geometry: std::collections::HashMap::new(),
         }
     }
 }

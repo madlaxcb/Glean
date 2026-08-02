@@ -347,6 +347,17 @@ impl SpikeState {
         save_config(&self.config_path, &self.config);
     }
 
+    /// 读取某弹窗已保存的几何 (x, y, w, h)；未记录时返回 None。
+    pub fn popup_geom(&self, key: &str) -> Option<[f32; 4]> {
+        self.config.popup_geometry.get(key).copied()
+    }
+
+    /// 记录某弹窗的几何并立即落盘（弹窗关闭/拖动时调用）。
+    pub fn save_popup_geom(&mut self, key: &str, geom: [f32; 4]) {
+        self.config.popup_geometry.insert(key.to_string(), geom);
+        self.save_config();
+    }
+
     /// Sync runtime state → config struct (call before save).
     pub fn sync_config(&mut self) {
         self.config.dark = self.dark;

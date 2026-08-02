@@ -532,36 +532,39 @@ impl eframe::App for SpikeApp {
             let mut copied = false;
             let mut saved = false;
             let mut txt = xml.clone();
-            egui::Window::new("OPML 导出")
+            let mut win = egui::Window::new("OPML 导出")
                 .resizable(true)
                 .default_width(520.0)
                 .default_height(340.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("复制到剪贴板").clicked() {
-                            copied = true;
+                .collapsible(false);
+            if let Some([x, y, w, h]) = self.state.popup_geom("opml_export") {
+                win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
+            }
+            let win_resp = win.show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("复制到剪贴板").clicked() {
+                        copied = true;
+                    }
+                    if ui.button("另存为…").clicked() {
+                        saved = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("关闭").clicked() {
+                            close = true;
                         }
-                        if ui.button("另存为…").clicked() {
-                            saved = true;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("关闭").clicked() {
-                                close = true;
-                            }
-                        });
                     });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(ui.available_height())
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut txt)
-                                    .desired_width(f32::INFINITY)
-                                    .code_editor(),
-                            );
-                        });
                 });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height())
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut txt)
+                                .desired_width(f32::INFINITY)
+                                .code_editor(),
+                        );
+                    });
+            });
             if copied {
                 ctx.copy_text(xml.clone());
                 self.state.status = "OPML 已复制到剪贴板".into();
@@ -579,6 +582,13 @@ impl eframe::App for SpikeApp {
                     }
                 }
             }
+            if let Some(inner) = &win_resp {
+                let rect = inner.response.rect.intersect(ctx.screen_rect());
+                self.state.save_popup_geom(
+                    "opml_export",
+                    [rect.min.x, rect.min.y, rect.width(), rect.height()],
+                );
+            }
             if close {
                 self.state.opml_export = None;
             }
@@ -589,37 +599,40 @@ impl eframe::App for SpikeApp {
             let mut do_import_text = false;
             let mut do_import_file = false;
             let mut close = false;
-            egui::Window::new("OPML 导入")
+            let mut win = egui::Window::new("OPML 导入")
                 .resizable(true)
                 .default_width(520.0)
                 .default_height(200.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("选择文件…").clicked() {
-                            do_import_file = true;
-                        }
-                        if ui.button("导入文本").clicked() {
-                            do_import_text = true;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("关闭").clicked() {
-                                close = true;
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.label("或粘贴 OPML XML：");
-                    let te = egui::TextEdit::multiline(&mut self.state.opml_import_input)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(4)
-                        .code_editor();
-                    let resp = ui.add(te);
-                    if resp.clicked() || resp.gained_focus() {
-                        self.state.reader.reclaim_shell_focus();
-                        resp.request_focus();
+                .collapsible(false);
+            if let Some([x, y, w, h]) = self.state.popup_geom("opml_import") {
+                win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
+            }
+            let win_resp = win.show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("选择文件…").clicked() {
+                        do_import_file = true;
                     }
+                    if ui.button("导入文本").clicked() {
+                        do_import_text = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("关闭").clicked() {
+                            close = true;
+                        }
+                    });
                 });
+                ui.separator();
+                ui.label("或粘贴 OPML XML：");
+                let te = egui::TextEdit::multiline(&mut self.state.opml_import_input)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(4)
+                    .code_editor();
+                let resp = ui.add(te);
+                if resp.clicked() || resp.gained_focus() {
+                    self.state.reader.reclaim_shell_focus();
+                    resp.request_focus();
+                }
+            });
             if do_import_file {
                 let path = rfd::FileDialog::new()
                     .add_filter("OPML", &["opml", "xml"])
@@ -636,6 +649,13 @@ impl eframe::App for SpikeApp {
             }
             if do_import_text {
                 self.state.import_opml();
+            }
+            if let Some(inner) = &win_resp {
+                let rect = inner.response.rect.intersect(ctx.screen_rect());
+                self.state.save_popup_geom(
+                    "opml_import",
+                    [rect.min.x, rect.min.y, rect.width(), rect.height()],
+                );
             }
             if close {
                 self.show_opml_import = false;
@@ -733,41 +753,48 @@ impl eframe::App for SpikeApp {
         if self.show_errors {
             let mut close = false;
             let mut clear = false;
-            egui::Window::new("错误日志")
+            let mut win = egui::Window::new("错误日志")
                 .resizable(true)
                 .default_width(480.0)
                 .default_height(320.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("清空").clicked() {
-                            clear = true;
+                .collapsible(false);
+            if let Some([x, y, w, h]) = self.state.popup_geom("errors") {
+                win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
+            }
+            let win_resp = win.show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("清空").clicked() {
+                        clear = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("关闭").clicked() {
+                            close = true;
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("关闭").clicked() {
-                                close = true;
-                            }
-                        });
                     });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(ui.available_height())
-                        .show(ui, |ui| {
-                            for (i, err) in self.state.errors.iter().enumerate().rev() {
-                                ui.horizontal(|ui| {
-                                    let color =
-                                        ui.visuals().strong_text_color().gamma_multiply(0.72);
-                                    ui.label(
-                                        RichText::new(format!("#{}", i + 1))
-                                            .size(12.5)
-                                            .color(color),
-                                    );
-                                    ui.label(RichText::new(err).size(13.5));
-                                });
-                                ui.separator();
-                            }
-                        });
                 });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height())
+                    .show(ui, |ui| {
+                        for (i, err) in self.state.errors.iter().enumerate().rev() {
+                            ui.horizontal(|ui| {
+                                let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
+                                ui.label(
+                                    RichText::new(format!("#{}", i + 1)).size(12.5).color(color),
+                                );
+                                ui.label(RichText::new(err).size(13.5));
+                            });
+                            ui.separator();
+                        }
+                    });
+            });
+            if let Some(inner) = &win_resp {
+                let rect = inner.response.rect.intersect(ctx.screen_rect());
+                self.state.save_popup_geom(
+                    "errors",
+                    [rect.min.x, rect.min.y, rect.width(), rect.height()],
+                );
+            }
             if clear {
                 self.state.errors.clear();
                 self.state.status = "错误日志已清空".into();
@@ -780,11 +807,14 @@ impl eframe::App for SpikeApp {
         // Settings popup
         if self.show_settings {
             let mut close = false;
-            egui::Window::new("设置")
+            let mut win = egui::Window::new("设置")
                 .resizable(true)
                 .default_size([480.0, 560.0])
-                .collapsible(false)
-                .show(ctx, |ui| {
+                .collapsible(false);
+            if let Some([x, y, w, h]) = self.state.popup_geom("settings") {
+                win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
+            }
+            let win_resp = win.show(ctx, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -1096,6 +1126,13 @@ impl eframe::App for SpikeApp {
                             });
                         });
                 });
+            if let Some(inner) = &win_resp {
+                let rect = inner.response.rect.intersect(ctx.screen_rect());
+                self.state.save_popup_geom(
+                    "settings",
+                    [rect.min.x, rect.min.y, rect.width(), rect.height()],
+                );
+            }
             if close {
                 self.show_settings = false;
             }
@@ -1105,10 +1142,13 @@ impl eframe::App for SpikeApp {
         if self.show_plugins {
             let mut open = true;
             let mut close = false;
-            egui::Window::new("插件管理")
+            let mut win = egui::Window::new("插件管理")
                 .open(&mut open)
-                .default_size([560.0, 400.0])
-                .show(ctx, |ui| {
+                .default_size([560.0, 400.0]);
+            if let Some([x, y, w, h]) = self.state.popup_geom("plugins") {
+                win = win.default_pos(egui::pos2(x, y)).default_size([w, h]);
+            }
+            let win_resp = win.show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("安装插件（文件夹）…").clicked() {
                             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -1327,6 +1367,13 @@ impl eframe::App for SpikeApp {
                         });
                     });
                 });
+            if let Some(inner) = &win_resp {
+                let rect = inner.response.rect.intersect(ctx.screen_rect());
+                self.state.save_popup_geom(
+                    "plugins",
+                    [rect.min.x, rect.min.y, rect.width(), rect.height()],
+                );
+            }
             if !open || close {
                 self.show_plugins = false;
                 self.confirm_uninstall = None;
