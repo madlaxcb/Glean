@@ -1791,7 +1791,8 @@ impl SpikeApp {
                         ui.selectable_label(selected, rich)
                     });
                     let resp = row.response;
-                    if resp.clicked() {
+                    let label_resp = row.inner;
+                    if resp.clicked() || label_resp.clicked() {
                         clicked = Some(i);
                     }
                     // Capture entry data for context menu (avoids borrow conflict).

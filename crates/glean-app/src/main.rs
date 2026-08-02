@@ -223,6 +223,8 @@ pub struct SpikeState {
     thumbnail_rx: Option<mpsc::Receiver<(EntryId, Vec<u8>, u32, u32)>>,
     /// Set of entry IDs whose thumbnail download is already in flight.
     thumbnail_pending: std::collections::HashSet<EntryId>,
+    thumbnail_failed: std::collections::HashSet<EntryId>,
+    thumbnail_loaded: std::collections::HashSet<EntryId>,
     /// 导航栏分类组折叠状态（会话内有效，不持久化）。
     pub collapsed_categories: std::collections::HashSet<glean_core::FeedCategory>,
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
@@ -312,6 +314,8 @@ impl SpikeState {
             favicon_pending: std::collections::HashSet::new(),
             thumbnail_rx: None,
             thumbnail_pending: std::collections::HashSet::new(),
+            thumbnail_failed: std::collections::HashSet::new(),
+            thumbnail_loaded: std::collections::HashSet::new(),
             collapsed_categories: std::collections::HashSet::new(),
             plugin_cred_edits: std::collections::HashMap::new(),
         };
@@ -1197,7 +1201,11 @@ impl SpikeState {
             let Some(url) = e.thumbnail_url.as_deref() else {
                 continue;
             };
-            if url.is_empty() || self.thumbnail_pending.contains(&e.id) {
+            if url.is_empty()
+                || self.thumbnail_pending.contains(&e.id)
+                || self.thumbnail_failed.contains(&e.id)
+                || self.thumbnail_loaded.contains(&e.id)
+            {
                 continue;
             }
             if tasks.len() >= 8 {
@@ -1247,6 +1255,11 @@ impl SpikeState {
         let mut results = Vec::new();
         while let Ok(r) = rx.try_recv() {
             self.thumbnail_pending.remove(&r.0);
+            if r.2 == 0 || r.3 == 0 {
+                self.thumbnail_failed.insert(r.0);
+            } else {
+                self.thumbnail_loaded.insert(r.0);
+            }
             results.push(r);
         }
         if self.thumbnail_pending.is_empty() {
@@ -1534,17 +1547,35 @@ fn render_entry_body(
 }
 
 fn load_config(path: &std::path::Path) -> AppConfig {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(path) {
+        Ok(json) => match serde_json::from_str(&json) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("无法读取配置 {}: {e}", path.display());
+                AppConfig::default()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => AppConfig::default(),
+        Err(e) => {
+            eprintln!("无法读取配置 {}: {e}", path.display());
+            AppConfig::default()
+        }
+    }
 }
 
 fn save_config(path: &std::path::Path, config: &AppConfig) {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("无法创建配置目录 {}: {e}", parent.display());
+            return;
+        }
     }
-    if let Ok(json) = serde_json::to_string_pretty(config) {
-        let _ = std::fs::write(path, json);
+    match serde_json::to_string_pretty(config) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                eprintln!("无法写入配置 {}: {e}", path.display());
+            }
+        }
+        Err(e) => eprintln!("无法序列化配置 {}: {e}", path.display()),
     }
 }

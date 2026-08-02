@@ -250,6 +250,7 @@ impl ImagePolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub dark: bool,
     pub nav_width: f32,

@@ -10,6 +10,7 @@ Cargo.lock.bak
 dist/
 .DS_Store
 *.log
+.dbg/
 
 # personal scratch notes (not product docs)
 docs/无标题笔记*.md

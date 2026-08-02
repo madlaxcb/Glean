@@ -239,7 +239,6 @@ while page_i < max_pages {
     }
 
     let page_count = 0;
-    let saw_existing = false;
     for item in illusts {
         let id = json_path(item, "id");
         if type_of(id) != "i64" { continue; }
@@ -249,12 +248,6 @@ while page_i < max_pages {
         let item_author = str_safe(json_path(item, "user.name"));
         let published = iso_to_unix(str_safe(json_path(item, "create_date")));
         let guid = "pixiv-" + str_safe(id);
-
-        // 增量刷新：遇到已存在条目则标记，处理完本页后停止翻页。
-        // Pixiv 按时间倒序返回，更早的页必然也已存在。
-        if len(EXISTING_GUIDS) > 0 && EXISTING_GUIDS.contains("," + guid + ",") {
-            saw_existing = true;
-        }
 
         // 作品类型标识：R-18 / R-18G / 多图页数
         let type_tag = "";
@@ -335,11 +328,6 @@ while page_i < max_pages {
         count += 1;
     }
     log("info", "pixiv 第 " + page_i + " 页 +" + page_count + " 条，累计 " + count);
-    if saw_existing {
-        log("info", "pixiv 遇到已存在条目，停止翻页（增量刷新）");
-        break;
-    }
-
     let next = str_safe(json_path(json, "next_url"));
     if len(next) == 0 {
         next = str_safe(json_path(json, "response.next_url"));
