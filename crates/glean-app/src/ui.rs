@@ -1847,7 +1847,14 @@ impl SpikeApp {
                         .iter()
                         .all(|id| self.state.selected_feeds.contains(id));
                 // 全选 / 反选 / 取消选择。
-                if ui.button(if all_selected { "取消全选" } else { "全选" }).clicked() {
+                if ui
+                    .button(if all_selected {
+                        "取消全选"
+                    } else {
+                        "全选"
+                    })
+                    .clicked()
+                {
                     if all_selected {
                         for id in &visible_feeds {
                             self.state.selected_feeds.remove(id);
@@ -2352,9 +2359,10 @@ impl SpikeApp {
                             ui.set_max_width(row_width);
                             ui.horizontal_top(|ui| {
                                 if let Some(tex) = &thumb {
-                                    ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(
-                                        thumb_size,
-                                    )));
+                                    ui.add(
+                                        egui::Image::new(tex)
+                                            .fit_to_exact_size(Vec2::splat(thumb_size)),
+                                    );
                                 } else {
                                     ui.allocate_space(Vec2::splat(thumb_size));
                                 }
