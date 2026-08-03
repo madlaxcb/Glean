@@ -2123,6 +2123,9 @@ impl SpikeApp {
                     } else {
                         ui.label("🌐");
                     }
+                    // 非多选时保留占位，保持与多选模式相同的行高和布局。
+                    // 占位：宽度为 0，但保留与多选时 checkbox 相同的高度
+                    ui.add_sized(egui::Vec2::new(0.0, row_height), egui::Label::new(""));
                     ui.add(
                         egui::Label::new(rich)
                             .truncate()
@@ -2131,7 +2134,9 @@ impl SpikeApp {
                     )
                 })
             });
-            let resp = row.response.interact(egui::Sense::click());
+            // 悬停时恢复默认指针，只在拖拽过程中显示 Grab 手型。
+            let resp = row.response.on_hover_cursor(egui::CursorIcon::Default);
+            let resp = resp.interact(egui::Sense::click());
             (resp, false)
         };
 
