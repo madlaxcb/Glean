@@ -1819,7 +1819,7 @@ impl SpikeApp {
         });
 
         // 多选工具栏：批量移动 / 删除。
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .selectable_label(self.state.feed_multi_select, "多选")
                 .clicked()
@@ -1830,6 +1830,44 @@ impl SpikeApp {
                 }
             }
             if self.state.feed_multi_select {
+                // 当前分类下可见的订阅（与下方列表过滤逻辑一致）。
+                let visible_feeds: Vec<glean_core::FeedId> = self
+                    .state
+                    .feeds
+                    .iter()
+                    .filter(|f| {
+                        self.state
+                            .nav_active_category
+                            .map_or(true, |c| f.category == c)
+                    })
+                    .map(|f| f.id)
+                    .collect();
+                let all_selected = !visible_feeds.is_empty()
+                    && visible_feeds
+                        .iter()
+                        .all(|id| self.state.selected_feeds.contains(id));
+                // 全选 / 反选 / 取消选择。
+                if ui.button(if all_selected { "取消全选" } else { "全选" }).clicked() {
+                    if all_selected {
+                        for id in &visible_feeds {
+                            self.state.selected_feeds.remove(id);
+                        }
+                    } else {
+                        for id in &visible_feeds {
+                            self.state.selected_feeds.insert(*id);
+                        }
+                    }
+                }
+                if ui.button("反选").clicked() {
+                    for id in &visible_feeds {
+                        if !self.state.selected_feeds.remove(id) {
+                            self.state.selected_feeds.insert(*id);
+                        }
+                    }
+                }
+                if ui.button("取消选择").clicked() {
+                    self.state.selected_feeds.clear();
+                }
                 let n = self.state.selected_feeds.len();
                 ui.label(RichText::new(format!("已选 {n}")).size(12.0));
                 if n > 0 {
@@ -2123,9 +2161,13 @@ impl SpikeApp {
                     } else {
                         ui.label("🌐");
                     }
-                    // 非多选时保留占位，保持与多选模式相同的行高和布局。
-                    // 占位：宽度为 0，但保留与多选时 checkbox 相同的高度
-                    ui.add_sized(egui::Vec2::new(0.0, row_height), egui::Label::new(""));
+                    // 非多选时也渲染勾选框占位：宽度为 0（不可见），
+                    // 使用与多选相同的 SelectableLabel，高度一致，行高统一。
+                    let check_text = if selected { "☑" } else { "☐" };
+                    ui.add_sized(
+                        egui::Vec2::new(0.0, row_height),
+                        egui::SelectableLabel::new(selected, check_text),
+                    );
                     ui.add(
                         egui::Label::new(rich)
                             .truncate()
