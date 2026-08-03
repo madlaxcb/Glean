@@ -430,23 +430,71 @@ fn do_http(
     };
 
     let send_result = match method {
-        HttpMethod::Get => http.inner.get(url).headers(hdrs).send(),
-        HttpMethod::Post => http.inner.post(url).body(body).headers(hdrs).send(),
+        HttpMethod::Get => http.inner.get(url).headers(hdrs.clone()).send(),
+        HttpMethod::Post => http
+            .inner
+            .post(url)
+            .body(body.clone())
+            .headers(hdrs.clone())
+            .send(),
     };
 
     match send_result {
         Ok(resp) => {
             let status = resp.status().as_u16() as i64;
-            let mut resp_hdrs = Map::new();
-            for (k, v) in resp.headers() {
-                if let Ok(s) = v.to_str() {
-                    resp_hdrs.insert(k.as_str().into(), Dynamic::from(s.to_string()));
+            // §11.5 限流重试：HTTP 429（Too Many Requests）时退避重试，
+            // 最多 3 次。Pixiv 等多订阅并发刷新时容易触发限流。
+            if status == 429 {
+                let mut attempts = 1;
+                loop {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(attempts as u64 * 2));
+                    let retry = match method {
+                        HttpMethod::Get => http.inner.get(url).headers(hdrs.clone()).send(),
+                        HttpMethod::Post => http
+                            .inner
+                            .post(url)
+                            .body(body.clone())
+                            .headers(hdrs.clone())
+                            .send(),
+                    };
+                    match retry {
+                        Ok(r) => {
+                            let s = r.status().as_u16() as i64;
+                            if s == 429 && attempts < 3 {
+                                continue;
+                            }
+                            let mut resp_hdrs = Map::new();
+                            for (k, v) in r.headers() {
+                                if let Ok(v) = v.to_str() {
+                                    resp_hdrs
+                                        .insert(k.as_str().into(), Dynamic::from(v.to_string()));
+                                }
+                            }
+                            let resp_body = r.text().unwrap_or_default();
+                            m.insert("status".into(), Dynamic::from_int(s));
+                            m.insert("headers".into(), Dynamic::from(resp_hdrs));
+                            m.insert("body".into(), Dynamic::from(resp_body));
+                            return m;
+                        }
+                        Err(e) => {
+                            m.insert("status".into(), Dynamic::from_int(0));
+                            m.insert("error".into(), Dynamic::from(e.to_string()));
+                            return m;
+                        }
+                    }
                 }
             }
-            let body = resp.text().unwrap_or_default();
+            let mut resp_hdrs = Map::new();
+            for (k, v) in resp.headers() {
+                if let Ok(v) = v.to_str() {
+                    resp_hdrs.insert(k.as_str().into(), Dynamic::from(v.to_string()));
+                }
+            }
+            let resp_body = resp.text().unwrap_or_default();
             m.insert("status".into(), Dynamic::from_int(status));
             m.insert("headers".into(), Dynamic::from(resp_hdrs));
-            m.insert("body".into(), Dynamic::from(body));
+            m.insert("body".into(), Dynamic::from(resp_body));
         }
         Err(e) => {
             m.insert("status".into(), Dynamic::from_int(0));

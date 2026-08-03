@@ -101,7 +101,9 @@ fn single_instance_lock() -> Option<std::fs::File> {
 }
 
 /// Max concurrent HTTP fetches during a refresh batch (dev plan §7.1: 4–8).
-const REFRESH_WORKERS: usize = 6;
+/// 调低到 2：Pixiv 等插件 API 对并发限流严格（HTTP 429），多订阅并发
+/// 刷新会互相触发限流；RSS 抓取很快，2 并发对总体耗时影响很小。
+const REFRESH_WORKERS: usize = 2;
 
 /// Spawn bounded worker threads that fetch+parse in parallel, sending each
 /// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;

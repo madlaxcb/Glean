@@ -2398,9 +2398,12 @@ impl SpikeApp {
                                 .inner
                             })
                         });
-                    let resp = row.response.on_hover_cursor(egui::CursorIcon::Default);
-                    let label_resp = row.inner;
-                    if resp.clicked() || label_resp.inner.clicked() {
+                    // Frame 的 response 默认无 click sense，显式加上使整行可点。
+                    let resp = row
+                        .response
+                        .on_hover_cursor(egui::CursorIcon::Default)
+                        .interact(egui::Sense::click());
+                    if resp.clicked() {
                         clicked = Some(i);
                     }
                     // Capture entry data for context menu (avoids borrow conflict).
