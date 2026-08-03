@@ -1260,38 +1260,48 @@ fn pick_client<'a>(
 /// 插件不做条件请求，命中即拉新；RSS 路径保留 etag/last_modified。
 pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> RefreshOutcome {
     let client = pick_client(task.use_proxy, &ctx.http, &ctx.http_proxy);
+    // 插件路由候选：先库中原始 URL，未命中再试规范化后的 URL
+    // （如 OPML 导入的 pixiv 单数 `user/` → 复数 `users/`）。
+    let normalized = crate::feed::tier0::normalize(&task.url);
+    let candidates: Vec<String> = if normalized != task.url {
+        vec![task.url.clone(), normalized]
+    } else {
+        vec![task.url.clone()]
+    };
     if let Some(mgr) = ctx.plugin_mgr.as_deref() {
-        if let Some(res) = mgr.run_tier1_for_url(&task.url, client).transpose() {
-            return match res {
-                Ok(parsed) => RefreshOutcome::Updated {
-                    feed_id: task.feed_id,
-                    parsed,
-                    etag: None,
-                    last_modified: None,
-                },
-                Err(e) => RefreshOutcome::Error {
-                    feed_id: task.feed_id,
-                    error: e.to_string(),
-                },
-            };
-        }
-        let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        if let Some(res) = mgr
-            .run_tier2_for_url(&task.url, Arc::clone(client), creds, &task.existing_guids)
-            .transpose()
-        {
-            return match res {
-                Ok(parsed) => RefreshOutcome::Updated {
-                    feed_id: task.feed_id,
-                    parsed,
-                    etag: None,
-                    last_modified: None,
-                },
-                Err(e) => RefreshOutcome::Error {
-                    feed_id: task.feed_id,
-                    error: e.to_string(),
-                },
-            };
+        for url in &candidates {
+            if let Some(res) = mgr.run_tier1_for_url(url, client).transpose() {
+                return match res {
+                    Ok(parsed) => RefreshOutcome::Updated {
+                        feed_id: task.feed_id,
+                        parsed,
+                        etag: None,
+                        last_modified: None,
+                    },
+                    Err(e) => RefreshOutcome::Error {
+                        feed_id: task.feed_id,
+                        error: e.to_string(),
+                    },
+                };
+            }
+            let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
+            if let Some(res) = mgr
+                .run_tier2_for_url(url, Arc::clone(client), creds, &task.existing_guids)
+                .transpose()
+            {
+                return match res {
+                    Ok(parsed) => RefreshOutcome::Updated {
+                        feed_id: task.feed_id,
+                        parsed,
+                        etag: None,
+                        last_modified: None,
+                    },
+                    Err(e) => RefreshOutcome::Error {
+                        feed_id: task.feed_id,
+                        error: e.to_string(),
+                    },
+                };
+            }
         }
     }
     // 默认 RSS 路径
