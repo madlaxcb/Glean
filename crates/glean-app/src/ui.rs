@@ -1318,6 +1318,10 @@ impl eframe::App for SpikeApp {
                             }
                             hint(ui, "订阅删除失败/提示 database disk image is malformed 时使用；原文件备份为 .db.bak");
                             ui.add_space(4.0);
+                            if ui.button("强制重建数据库").clicked() {
+                                self.state.status = self.state.force_rebuild_database();
+                            }
+                            hint(ui, "「修复数据库」仍无法解决时使用：不检测直接重建，原文件备份为 .db.bak");
                             ui.horizontal(|ui| {
                                 ui.label("缓存位置");
                                 let te = egui::TextEdit::singleline(&mut self.state.cache_dir_input)

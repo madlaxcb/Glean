@@ -845,13 +845,25 @@ impl SpikeState {
     /// 返回给 UI 的状态消息。
     pub fn repair_database(&mut self) -> String {
         match self.service.repair_db() {
-            Ok(true) => {
-                // 连接已重建，重新加载导航与条目。
-                self.dispatch(AppCommand::Bootstrap);
-                "数据库已修复（原文件备份为 .db.bak）".into()
+            Ok(msg) => {
+                // 执行了修复/重建时重载数据；仅检查通过时无需重载。
+                if msg.contains("修复") || msg.contains("重建") {
+                    self.dispatch(AppCommand::Bootstrap);
+                }
+                msg
             }
-            Ok(false) => "数据库完整性检查通过，无需修复".into(),
             Err(e) => format!("数据库修复失败: {e}"),
+        }
+    }
+
+    /// 无条件重建数据库（设置页「强制重建」按钮）。
+    pub fn force_rebuild_database(&mut self) -> String {
+        match self.service.force_rebuild_db() {
+            Ok(msg) => {
+                self.dispatch(AppCommand::Bootstrap);
+                msg
+            }
+            Err(e) => format!("数据库重建失败: {e}"),
         }
     }
 

@@ -97,10 +97,16 @@ impl GleanService {
         })
     }
 
-    /// 运行时数据库修复（设置页「修复数据库」按钮）：完整性损坏时重建文件库。
-    /// 返回 `true` 表示已执行修复。调用方应在 `Ok(true)` 后重新 `Bootstrap` 重载数据。
-    pub fn repair_db(&mut self) -> Result<bool> {
+    /// 运行时数据库修复（设置页「修复数据库」按钮）：深度检查并修复损坏。
+    /// 返回修复动作描述；返回含「修复/重建」的消息时，调用方应重新 `Bootstrap` 重载数据。
+    pub fn repair_db(&mut self) -> Result<String> {
         self.store.repair_if_damaged()
+    }
+
+    /// 无条件重建数据库（设置页「强制重建」按钮）：dump 可读数据重建文件库。
+    /// 返回修复动作描述；调用方应重新 `Bootstrap` 重载数据。
+    pub fn force_rebuild_db(&mut self) -> Result<String> {
+        self.store.force_rebuild()
     }
 
     /// 更新代理设置并重建带代理的 HTTP 客户端（设置页保存时调用，立即生效）。

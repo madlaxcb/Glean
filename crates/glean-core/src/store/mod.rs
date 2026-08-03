@@ -57,30 +57,115 @@ impl Store {
         Ok(s)
     }
 
-    /// 运行时修复数据库：若完整性损坏则重建文件库（原文件备份为 `.db.bak`）。
-    /// 返回 `true` 表示已执行修复。仅对文件库有效；内存库返回 `Ok(false)`。
-    pub fn repair_if_damaged(&mut self) -> Result<bool> {
+    /// 运行时修复数据库：返回修复动作描述。仅对文件库有效；内存库返回「无需修复」。
+    ///
+    /// 检测步骤（任一失败则完整重建文件库，原文件备份为 `.db.bak`）：
+    /// 1. 合并 WAL（`wal_checkpoint(TRUNCATE)`），把 WAL 中的损坏暴露出来；
+    /// 2. `PRAGMA integrity_check`；
+    /// 3. 重建 FTS5 搜索索引（FTS 倒排索引损坏不会被 `integrity_check` 报告，
+    ///    却会导致删除/搜索时报 `database disk image is malformed`）；
+    /// 4. 逐表 `SELECT *` 实读（覆盖 content_html 等大字段的 overflow 页损坏）。
+    pub fn repair_if_damaged(&mut self) -> Result<String> {
         let Some(path) = self.db_path.clone() else {
-            return Ok(false);
+            return Ok("内存库无需修复".into());
         };
-        // 用独立连接检查完整性，避免长时间占用主连接。
-        let damaged = {
+        // 独立连接做深度检查，避免长时间占用主连接。
+        let (damaged, fts_rebuilt) = {
             let check = Connection::open(&path)?;
-            let ok: bool = check
+            // 1. 合并 WAL，把 WAL 中的损坏暴露出来。
+            let checkpoint_ok = check
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .is_ok();
+            // 2. 完整性检查。
+            let integrity_ok = check
                 .prepare("PRAGMA integrity_check")
                 .and_then(|mut stmt| stmt.query_row([], |r| r.get::<_, String>(0)))
                 .map(|s| s == "ok")
                 .unwrap_or(false);
-            !ok
+            if !checkpoint_ok || !integrity_ok {
+                (true, false)
+            } else {
+                // 3. 重建 FTS5 索引。
+                let fts_exists: bool = check
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries_fts'",
+                        [],
+                        |_| Ok(()),
+                    )
+                    .is_ok();
+                let mut fts_rebuilt = false;
+                if fts_exists {
+                    fts_rebuilt = check
+                        .execute_batch("INSERT INTO entries_fts(entries_fts) VALUES('rebuild');")
+                        .is_ok();
+                }
+                // 4. 逐表实读所有列（覆盖 overflow 页损坏）。
+                let mut corrupt = !fts_exists || !fts_rebuilt;
+                let tables: Vec<String> = check
+                    .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                    .and_then(|mut stmt| {
+                        stmt.query_map([], |r| r.get::<_, String>(0))
+                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    })
+                    .unwrap_or_default();
+                for t in tables {
+                    if corrupt {
+                        break;
+                    }
+                    if t.starts_with("sqlite_") || t.starts_with("entries_fts") {
+                        continue;
+                    }
+                    let q = format!("SELECT * FROM \"{t}\"");
+                    let Ok(mut stmt) = check.prepare(&q) else {
+                        corrupt = true;
+                        break;
+                    };
+                    let mut rows = stmt.raw_query();
+                    loop {
+                        match rows.next() {
+                            Ok(Some(_)) => {}
+                            Ok(None) => break,
+                            Err(_) => {
+                                corrupt = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                (corrupt, fts_rebuilt)
+            }
         };
-        if !damaged {
-            return Ok(false);
+        if damaged {
+            self.rebuild_from_backup(&path)?;
+            return Ok("数据库已修复（原文件备份为 .db.bak）".into());
         }
+        if fts_rebuilt {
+            return Ok("搜索索引已重建".into());
+        }
+        Ok("数据库完整性检查通过，无需修复".into())
+    }
+
+    /// 无条件重建文件库（跳过检测）：dump 所有可读数据到新库，原文件备份为 `.db.bak`。
+    /// 当深度检查仍无法定位损坏（例如 freelist 边缘损坏）时的兜底手段。
+    pub fn force_rebuild(&mut self) -> Result<String> {
+        let Some(path) = self.db_path.clone() else {
+            return Ok("内存库无需重建".into());
+        };
+        self.rebuild_from_backup(&path)?;
+        Ok("数据库已强制重建（原文件备份为 .db.bak）".into())
+    }
+
+    /// 释放主连接后，从旧文件 dump 可读数据重建新库，并重建 FTS 索引。
+    fn rebuild_from_backup(&mut self, path: &Path) -> Result<()> {
         // 释放主连接对文件的占用（换成内存连接），再重建文件库。
         self.conn = Connection::open_in_memory()?;
-        self.conn = Self::repair_database(&path)?;
+        self.conn = Self::repair_database(path)?;
         self.migrate()?;
-        Ok(true)
+        // repair_database 的逐表拷贝不会填充 FTS（FTS5 需特殊插入语法），重建之。
+        let _ = self
+            .conn
+            .execute_batch("INSERT INTO entries_fts(entries_fts) VALUES('rebuild');");
+        Ok(())
     }
 
     /// Open a database connection, auto-repairing if the file is corrupted.
