@@ -634,9 +634,28 @@ impl Store {
         category: FeedCategory,
     ) -> Result<FeedId> {
         let now = now_secs();
+        // 新订阅追加到同组末尾，避免 sort_order 默认 0 插到队首。
+        let next_order: i64 = match folder_id {
+            Some(fid) => self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM feeds WHERE folder_id = ?1",
+                    params![fid.0],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            None => self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM feeds WHERE folder_id IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+        };
         self.conn.execute(
-            "INSERT INTO feeds(folder_id, title, feed_url, category, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![folder_id.map(|f| f.0), title, feed_url, category.as_str(), now],
+            "INSERT INTO feeds(folder_id, title, feed_url, category, sort_order, created_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![folder_id.map(|f| f.0), title, feed_url, category.as_str(), next_order, now],
         )?;
         Ok(FeedId(self.conn.last_insert_rowid()))
     }
@@ -1185,15 +1204,17 @@ impl Store {
         if Some(feed_id) == before_id {
             return Ok(());
         }
+        // folder_id 可为 NULL（无文件夹订阅）。query_row 返回 Ok(None) 表示存在但
+        // 无文件夹；只有 QueryReturnedNoRows 才是真正的 NotFound。
+        // 注意：不能对 Option 再 flatten——会把「无文件夹」误判成「不存在」。
         let folder_id: Option<i64> = self
             .conn
             .query_row(
                 "SELECT folder_id FROM feeds WHERE id = ?1",
                 params![feed_id.0],
-                |r| r.get(0),
+                |r| r.get::<_, Option<i64>>(0),
             )
             .optional()?
-            .flatten()
             .ok_or_else(|| CoreError::NotFound(format!("feed {}", feed_id.0)))?;
         let mut ids: Vec<i64> = match folder_id {
             Some(fid) => {
@@ -1587,5 +1608,33 @@ mod tests {
         assert!(all
             .iter()
             .any(|(k, v)| k == "translate" && v == "Translated."));
+    }
+
+    #[test]
+    fn reorder_unfoldered_feeds_persists_order() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = store
+            .add_feed("First", "https://ex/first.xml", None, FeedCategory::Article)
+            .unwrap();
+        let second = store
+            .add_feed(
+                "Second",
+                "https://ex/second.xml",
+                None,
+                FeedCategory::Article,
+            )
+            .unwrap();
+        let third = store
+            .add_feed("Third", "https://ex/third.xml", None, FeedCategory::Article)
+            .unwrap();
+
+        store.reorder_feed(third, Some(first)).unwrap();
+        let ids: Vec<_> = store
+            .list_feeds()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(ids, vec![third, first, second]);
     }
 }

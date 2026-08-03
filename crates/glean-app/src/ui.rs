@@ -2373,23 +2373,37 @@ impl SpikeApp {
         if resp.clicked() {
             action = Some(FeedRowAction::Click(feed.id));
         }
-        // 释放检测：拖到该行上 → 插入到该行前/后（仅同组有效）。
-        if let Some(payload) = resp.dnd_release_payload::<i64>() {
-            let dragged = glean_core::FeedId(*payload.as_ref());
-            let dragged_group = self
-                .state
-                .feeds
-                .iter()
-                .find(|f| f.id == dragged)
-                .and_then(|f| f.folder_id);
-            if dragged_group == feed.folder_id {
-                let before = ui
-                    .ctx()
-                    .pointer_latest_pos()
-                    .map_or(true, |p| p.y < resp.rect.center().y);
-                let before_id = if before { Some(feed.id) } else { next_id };
-                if before_id != Some(dragged) {
-                    action = Some(FeedRowAction::Reorder(dragged, before_id));
+        // 释放检测：不能只靠 Response::dnd_release_payload（它依赖 contains_pointer，
+        // 拖拽时源控件浮层常导致目标行 contains_pointer=false）。改为：
+        // 指针在本行矩形内 + 本帧释放 + 有 i64 payload → 消费并重排。
+        // 先 peek 再 take：若 payload 是自身，绝不能 take，否则会吞掉目标行的 drop。
+        let pointer_over = ui
+            .ctx()
+            .pointer_latest_pos()
+            .map_or(false, |p| resp.rect.contains(p));
+        let released = ui.input(|i| i.pointer.any_released());
+        if pointer_over && released {
+            if let Some(payload) = egui::DragAndDrop::payload::<i64>(ui.ctx()) {
+                let dragged = glean_core::FeedId(*payload.as_ref());
+                if dragged != feed.id {
+                    // 确认是他人放下的，再 take 消费，避免重复处理。
+                    let _ = egui::DragAndDrop::take_payload::<i64>(ui.ctx());
+                    let dragged_group = self
+                        .state
+                        .feeds
+                        .iter()
+                        .find(|f| f.id == dragged)
+                        .and_then(|f| f.folder_id);
+                    if dragged_group == feed.folder_id {
+                        let before = ui
+                            .ctx()
+                            .pointer_latest_pos()
+                            .map_or(true, |p| p.y < resp.rect.center().y);
+                        let before_id = if before { Some(feed.id) } else { next_id };
+                        if before_id != Some(dragged) {
+                            action = Some(FeedRowAction::Reorder(dragged, before_id));
+                        }
+                    }
                 }
             }
         }
