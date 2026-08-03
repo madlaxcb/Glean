@@ -97,6 +97,12 @@ impl GleanService {
         })
     }
 
+    /// 运行时数据库修复（设置页「修复数据库」按钮）：完整性损坏时重建文件库。
+    /// 返回 `true` 表示已执行修复。调用方应在 `Ok(true)` 后重新 `Bootstrap` 重载数据。
+    pub fn repair_db(&mut self) -> Result<bool> {
+        self.store.repair_if_damaged()
+    }
+
     /// 更新代理设置并重建带代理的 HTTP 客户端（设置页保存时调用，立即生效）。
     /// 代理 URL 非法时保留旧客户端并返回错误（UI 提示用户，不再静默失效）。
     /// URL 无 scheme 时自动补 `http://`（见 `HttpClient::with_proxy`）。
@@ -519,6 +525,18 @@ impl GleanService {
                 let mut ev = self.emit_nav()?;
                 ev.push(AppEvent::Status {
                     message: if next {
+                        "已开启代理".into()
+                    } else {
+                        "已关闭代理（直连）".into()
+                    },
+                });
+                Ok(ev)
+            }
+            AppCommand::SetFeedProxy { id, use_proxy } => {
+                self.store.set_feed_use_proxy(id, use_proxy)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: if use_proxy {
                         "已开启代理".into()
                     } else {
                         "已关闭代理（直连）".into()

@@ -12,6 +12,8 @@ const SCHEMA_VERSION: i64 = 12;
 
 pub struct Store {
     conn: Connection,
+    /// 数据库文件路径；`None` 表示内存库（测试用），无法修复。
+    db_path: Option<PathBuf>,
     /// Optional disk cache dir for entry bodies (§2.5). `None` for in-memory
     /// stores and tests; the app sets it to `cache_entries_dir()` via
     /// [`Store::open_path`].
@@ -23,6 +25,7 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         let mut s = Self {
             conn,
+            db_path: None,
             cache_dir: None,
         };
         s.migrate()?;
@@ -45,9 +48,39 @@ impl Store {
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;",
         )?;
-        let mut s = Self { conn, cache_dir };
+        let mut s = Self {
+            conn,
+            db_path: Some(path.to_path_buf()),
+            cache_dir,
+        };
         s.migrate()?;
         Ok(s)
+    }
+
+    /// 运行时修复数据库：若完整性损坏则重建文件库（原文件备份为 `.db.bak`）。
+    /// 返回 `true` 表示已执行修复。仅对文件库有效；内存库返回 `Ok(false)`。
+    pub fn repair_if_damaged(&mut self) -> Result<bool> {
+        let Some(path) = self.db_path.clone() else {
+            return Ok(false);
+        };
+        // 用独立连接检查完整性，避免长时间占用主连接。
+        let damaged = {
+            let check = Connection::open(&path)?;
+            let ok: bool = check
+                .prepare("PRAGMA integrity_check")
+                .and_then(|mut stmt| stmt.query_row([], |r| r.get::<_, String>(0)))
+                .map(|s| s == "ok")
+                .unwrap_or(false);
+            !ok
+        };
+        if !damaged {
+            return Ok(false);
+        }
+        // 释放主连接对文件的占用（换成内存连接），再重建文件库。
+        self.conn = Connection::open_in_memory()?;
+        self.conn = Self::repair_database(&path)?;
+        self.migrate()?;
+        Ok(true)
     }
 
     /// Open a database connection, auto-repairing if the file is corrupted.

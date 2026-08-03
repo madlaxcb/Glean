@@ -828,6 +828,33 @@ impl SpikeState {
         self.status = "已批量移动订阅".into();
     }
 
+    /// 批量设置多选订阅的代理开关，并清空选择。
+    pub fn batch_set_feed_proxy(&mut self, ids: Vec<glean_core::FeedId>, use_proxy: bool) {
+        let n = ids.len();
+        for id in ids {
+            self.dispatch(AppCommand::SetFeedProxy { id, use_proxy });
+        }
+        self.selected_feeds.clear();
+        self.status = format!(
+            "已批量{} {n} 个订阅的代理",
+            if use_proxy { "开启" } else { "关闭" }
+        );
+    }
+
+    /// 运行时修复数据库（设置页「修复数据库」按钮）。
+    /// 返回给 UI 的状态消息。
+    pub fn repair_database(&mut self) -> String {
+        match self.service.repair_db() {
+            Ok(true) => {
+                // 连接已重建，重新加载导航与条目。
+                self.dispatch(AppCommand::Bootstrap);
+                "数据库已修复（原文件备份为 .db.bak）".into()
+            }
+            Ok(false) => "数据库完整性检查通过，无需修复".into(),
+            Err(e) => format!("数据库修复失败: {e}"),
+        }
+    }
+
     pub fn toggle_star_current(&mut self) {
         if let Some(e) = &self.open_detail {
             let id = e.summary.id;

@@ -1313,6 +1313,11 @@ impl eframe::App for SpikeApp {
                             }
                             hint(ui, "清除正文缓存、图片缓存、Favicon 缓存（数据库不受影响）");
                             ui.add_space(4.0);
+                            if ui.button("修复数据库").clicked() {
+                                self.state.status = self.state.repair_database();
+                            }
+                            hint(ui, "订阅删除失败/提示 database disk image is malformed 时使用；原文件备份为 .db.bak");
+                            ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 ui.label("缓存位置");
                                 let te = egui::TextEdit::singleline(&mut self.state.cache_dir_input)
@@ -1895,6 +1900,13 @@ impl SpikeApp {
                     });
                     if let Some(target) = move_to {
                         self.state.batch_move_feeds(sel.clone(), target);
+                    }
+                    // 批量代理开关：快速给选中订阅统一开启/关闭代理。
+                    if ui.button("开启代理").clicked() {
+                        self.state.batch_set_feed_proxy(sel.clone(), true);
+                    }
+                    if ui.button("关闭代理").clicked() {
+                        self.state.batch_set_feed_proxy(sel.clone(), false);
                     }
                     if ui.button(format!("删除选中 ({n})")).clicked() {
                         self.state.batch_delete_feeds(sel);

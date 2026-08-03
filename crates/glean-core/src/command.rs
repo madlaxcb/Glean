@@ -73,6 +73,10 @@ pub enum AppCommand {
     ToggleFeedProxy {
         id: FeedId,
     },
+    SetFeedProxy {
+        id: FeedId,
+        use_proxy: bool,
+    },
     AutoRefresh,
     CreateFolder {
         name: String,
