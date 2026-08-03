@@ -238,7 +238,9 @@ pub struct SpikeState {
     /// 导航栏当前选中的分类 tab（None = 显示全部）。
     pub nav_active_category: Option<glean_core::FeedCategory>,
     /// 导航栏文件夹展开状态（会话内有效）。展开的文件夹 id 集合。
-    pub expanded_folders: std::collections::HashSet<glean_core::FolderId>,
+    pub expanded_folders: std::collections::HashSet<FolderId>,
+    /// 拖拽前保存的文件夹展开状态，拖拽结束后恢复。
+    pub expanded_folders_before_drag: Option<std::collections::HashSet<FolderId>>,
     /// 导航区多选开关（会话内有效）。开启时，点击订阅行切换选中状态。
     pub feed_multi_select: bool,
     /// 多选模式下选中的订阅 id 集合。
@@ -353,6 +355,7 @@ impl SpikeState {
             collapsed_categories: std::collections::HashSet::new(),
             nav_active_category: None,
             expanded_folders: std::collections::HashSet::new(),
+            expanded_folders_before_drag: None,
             feed_multi_select: false,
             selected_feeds: std::collections::HashSet::new(),
             opml_import_overwrite: false,

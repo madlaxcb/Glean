@@ -371,8 +371,10 @@ impl eframe::App for SpikeApp {
                     let cur_label = cur_cat.map(|c| c.label()).unwrap_or("自动");
                     egui::ComboBox::from_id_salt("feed_add_category")
                         .selected_text(format!("{cur_icon} {cur_label}"))
-                        .width(100.0)
+                        .width(150.0)
                         .show_ui(ui, |ui| {
+                            // 保证下拉菜单足够宽，避免项目因宽度不足而出现滚动条。
+                            ui.set_min_width(140.0);
                             for c in FEED_CATEGORIES {
                                 if ui
                                     .selectable_label(
@@ -1860,7 +1862,7 @@ impl SpikeApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .max_width((ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0))
+            .max_width(ui.available_width())
             .max_height(ui.available_height())
             .show(ui, |ui| {
                 let folders = self.state.folders.clone();
@@ -1876,15 +1878,25 @@ impl SpikeApp {
                     .cloned()
                     .collect();
 
-                // 拖动中：自动收起所有展开的文件夹
-                if dragging {
+                // 拖动中：临时收起所有展开的文件夹，仅显示文件夹以便拖放；
+                // 释放后恢复之前的展开状态。
+                let was_dragging = self.state.expanded_folders_before_drag.is_some();
+                if dragging && !was_dragging {
+                    self.state.expanded_folders_before_drag =
+                        Some(self.state.expanded_folders.clone());
                     self.state.expanded_folders.clear();
+                } else if !dragging && was_dragging {
+                    if let Some(saved) = self.state.expanded_folders_before_drag.take() {
+                        self.state.expanded_folders = saved;
+                    }
                 }
 
                 // 无文件夹的订阅（orphans）在前
-                for feed in feeds.iter().filter(|f| f.folder_id.is_none()) {
-                    if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
-                        action = Some(a);
+                if !dragging {
+                    for feed in feeds.iter().filter(|f| f.folder_id.is_none()) {
+                        if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
+                            action = Some(a);
+                        }
                     }
                 }
 
@@ -2067,11 +2079,14 @@ impl SpikeApp {
 
         // 多选模式下不使用 dnd_drag_source，因为它的 Sense::drag() 会拦截
         // 鼠标事件，导致内部 button/label 的 clicked() 无法触发。
+        // 复选框使用 selectable_label（与文字同高），保证多选/非多选行高一致。
+        let row_height = ui.spacing().interact_size.y;
         let (resp, row_clicked) = if multi {
             let width = ui.available_width();
             ui.set_min_width(width);
             ui.set_max_width(width);
             let row = ui.horizontal(|ui| {
+                ui.set_min_height(row_height);
                 if indent {
                     ui.add_space(12.0);
                 }
@@ -2081,7 +2096,7 @@ impl SpikeApp {
                     ui.label("🌐");
                 }
                 let check_text = if selected { "☑" } else { "☐" };
-                let check = ui.button(check_text);
+                let check = ui.selectable_label(selected, check_text);
                 let mut clicked = check.clicked();
                 let text = ui.add(
                     egui::Label::new(rich)
@@ -2099,6 +2114,7 @@ impl SpikeApp {
                 ui.set_min_width(width);
                 ui.set_max_width(width);
                 ui.horizontal(|ui| {
+                    ui.set_min_height(row_height);
                     if indent {
                         ui.add_space(12.0);
                     }
@@ -2253,7 +2269,7 @@ impl SpikeApp {
         let row_height = thumb_size;
         let num_rows = self.state.entries.len();
         egui::ScrollArea::vertical()
-            .max_width((ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0))
+            .max_width(ui.available_width())
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
@@ -2422,7 +2438,8 @@ fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
         s.floating_width = 12.0;
         s.handle_min_length = 24.0;
         s.bar_inner_margin = 3.0;
-        s.bar_outer_margin = 2.0;
+        // 滚动条与外层容器（列分隔条）之间不留空白，使两者贴在一起。
+        s.bar_outer_margin = 0.0;
     }
 
     // 视觉：圆角 + 主题色。
