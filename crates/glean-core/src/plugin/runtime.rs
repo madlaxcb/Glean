@@ -442,13 +442,14 @@ fn do_http(
     match send_result {
         Ok(resp) => {
             let status = resp.status().as_u16() as i64;
-            // §11.5 限流重试：HTTP 429（Too Many Requests）时退避重试，
-            // 最多 3 次。Pixiv 等多订阅并发刷新时容易触发限流。
+            // §11.5 限流重试：HTTP 429（Too Many Requests）时指数退避重试，
+            // 最多 5 次尝试（首次 + 4 次重试），间隔 2/4/8/16 秒。
+            // Pixiv 等订阅并发刷新时容易触发限流，退避需足够长才能避开。
             if status == 429 {
-                let mut attempts = 1;
+                const MAX_429_RETRIES: u32 = 4;
+                let mut retries: u32 = 0;
                 loop {
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_secs(attempts as u64 * 2));
+                    std::thread::sleep(std::time::Duration::from_secs(2_u64 << retries));
                     let retry = match method {
                         HttpMethod::Get => http.inner.get(url).headers(hdrs.clone()).send(),
                         HttpMethod::Post => http
@@ -461,7 +462,8 @@ fn do_http(
                     match retry {
                         Ok(r) => {
                             let s = r.status().as_u16() as i64;
-                            if s == 429 && attempts < 3 {
+                            if s == 429 && retries < MAX_429_RETRIES {
+                                retries += 1;
                                 continue;
                             }
                             let mut resp_hdrs = Map::new();

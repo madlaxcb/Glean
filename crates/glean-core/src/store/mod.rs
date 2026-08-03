@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 pub struct Store {
     conn: Connection,
@@ -305,6 +305,7 @@ impl Store {
                     last_error TEXT,
                     category TEXT NOT NULL DEFAULT 'article',
                     use_proxy INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL
                 );
                 CREATE TABLE entries (
@@ -520,6 +521,21 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 13 {
+            // 订阅排序：同组（无文件夹组/各文件夹）内按 sort_order 排序。
+            // 新库建表已含 sort_order 列；老库补列，重复列报错忽略。
+            let _ = self.conn.execute_batch(
+                "ALTER TABLE feeds ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+            );
+            // 回填：保持现有 id 顺序，与升级前的显示顺序一致。
+            self.conn
+                .execute_batch("UPDATE feeds SET sort_order = id;")?;
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '13')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -654,7 +670,7 @@ impl Store {
 
     pub fn list_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url, consecutive_failures, category, use_proxy FROM feeds ORDER BY id",
+            "SELECT id, folder_id, title, site_url, feed_url, last_error, muted, refresh_interval_secs, favicon_url, consecutive_failures, category, use_proxy FROM feeds ORDER BY folder_id, sort_order, id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -1159,6 +1175,59 @@ impl Store {
         if n == 0 {
             return Err(CoreError::NotFound(format!("feed {}", feed_id.0)));
         }
+        Ok(())
+    }
+
+    /// 调整订阅在导航区的顺序：把 `feed_id` 移到同组（无文件夹组或所在文件夹）内
+    /// `before_id` 之前；`before_id = None` 表示移到组末尾。组内其余订阅的
+    /// `sort_order` 紧凑重排（0,1,2,…）。跨组排序由调用方保证目标行属于同一组。
+    pub fn reorder_feed(&mut self, feed_id: FeedId, before_id: Option<FeedId>) -> Result<()> {
+        if Some(feed_id) == before_id {
+            return Ok(());
+        }
+        let folder_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT folder_id FROM feeds WHERE id = ?1",
+                params![feed_id.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten()
+            .ok_or_else(|| CoreError::NotFound(format!("feed {}", feed_id.0)))?;
+        let mut ids: Vec<i64> = match folder_id {
+            Some(fid) => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id FROM feeds WHERE folder_id = ?1 ORDER BY sort_order, id")?;
+                let rows = stmt.query_map(params![fid], |r| r.get(0))?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id FROM feeds WHERE folder_id IS NULL ORDER BY sort_order, id",
+                )?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+        };
+        if !ids.contains(&feed_id.0) {
+            return Err(CoreError::NotFound(format!("feed {}", feed_id.0)));
+        }
+        ids.retain(|&id| id != feed_id.0);
+        let pos = match before_id {
+            Some(b) => ids.iter().position(|&id| id == b.0).unwrap_or(ids.len()),
+            None => ids.len(),
+        };
+        ids.insert(pos, feed_id.0);
+        let tx = self.conn.transaction()?;
+        for (i, id) in ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE feeds SET sort_order = ?1 WHERE id = ?2",
+                params![i as i64, id],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

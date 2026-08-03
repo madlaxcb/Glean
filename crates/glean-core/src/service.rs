@@ -500,6 +500,14 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::ReorderFeed { feed_id, before_id } => {
+                self.store.reorder_feed(feed_id, before_id)?;
+                let mut ev = self.emit_nav()?;
+                ev.push(AppEvent::Status {
+                    message: "已调整订阅顺序".into(),
+                });
+                Ok(ev)
+            }
             AppCommand::ToggleMuteFeed { id } => {
                 let muted = self.store.toggle_mute_feed(id)?;
                 let mut ev = self.emit_nav()?;

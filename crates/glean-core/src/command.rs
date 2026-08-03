@@ -59,6 +59,12 @@ pub enum AppCommand {
         feed_id: FeedId,
         folder_id: Option<crate::model::FolderId>,
     },
+    /// 调整订阅在导航区的显示顺序：把 `feed_id` 移到同组内 `before_id` 之前
+    /// （`before_id = None` 表示移到组末尾）。
+    ReorderFeed {
+        feed_id: FeedId,
+        before_id: Option<FeedId>,
+    },
     ToggleMuteFeed {
         id: FeedId,
     },

@@ -23,6 +23,9 @@ enum FeedRowAction {
     EditUrl(glean_core::FeedId),
     MarkRead(glean_core::FeedId),
     MoveFolder(glean_core::FeedId, Option<FolderId>),
+    /// 整理模式下调整顺序：把第一个 id 移到同组内第二个 id 之前
+    /// （`None` 表示移到组末尾）。
+    Reorder(glean_core::FeedId, Option<glean_core::FeedId>),
     ToggleMute(glean_core::FeedId),
     SetCategory(glean_core::FeedId, FeedCategory),
     ToggleProxy(glean_core::FeedId),
@@ -569,6 +572,8 @@ impl eframe::App for SpikeApp {
                 self.state.rename_feed = None;
             } else if self.state.edit_feed_url.is_some() {
                 self.state.edit_feed_url = None;
+            } else if self.state.feed_sort_mode {
+                self.state.feed_sort_mode = false;
             } else if self.show_errors {
                 self.show_errors = false;
             } else if self.show_opml_import {
@@ -993,8 +998,10 @@ impl eframe::App for SpikeApp {
 
         // Settings popup
         if self.show_settings {
-            let mut close = false;
+            // 关闭按钮在标题栏右上角（x）。
+            let mut open = true;
             let mut win = egui::Window::new("设置")
+                .open(&mut open)
                 .resizable(true)
                 .default_size([480.0, 560.0])
                 .collapsible(false);
@@ -1361,15 +1368,6 @@ impl eframe::App for SpikeApp {
                                 self.show_plugins = true;
                             }
                             hint(ui, "安装 / 卸载 / 启用停用，见「插件管理」窗口");
-
-                            ui.add_space(12.0);
-                            ui.horizontal(|ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button("关闭").clicked() {
-                                        close = true;
-                                    }
-                                });
-                            });
                         });
                 });
             if let Some(inner) = &win_resp {
@@ -1379,7 +1377,7 @@ impl eframe::App for SpikeApp {
                     [rect.min.x, rect.min.y, rect.width(), rect.height()],
                 );
             }
-            if close {
+            if !open {
                 self.show_settings = false;
             }
         }
@@ -1827,7 +1825,7 @@ impl SpikeApp {
             }
         });
 
-        // 多选工具栏：批量移动 / 删除。
+        // 多选工具栏：批量移动 / 删除；整理模式：拖拽调整订阅顺序。
         ui.horizontal_wrapped(|ui| {
             if ui
                 .selectable_label(self.state.feed_multi_select, "多选")
@@ -1837,6 +1835,25 @@ impl SpikeApp {
                 if !self.state.feed_multi_select {
                     self.state.selected_feeds.clear();
                 }
+            }
+            // 整理按钮：进入/退出拖拽排序模式（与「拖入文件夹」拖拽互斥）。
+            if ui
+                .selectable_label(self.state.feed_sort_mode, "整理")
+                .clicked()
+            {
+                self.state.feed_sort_mode = !self.state.feed_sort_mode;
+                if self.state.feed_sort_mode {
+                    // 退出多选，避免复选框点击与拖拽冲突。
+                    self.state.feed_multi_select = false;
+                    self.state.selected_feeds.clear();
+                }
+            }
+            if self.state.feed_sort_mode {
+                ui.label(
+                    RichText::new("拖拽行间调整顺序，Esc 或再次点击「整理」退出")
+                        .size(12.0)
+                        .color(ui.visuals().strong_text_color().gamma_multiply(0.72)),
+                );
             }
             if self.state.feed_multi_select {
                 // 当前分类下可见的订阅（与下方列表过滤逻辑一致）。
@@ -1929,6 +1946,7 @@ impl SpikeApp {
                 let folders = self.state.folders.clone();
                 let active_cat = self.state.nav_active_category;
                 let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
+                let sort_mode = self.state.feed_sort_mode;
 
                 // 过滤当前分类的订阅
                 let feeds: Vec<glean_core::Feed> = self
@@ -1940,20 +1958,31 @@ impl SpikeApp {
                     .collect();
 
                 // 拖动中：临时收起所有展开的文件夹，仅显示文件夹以便拖放；
-                // 释放后恢复之前的展开状态。
+                // 释放后恢复之前的展开状态。整理模式下保持展开以便排序。
                 let was_dragging = self.state.expanded_folders_before_drag.is_some();
-                if dragging && !was_dragging {
+                if !sort_mode && dragging && !was_dragging {
                     self.state.expanded_folders_before_drag =
                         Some(self.state.expanded_folders.clone());
                     self.state.expanded_folders.clear();
-                } else if !dragging && was_dragging {
+                } else if !sort_mode && !dragging && was_dragging {
                     if let Some(saved) = self.state.expanded_folders_before_drag.take() {
                         self.state.expanded_folders = saved;
                     }
                 }
 
                 // 无文件夹的订阅（orphans）在前
-                if !dragging {
+                if sort_mode {
+                    // 整理模式：行间可拖拽排序，始终显示。
+                    let orphans: Vec<_> = feeds.iter().filter(|f| f.folder_id.is_none()).collect();
+                    for (i, feed) in orphans.iter().enumerate() {
+                        let next_id = orphans.get(i + 1).map(|f| f.id);
+                        if let Some(a) =
+                            self.draw_feed_item_sortable(ui, feed, &folders, false, next_id)
+                        {
+                            action = Some(a);
+                        }
+                    }
+                } else if !dragging {
                     for feed in feeds.iter().filter(|f| f.folder_id.is_none()) {
                         if let Some(a) = self.draw_feed_item(ui, feed, &folders, false) {
                             action = Some(a);
@@ -1985,6 +2014,33 @@ impl SpikeApp {
                     };
 
                     let folder_id = folder.id;
+                    if sort_mode {
+                        // 整理模式：文件夹标题只负责折叠，不作为拖放目标（避免与行间排序冲突）。
+                        let r = ui.add_sized(
+                            [ui.available_width(), ui.spacing().interact_size.y],
+                            egui::Button::new(RichText::new(header.clone()).strong())
+                                .truncate()
+                                .selected(false),
+                        );
+                        if r.clicked() {
+                            if expanded {
+                                self.state.expanded_folders.remove(&folder_id);
+                            } else {
+                                self.state.expanded_folders.insert(folder_id);
+                            }
+                        }
+                        if expanded {
+                            for (i, feed) in folder_feeds.iter().enumerate() {
+                                let next_id = folder_feeds.get(i + 1).map(|f| f.id);
+                                if let Some(a) =
+                                    self.draw_feed_item_sortable(ui, feed, &folders, true, next_id)
+                                {
+                                    action = Some(a);
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     // 文件夹作为拖放目标
                     let frame = if dragging {
                         Frame::new()
@@ -2029,7 +2085,7 @@ impl SpikeApp {
                     }
                 }
 
-                // 拖动中：空白区域作为"移出文件夹"的目标
+                // 拖动中：空白区域作为"移出文件夹"（整理模式下"移到组末尾"）的目标
                 if dragging {
                     let frame = Frame::new()
                         .stroke(Stroke::new(1.0_f32, ui.visuals().selection.stroke.color));
@@ -2039,18 +2095,29 @@ impl SpikeApp {
                         ui.vertical_centered(|ui| {
                             ui.add_space(10.0);
                             ui.label(
-                                RichText::new("拖到此处移出文件夹")
-                                    .size(12.0)
-                                    .color(ui.visuals().hyperlink_color),
+                                RichText::new(if sort_mode {
+                                    "拖到此处移到组末尾"
+                                } else {
+                                    "拖到此处移出文件夹"
+                                })
+                                .size(12.0)
+                                .color(ui.visuals().hyperlink_color),
                             );
                             ui.add_space(10.0);
                         });
                     });
                     if let Some(payload) = dropped {
-                        action = Some(FeedRowAction::MoveFolder(
-                            glean_core::FeedId(*payload.as_ref()),
-                            None,
-                        ));
+                        if sort_mode {
+                            action = Some(FeedRowAction::Reorder(
+                                glean_core::FeedId(*payload.as_ref()),
+                                None,
+                            ));
+                        } else {
+                            action = Some(FeedRowAction::MoveFolder(
+                                glean_core::FeedId(*payload.as_ref()),
+                                None,
+                            ));
+                        }
                     }
                 }
             });
@@ -2075,6 +2142,9 @@ impl SpikeApp {
             }
             Some(FeedRowAction::MoveFolder(feed_id, folder_id)) => {
                 self.state.move_feed_to_folder(feed_id, folder_id);
+            }
+            Some(FeedRowAction::Reorder(feed_id, before_id)) => {
+                self.state.reorder_feed(feed_id, before_id);
             }
             Some(FeedRowAction::ToggleMute(id)) => {
                 self.state.toggle_mute_feed(id);
@@ -2215,6 +2285,112 @@ impl SpikeApp {
                 }
             } else {
                 action = Some(FeedRowAction::Click(feed.id));
+            }
+        }
+        self.draw_feed_context_menu(&resp, feed, folders, &mut action);
+        action
+    }
+
+    /// 整理模式下的订阅行：可拖拽调整组内顺序（行间插入），不做移入/移出文件夹。
+    /// 行同时是拖拽源和放置目标：拖到行的上半部 → 插到该行前；下半部 → 插到该行后；
+    /// 拖到列表末尾空白区 → 移到本组末尾。`next_id` 是同组紧邻的下一行 id。
+    fn draw_feed_item_sortable(
+        &mut self,
+        ui: &mut Ui,
+        feed: &glean_core::Feed,
+        folders: &[glean_core::Folder],
+        indent: bool,
+        next_id: Option<glean_core::FeedId>,
+    ) -> Option<FeedRowAction> {
+        let drag_id = ui.id().with(("feed_sort_drag", feed.id));
+        let row_height = ui.spacing().interact_size.y;
+        let unread = self
+            .state
+            .unread_per_feed
+            .get(&feed.id)
+            .copied()
+            .unwrap_or(0);
+        let mut title = feed.title.clone();
+        if feed.muted {
+            title.push_str(" 🔇");
+        }
+        if feed.last_error.is_some() {
+            title.push_str(" ⚠");
+        }
+        if unread > 0 {
+            title.push_str(&format!(" ({unread})"));
+        }
+        let rich = if unread > 0 {
+            RichText::new(title).strong()
+        } else {
+            RichText::new(title)
+        };
+
+        let row = ui.dnd_drag_source(drag_id, feed.id.0, |ui| {
+            let width = ui.available_width();
+            ui.set_min_width(width);
+            ui.set_max_width(width);
+            ui.horizontal(|ui| {
+                ui.set_min_height(row_height);
+                if indent {
+                    ui.add_space(12.0);
+                }
+                if let Some(tex) = self.favicons.get(&feed.id) {
+                    ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(FAVICON_SIZE)));
+                } else {
+                    ui.label("🌐");
+                }
+                ui.add(
+                    egui::Label::new(rich)
+                        .truncate()
+                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .sense(egui::Sense::click()),
+                )
+            })
+        });
+        // 悬停时恢复默认指针，只在拖拽过程中显示 Grab 手型。
+        let resp = row.response.on_hover_cursor(egui::CursorIcon::Default);
+        let resp = resp.interact(egui::Sense::click());
+
+        // 拖拽中：指针悬停在行上时绘制插入指示线（上半=该行前，下半=该行后）。
+        if egui::DragAndDrop::has_any_payload(ui.ctx()) {
+            if let Some(p) = ui.ctx().pointer_latest_pos() {
+                if resp.rect.contains(p) {
+                    let before = p.y < resp.rect.center().y;
+                    let y = if before {
+                        resp.rect.top()
+                    } else {
+                        resp.rect.bottom()
+                    };
+                    let line = Stroke::new(2.0_f32, ui.visuals().selection.stroke.color);
+                    ui.painter()
+                        .hline(resp.rect.left()..=resp.rect.right(), y, line);
+                }
+            }
+        }
+
+        let mut action = None;
+        if resp.clicked() {
+            action = Some(FeedRowAction::Click(feed.id));
+        }
+        // 释放检测：拖到该行上 → 插入到该行前/后（仅同组有效）。
+        if let Some(payload) = resp.dnd_release_payload::<i64>() {
+            let dragged = glean_core::FeedId(*payload.as_ref());
+            let dragged_group = self
+                .state
+                .feeds
+                .iter()
+                .find(|f| f.id == dragged)
+                .and_then(|f| f.folder_id);
+            if dragged_group == feed.folder_id {
+                let before = ui
+                    .ctx()
+                    .pointer_latest_pos()
+                    .map_or(true, |p| p.y < resp.rect.center().y);
+                let before_id = if before { Some(feed.id) } else { next_id };
+                if before_id != Some(dragged) {
+                    action = Some(FeedRowAction::Reorder(dragged, before_id));
+                }
             }
         }
         self.draw_feed_context_menu(&resp, feed, folders, &mut action);

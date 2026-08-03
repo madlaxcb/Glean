@@ -101,9 +101,9 @@ fn single_instance_lock() -> Option<std::fs::File> {
 }
 
 /// Max concurrent HTTP fetches during a refresh batch (dev plan §7.1: 4–8).
-/// 调低到 2：Pixiv 等插件 API 对并发限流严格（HTTP 429），多订阅并发
-/// 刷新会互相触发限流；RSS 抓取很快，2 并发对总体耗时影响很小。
-const REFRESH_WORKERS: usize = 2;
+/// 调低到 1：Pixiv 等插件 API 对并发限流严格（HTTP 429），2 并发仍会
+/// 触发限流；串行刷新（一次只抓一个订阅）最稳妥，对 RSS 抓取影响很小。
+const REFRESH_WORKERS: usize = 1;
 
 /// Spawn bounded worker threads that fetch+parse in parallel, sending each
 /// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;
@@ -247,6 +247,9 @@ pub struct SpikeState {
     pub feed_multi_select: bool,
     /// 多选模式下选中的订阅 id 集合。
     pub selected_feeds: std::collections::HashSet<glean_core::FeedId>,
+    /// 导航区整理模式（拖拽调整订阅顺序）。与「拖入文件夹」拖拽互斥：
+    /// 只在整理模式下拖拽行间插入排序，避免语义冲突。
+    pub feed_sort_mode: bool,
     /// OPML 导入是否覆盖（false = 追加）。
     pub opml_import_overwrite: bool,
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
@@ -360,6 +363,7 @@ impl SpikeState {
             expanded_folders_before_drag: None,
             feed_multi_select: false,
             selected_feeds: std::collections::HashSet::new(),
+            feed_sort_mode: false,
             opml_import_overwrite: false,
             plugin_cred_edits: std::collections::HashMap::new(),
         };
@@ -828,6 +832,16 @@ impl SpikeState {
         }
         self.selected_feeds.clear();
         self.status = "已批量移动订阅".into();
+    }
+
+    /// 整理模式下调整订阅顺序：把 `feed_id` 移到同组内 `before_id` 之前
+    /// （`before_id = None` 表示移到组末尾）。
+    pub fn reorder_feed(
+        &mut self,
+        feed_id: glean_core::FeedId,
+        before_id: Option<glean_core::FeedId>,
+    ) {
+        self.dispatch(AppCommand::ReorderFeed { feed_id, before_id });
     }
 
     /// 批量设置多选订阅的代理开关，并清空选择。
