@@ -32,6 +32,7 @@ pub fn normalize(raw: &str) -> String {
     match normalized_host {
         "github.com" => normalize_github(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
+        "pixiv.net" => normalize_pixiv(&mut url, raw),
         _ => raw.to_string(),
     }
 }
@@ -64,6 +65,22 @@ fn normalize_youtube(url: &mut Url, raw: &str) -> String {
             url.set_fragment(None);
             return url.to_string();
         }
+    }
+    raw.to_string()
+}
+
+/// pixiv 用户主页：OPML 常导出单数 `pixiv.net/user/{id}`，而插件匹配
+/// 复数 `pixiv.net/users/*`。归一化为复数形态，保证导入订阅刷新时
+/// 能命中 Pixiv 插件（否则 RSS 直抓会 404）。
+fn normalize_pixiv(url: &mut Url, raw: &str) -> String {
+    let segments: Vec<String> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    if segments.len() == 2 && segments[0] == "user" {
+        url.set_path(&format!("/users/{}", segments[1]));
+        url.set_fragment(None);
+        return url.to_string();
     }
     raw.to_string()
 }
@@ -133,6 +150,26 @@ mod tests {
     fn youtube_handle_untouched() {
         // @handle 不在 Tier 0 规则内（无法静态解析为 channel_id）
         let u = "https://www.youtube.com/@somehandle";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn pixiv_singular_user_normalized_to_plural() {
+        assert_eq!(
+            normalize("https://www.pixiv.net/user/112404013"),
+            "https://www.pixiv.net/users/112404013"
+        );
+    }
+
+    #[test]
+    fn pixiv_plural_users_untouched() {
+        let u = "https://www.pixiv.net/users/112404013";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn pixiv_deeper_path_untouched() {
+        let u = "https://www.pixiv.net/user/112404013/illustrations";
         assert_eq!(normalize(u), u);
     }
 

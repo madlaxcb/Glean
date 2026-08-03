@@ -23,6 +23,10 @@ url_pattern = "pixiv.net/users/*"
 [[match]]
 url_pattern = "www.pixiv.net/users/*"
 
+# OPML 导入常导出单数 `pixiv.net/user/{id}`，同样命中插件。
+[[match]]
+url_pattern = "pixiv.net/user/*"
+
 [capabilities]
 feed_fetch = ["oauth.secure.pixiv.net", "app-api.pixiv.net"]
 credential_use = ["pixiv_refresh_token"]

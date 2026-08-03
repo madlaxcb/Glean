@@ -914,6 +914,25 @@ impl GleanService {
                 },
             });
         }
+        // 插件路由未命中时，尝试规范化后的 URL（如 OPML 导入的 pixiv
+        // 单数 `user/` URL → 复数 `users/`），命中后仍走插件获取。
+        let normalized = crate::feed::tier0::normalize(&url);
+        if normalized != url {
+            if let Some(res) = self.fetch_via_plugin(&normalized, client, &existing) {
+                return Some(match res {
+                    Ok(parsed) => RefreshOutcome::Updated {
+                        feed_id: id,
+                        parsed,
+                        etag: None,
+                        last_modified: None,
+                    },
+                    Err(e) => RefreshOutcome::Error {
+                        feed_id: id,
+                        error: e.to_string(),
+                    },
+                });
+            }
+        }
         match fetch_feed_bytes(client, &url, etag.as_deref(), last_modified.as_deref()) {
             Ok(FetchResult::NotModified) => Some(RefreshOutcome::NotModified { feed_id: id }),
             Ok(FetchResult::Body {
