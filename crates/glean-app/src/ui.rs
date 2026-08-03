@@ -2340,41 +2340,43 @@ impl SpikeApp {
                     let row_width = ui.available_width();
                     ui.set_min_width(row_width);
                     ui.set_max_width(row_width);
-                    // 选中行用背景色高亮
-                    if selected {
-                        ui.painter().rect_filled(
-                            ui.max_rect(),
-                            0.0,
-                            ui.visuals().selection.bg_fill,
-                        );
-                    }
-                    let row = ui.horizontal_top(|ui| {
-                        if let Some(tex) = &thumb {
-                            ui.add(
-                                egui::Image::new(tex).fit_to_exact_size(Vec2::splat(thumb_size)),
-                            );
+                    let row = Frame::new()
+                        .fill(if selected {
+                            ui.visuals().selection.bg_fill
                         } else {
-                            ui.allocate_space(Vec2::splat(thumb_size));
-                        }
-                        let text_width =
-                            (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
-                        // 用 Layout::left_to_right(Align::TOP) 强制水平居左
-                        ui.allocate_ui_with_layout(
-                            egui::Vec2::new(text_width, thumb_size),
-                            egui::Layout::left_to_right(egui::Align::TOP),
-                            |ui| {
-                                ui.add(
-                                    egui::Label::new(rich)
-                                        .truncate()
-                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                            Color32::TRANSPARENT
+                        })
+                        .inner_margin(Margin::ZERO)
+                        .show(ui, |ui| {
+                            ui.set_min_width(row_width);
+                            ui.set_max_width(row_width);
+                            ui.horizontal_top(|ui| {
+                                if let Some(tex) = &thumb {
+                                    ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(
+                                        thumb_size,
+                                    )));
+                                } else {
+                                    ui.allocate_space(Vec2::splat(thumb_size));
+                                }
+                                let text_width =
+                                    (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::Vec2::new(text_width, thumb_size),
+                                    egui::Layout::left_to_right(egui::Align::TOP),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(rich)
+                                                .truncate()
+                                                .wrap_mode(egui::TextWrapMode::Truncate),
+                                        )
+                                    },
                                 )
-                            },
-                        )
-                        .inner
-                    });
-                    let resp = row.response;
+                                .inner
+                            })
+                        });
+                    let resp = row.response.on_hover_cursor(egui::CursorIcon::Default);
                     let label_resp = row.inner;
-                    if resp.clicked() || label_resp.clicked() {
+                    if resp.clicked() || label_resp.inner.clicked() {
                         clicked = Some(i);
                     }
                     // Capture entry data for context menu (avoids borrow conflict).
