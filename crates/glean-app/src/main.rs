@@ -1681,11 +1681,12 @@ fn render_entry(
     } else {
         &entry.content_html
     };
-    // 在正文下方追加 AI 增强结果（摘要/翻译）。转义文本避免被当成 HTML。
+    // AI 增强结果（摘要/翻译）显示在正文上方：正文可能很长，追加在末尾
+    // 用户滚动不到、看不到结果。转义文本避免被当成 HTML。
     let body_with_enhancements = if entry.enhancements.is_empty() {
         body.to_string()
     } else {
-        let mut html = body.to_string();
+        let mut html = String::new();
         for (kind, content) in &entry.enhancements {
             let label = match kind.as_str() {
                 "summary" => "AI 摘要",
@@ -1699,6 +1700,7 @@ fn render_entry(
                 r#"<div class="ai-enhancement"><div class="ai-label">{label}</div><div class="ai-content">{with_br}</div></div>"#
             ));
         }
+        html.push_str(body);
         html
     };
     let has_content = !body.is_empty();

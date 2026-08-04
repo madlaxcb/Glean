@@ -194,4 +194,31 @@ mod tests {
         assert!(doc.contains("--fg"));
         assert!(doc.contains("var(--bg)"));
     }
+
+    /// AI 增强区块（摘要/翻译结果）必须穿透消毒管线并保留样式 class：
+    /// 这是「点击摘要/翻译后内容区显示结果」的回归防线。
+    #[test]
+    fn ai_enhancement_block_survives_reader_document() {
+        let body = r#"<p>正文</p><div class="ai-enhancement"><div class="ai-label">AI 摘要</div><div class="ai-content">第一句。<br>第二句。</div></div>"#;
+        let doc = reader_document(
+            "t",
+            None,
+            None,
+            body,
+            false,
+            true,
+            ImagePolicy::Block,
+            16,
+            42,
+        );
+        assert!(
+            doc.contains(r#"class="ai-enhancement""#),
+            "ai-enhancement class 被消毒剥掉: {doc}"
+        );
+        assert!(doc.contains("AI 摘要"), "ai-label 文本丢失");
+        assert!(doc.contains("第一句"), "增强结果文本丢失");
+        // 样式必须存在，否则区块即使渲染也没有视觉样式。
+        assert!(doc.contains(".ai-enhancement"));
+        assert!(doc.contains(".ai-content"));
+    }
 }

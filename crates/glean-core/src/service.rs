@@ -883,11 +883,12 @@ impl GleanService {
             } => Ok(vec![
                 AppEvent::EntryEnhanced {
                     id: entry_id,
-                    kind,
+                    kind: kind.clone(),
                     success: false,
                 },
-                AppEvent::Status {
-                    message: format!("AI 增强失败: {error}"),
+                // Error 事件：进入错误日志弹窗 + 状态栏「错误:」前缀，比 Status 更显眼。
+                AppEvent::Error {
+                    message: format!("AI {kind} 失败: {error}"),
                 },
             ]),
         }
