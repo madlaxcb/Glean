@@ -1307,8 +1307,20 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
     } else {
         vec![task.url.clone()]
     };
+    write_debug_log(&format!(
+        "[refresh-worker] feed_id={} url={} proxy={} plugin_mgr={} candidates={:?}",
+        task.feed_id.0,
+        task.url,
+        task.use_proxy,
+        ctx.plugin_mgr.is_some(),
+        candidates
+    ));
     if let Some(mgr) = ctx.plugin_mgr.as_deref() {
         for url in &candidates {
+            let hit = mgr.find_for_url(url).map(|p| p.manifest.plugin.id.clone());
+            write_debug_log(&format!(
+                "[refresh-worker] candidate={url} hit_plugin={hit:?}"
+            ));
             if let Some(res) = mgr.run_tier1_for_url(url, client).transpose() {
                 return match res {
                     Ok(parsed) => RefreshOutcome::Updated {
@@ -1328,6 +1340,10 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
                 .run_tier2_for_url(url, Arc::clone(client), creds, &task.existing_guids)
                 .transpose()
             {
+                write_debug_log(&format!(
+                    "[refresh-worker] tier2 url={url} result={}",
+                    if res.is_ok() { "ok" } else { "err" }
+                ));
                 return match res {
                     Ok(parsed) => RefreshOutcome::Updated {
                         feed_id: task.feed_id,
@@ -1343,6 +1359,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
             }
         }
     }
+    write_debug_log("[refresh-worker] no plugin hit, falling back to RSS fetch");
     // 默认 RSS 路径
     match fetch_feed_bytes(
         client,
