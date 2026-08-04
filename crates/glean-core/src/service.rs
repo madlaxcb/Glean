@@ -1188,18 +1188,28 @@ impl GleanService {
         let outlines = opml::parse_opml(content);
         let mut added = 0u32;
         for o in &outlines {
-            if self.store.find_feed_by_url(&o.feed_url)?.is_none() {
+            // 与手工添加一致：清洗反引号/空白 + Tier 0 规范化（pixiv 单数
+            // `user/` → 复数 `users/`）。否则 OPML 里的坏 URL 入库后插件
+            // 路由 miss，刷新会走 RSS 抓到登录页/404。
+            let feed_url = crate::feed::tier0::normalize(&clean_feed_url(&o.feed_url));
+            if feed_url.is_empty() {
+                continue;
+            }
+            if let Some(id) = self.store.find_feed_by_url(&feed_url)? {
+                // 已存在清洗后的订阅 → 跳过（幂等）。
+                let _ = id;
+            } else if let Some(id) = self.store.find_feed_by_url(&o.feed_url)? {
+                // 存量坏数据：库里是带反引号/单数等未清洗 URL，直接修复为
+                // 清洗后版本，避免重复添加。
+                self.store.set_feed_url(id, &feed_url)?;
+            } else {
                 let title = if o.title.is_empty() {
-                    o.feed_url.clone()
+                    feed_url.clone()
                 } else {
                     o.title.clone()
                 };
-                self.store.add_feed(
-                    &title,
-                    &o.feed_url,
-                    None,
-                    crate::feed::categorize(&o.feed_url),
-                )?;
+                self.store
+                    .add_feed(&title, &feed_url, None, crate::feed::categorize(&feed_url))?;
                 added += 1;
             }
         }
@@ -1529,5 +1539,49 @@ mod tests {
     fn bootstrap_with_demo(svc: &mut GleanService) {
         svc.handle(AppCommand::Bootstrap);
         svc.store.seed_demo_if_empty().unwrap();
+    }
+
+    /// OPML 导入：反引号包裹的 pixiv 单数 `user/` URL 必须清洗并规范化为
+    /// 复数 `users/` 入库（否则插件路由 miss，刷新会走 RSS 抓到登录页）。
+    #[test]
+    fn import_opml_cleans_and_normalizes_pixiv_url() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        let opml = r#"<?xml version="1.0"?>
+<opml version="2.0"><head><title>t</title></head><body>
+<outline type="rss" text="Pixiv A" title="Pixiv A" xmlUrl="`https://www.pixiv.net/user/8252709`"/>
+</body></opml>"#;
+        svc.handle(AppCommand::ImportOpml {
+            content: opml.into(),
+            overwrite: false,
+        });
+        let feeds = svc.store.list_feeds().unwrap();
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(
+            feeds[0].feed_url, "https://www.pixiv.net/users/8252709",
+            "反引号与单数 user/ 必须被清洗规范化为复数 users/"
+        );
+    }
+
+    /// OPML 导入幂等 + 存量坏数据修复：库里已有反引号 URL 时，再次导入
+    /// 干净 URL 应修复旧条目而不是重复添加。
+    #[test]
+    fn import_opml_repairs_backtick_url_instead_of_duplicating() {
+        let mut svc = GleanService::open_in_memory().unwrap();
+        // 造一条带反引号的存量坏数据（模拟历史导入）。
+        let bad = "`https://www.pixiv.net/user/8252709`";
+        svc.store
+            .add_feed("Pixiv A", bad, None, crate::feed::categorize(bad))
+            .unwrap();
+        let opml = r#"<?xml version="1.0"?>
+<opml version="2.0"><head><title>t</title></head><body>
+<outline type="rss" text="Pixiv A" title="Pixiv A" xmlUrl="`https://www.pixiv.net/user/8252709`"/>
+</body></opml>"#;
+        svc.handle(AppCommand::ImportOpml {
+            content: opml.into(),
+            overwrite: false,
+        });
+        let feeds = svc.store.list_feeds().unwrap();
+        assert_eq!(feeds.len(), 1, "不应重复添加订阅");
+        assert_eq!(feeds[0].feed_url, "https://www.pixiv.net/users/8252709");
     }
 }
