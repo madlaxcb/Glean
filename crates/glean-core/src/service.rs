@@ -314,6 +314,27 @@ impl GleanService {
         self.http_proxy.as_ref()
     }
 
+    /// entry 所属订阅 id（「刷新该贴」按订阅刷新时使用）。
+    pub fn entry_feed_id(&self, entry_id: EntryId) -> Option<FeedId> {
+        self.store.get_entry(entry_id).ok()?.summary.feed_id
+    }
+
+    /// entry 所属订阅是否为插件订阅（feed_url 命中已加载插件）。
+    pub fn entry_in_plugin_feed(&self, entry_id: EntryId) -> bool {
+        let Some(fid) = self.entry_feed_id(entry_id) else {
+            return false;
+        };
+        let Ok(feeds) = self.store.list_feeds() else {
+            return false;
+        };
+        let Some(feed) = feeds.into_iter().find(|f| f.id == fid) else {
+            return false;
+        };
+        self.plugin_mgr
+            .as_deref()
+            .is_some_and(|m| m.find_for_url(&feed.feed_url).is_some())
+    }
+
     /// 构建一份刷新上下文快照供 worker 线程使用：共享 `PluginManager`/`HttpClient`，
     /// 克隆 `CredentialStore`（凭证集很小）。`None` 字段表示该能力不可用，worker 走默认 RSS。
     pub fn refresh_ctx(&self) -> RefreshCtx {
@@ -615,8 +636,17 @@ impl GleanService {
                         ))
                     }
                 };
+                // 按订阅的 use_proxy 选客户端：开启代理的订阅（如 Pixiv）原文 URL
+                // 直连抓不到，必须走代理（之前用 self.http 直连导致刷新该贴失败）。
+                let client = match detail.summary.feed_id {
+                    Some(fid) => {
+                        let (_, _, _, use_proxy) = self.store.get_feed_fetch_meta(fid)?;
+                        Arc::clone(pick_client(use_proxy, &self.http, &self.http_proxy))
+                    }
+                    None => Arc::clone(&self.http),
+                };
                 let task = ExtractTask { entry_id: id, url };
-                let outcome = crate::extract::run_extract_task(&self.http.inner, &task);
+                let outcome = crate::extract::run_extract_task(&client.inner, &task);
                 Ok(self.apply_extract_outcome_inner(outcome)?)
             }
             AppCommand::EnhanceEntry { id, action } => {
@@ -771,40 +801,25 @@ impl GleanService {
 
     // --- Async extraction: UI calls prepare → thread → apply ---
 
-    /// 构建抽取任务。
-    /// - `force = false`（自动抽取）：已抽取 / 正文够长 / 无 URL / Pixiv 作品页 → None
-    /// - `force = true`（手动「抽取全文」）：允许重抽已抽取内容；仍跳过无 URL、
-    ///   Pixiv 作品页（插件已提供图文，网页需登录无正文可读）
-    pub fn prepare_extract_task(&self, id: EntryId, force: bool) -> Result<Option<ExtractTask>> {
+    /// Build an extraction task for an entry. Returns None if the entry has no
+    /// URL, is already long enough (full feed content), or already extracted.
+    pub fn prepare_extract_task(&self, id: EntryId) -> Result<Option<ExtractTask>> {
         let entry = self.store.get_entry(id)?;
-        let url = match entry.summary.url.as_deref() {
-            Some(u) => u,
-            None => return Ok(None),
-        };
-        // Pixiv 作品页：插件 API 已给出图+说明，网页抽取必然失败且无意义。
-        if crate::extract::is_pixiv_artwork_url(Some(url)) {
+        // Skip if already extracted (don't re-extract on every open).
+        if !entry.extracted_html.is_empty() {
             return Ok(None);
         }
-        if !force {
-            // 自动：已抽取过就跳过，避免每次打开都重抽。
-            if !entry.extracted_html.is_empty() {
-                return Ok(None);
-            }
-            // 自动：正文已够长也跳过。
-            if !crate::extract::should_extract(&entry.content_html, Some(url)) {
-                return Ok(None);
-            }
-        } else {
-            // 手动强制：只要有 http(s) URL 就允许（含已抽取、含长正文重抽）。
-            match url::Url::parse(url) {
-                Ok(u) if matches!(u.scheme(), "http" | "https") => {}
-                _ => return Ok(None),
-            }
+        // Skip if the feed content is already substantial.
+        if !crate::extract::should_extract(&entry.content_html, entry.summary.url.as_deref()) {
+            return Ok(None);
         }
-        Ok(Some(ExtractTask {
-            entry_id: id,
-            url: url.to_string(),
-        }))
+        match entry.summary.url {
+            Some(u) => Ok(Some(ExtractTask {
+                entry_id: id,
+                url: u,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Apply one background extraction result; returns events to emit.
