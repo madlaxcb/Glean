@@ -2,8 +2,8 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.5.6 · 日期：2026-08-04  
-> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，138 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强可读展示、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流/停止刷新/AI 展示修复等）已整理进 **§13**。  
+> 文档版本：0.5.7 · 日期：2026-08-04  
+> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，142 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强可读展示、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流/停止刷新/AI 展示修复等）已整理进 **§13**。  
 > 剩余未完成：M4 正式安装包与用户手册、§0.4 性能指标实测、M6 安装时权限确认 UI、M7 的 Twitter/X、Fantia、Fanbox 适配器。
 
 ---
@@ -1087,6 +1087,7 @@ ammonia = "…"
 | 37 | 已缓存文章无法刷新 | 文章列表右键菜单加「刷新该贴」；插件订阅走所属订阅刷新（见 #39），普通订阅走 `ExtractEntry` 重抓原文；无 URL 的文章不显示该项 | ✅ 已实现 |
 | 38 | Pixiv 元信息缺发帖时间 | `adapter.rhai` 在 `pixiv-meta` 行首加 `🕒 YYYY-MM-DD HH:MM`（create_date JST 原样）+ `.pixiv-meta-date` 样式 | ✅ 已实现 |
 | 39 | Pixiv「刷新该贴」直连抓 URL 失败 | 根因：`ExtractEntry` 用直连 client 抓 pixiv.net。修复：① ExtractEntry 按订阅 `use_proxy` 选客户端；② 插件订阅的「刷新该贴」改为异步刷新**所属订阅**并自动打开该帖（完全复用插件代理/OAuth/Headers 逻辑） | ✅ 已实现 |
+| 40 | 「刷新该贴」走到 RSS 抓到登录页 | 根因：feed_url 被粘贴成 markdown 反引号链接（`` `https://…` ``），`Url::parse` 失败 → 插件匹配永远 miss → 走默认 RSS 抓 pixiv 网页。修复：① `clean_feed_url()` 在 AddFeedFromUrl/AddFeedLocal/EditFeedUrl 入库前剥反引号；② `normalize()`/插件 `matches()` 兼容存量反引号数据；③ `normalize_pixiv` 单数 `user/` → 复数 `users/`。含 4 个回归测试 | ✅ 已实现 |
 
 ---
 

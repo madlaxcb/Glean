@@ -470,6 +470,7 @@ impl GleanService {
                 Ok(ev)
             }
             AppCommand::AddFeedLocal { title, feed_url } => {
+                let feed_url = clean_feed_url(&feed_url);
                 let id = self.store.add_feed(
                     &title,
                     &feed_url,
@@ -523,7 +524,7 @@ impl GleanService {
                 Ok(ev)
             }
             AppCommand::EditFeedUrl { id, feed_url } => {
-                self.store.set_feed_url(id, &feed_url)?;
+                self.store.set_feed_url(id, &clean_feed_url(&feed_url))?;
                 let mut ev = self.emit_nav()?;
                 ev.push(AppEvent::Status {
                     message: "已更新订阅 URL".into(),
@@ -1016,13 +1017,13 @@ impl GleanService {
     }
 
     fn add_feed_from_url(&mut self, feed_url: &str) -> Result<Vec<AppEvent>> {
-        let trimmed = feed_url.trim();
+        let trimmed = clean_feed_url(feed_url);
         if trimmed.is_empty() {
             return Err(CoreError::Message("订阅 URL 为空".into()));
         }
         // §11.5.2 Tier 0: 对 GitHub releases / YouTube channel 做 URL 规范化。
         // 规范化后的 URL 才是真正入库的订阅地址。
-        let url = crate::feed::tier0::normalize(trimmed);
+        let url = crate::feed::tier0::normalize(&trimmed);
         if let Some(existing) = self.store.find_feed_by_url(&url)? {
             let mut ev = vec![AppEvent::Status {
                 message: format!("源已存在，已刷新 id={}", existing.0),
@@ -1247,6 +1248,13 @@ impl GleanService {
         ));
         Ok(vec![AppEvent::EntriesUpdated { entries }])
     }
+}
+
+/// 清理用户粘贴的订阅 URL：去除 markdown 反引号包裹与首尾空白。
+/// 反引号链接会让 Url::parse 失败、插件路由 miss（曾导致「刷新该贴」走到 RSS）。
+fn clean_feed_url(raw: &str) -> String {
+    raw.trim_matches(|c: char| c == '`' || c.is_whitespace())
+        .to_string()
 }
 
 fn write_debug_log(message: &str) {

@@ -359,6 +359,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// 规则：`*` 匹配任意后缀（含路径分隔符）；其余字符精确匹配。
 /// 形如 `pixiv.net/users/*` 匹配 `https://www.pixiv.net/users/12345`。
 fn matches(url: &str, rule: &MatchRule) -> bool {
+    // 兼容存量坏数据：用户曾粘贴 markdown 反引号链接（`` `https://…` ``），
+    // strip 后再解析，否则 Url::parse 失败导致插件永远 miss。
+    let url = url.trim_matches(|c: char| c == '`' || c.is_whitespace());
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };
@@ -453,6 +456,29 @@ mod tests {
         let m = make_manifest("pixiv", "pixiv.net/users/*", Tier::Script);
         let mgr = PluginManager::from_manifests(vec![m]);
         assert!(mgr.find_for_url("https://example.com/feed.xml").is_none());
+    }
+
+    #[test]
+    fn find_for_url_matches_backtick_wrapped_url() {
+        // 存量坏数据：feed_url 曾被粘贴为 markdown 反引号链接。matches()
+        // 必须剥掉反引号再解析，否则插件永远 miss（曾导致「刷新该贴」
+        // 走到 RSS 抓到登录页）。
+        let m = make_manifest("pixiv", "pixiv.net/user/*", Tier::Script);
+        let mgr = PluginManager::from_manifests(vec![m]);
+        assert!(
+            mgr.find_for_url("`https://www.pixiv.net/user/8252709`")
+                .is_some(),
+            "backtick-wrapped URL should still match the plugin"
+        );
+    }
+
+    #[test]
+    fn find_for_url_matches_singular_pixiv_user_rule() {
+        let m = make_manifest("pixiv", "pixiv.net/user/*", Tier::Script);
+        let mgr = PluginManager::from_manifests(vec![m]);
+        assert!(mgr
+            .find_for_url("https://www.pixiv.net/user/8252709")
+            .is_some());
     }
 
     #[test]

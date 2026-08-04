@@ -17,7 +17,9 @@ use url::Url;
 ///
 /// 输入无法解析为 URL 时，原样返回输入。
 pub fn normalize(raw: &str) -> String {
-    let trimmed = raw.trim();
+    // 清理用户粘贴的 markdown 反引号链接（`` `https://…` ``）与首尾空白，
+    // 否则 Url::parse 失败、插件路由/请求全部 miss（曾导致「刷新该贴」走到 RSS）。
+    let trimmed = raw.trim_matches(|c: char| c == '`' || c.is_whitespace());
     let Ok(mut url) = Url::parse(trimmed) else {
         return raw.to_string();
     };
@@ -144,6 +146,25 @@ mod tests {
     fn youtube_already_feed_untouched() {
         let u = "https://www.youtube.com/feeds/videos.xml?channel_id=UCxxx";
         assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn pixiv_user_singular_normalizes_to_plural() {
+        assert_eq!(
+            normalize("https://www.pixiv.net/user/8252709"),
+            "https://www.pixiv.net/users/8252709"
+        );
+    }
+
+    #[test]
+    fn pixiv_url_wrapped_in_markdown_backticks_is_cleaned() {
+        // 用户粘贴 `` `https://…` `` 形式的 markdown 链接：反引号必须被
+        // 剥离，否则 Url::parse 失败、插件路由 miss（曾导致「刷新该贴」
+        // 走到 RSS 抓到登录页）。
+        assert_eq!(
+            normalize("`https://www.pixiv.net/user/8252709`"),
+            "https://www.pixiv.net/users/8252709"
+        );
     }
 
     #[test]
