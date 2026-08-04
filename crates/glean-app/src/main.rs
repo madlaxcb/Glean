@@ -14,10 +14,10 @@ mod update;
 use eframe::egui;
 use glean_core::{
     default_config_path, default_db_path, run_enhance_task, run_extract_task,
-    run_refresh_task_with_ctx, should_extract, AppCommand, AppConfig, AppEvent, EnhanceAction,
-    EnhanceOutcome, EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome, ExtractTask,
-    FaviconCache, Feed, FeedCategory, FeedId, Folder, FolderId, GleanService, ImagePolicy,
-    ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
+    run_refresh_task_with_ctx, AppCommand, AppConfig, AppEvent, EnhanceAction, EnhanceOutcome,
+    EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome, FaviconCache, Feed,
+    FeedCategory, FeedId, Folder, FolderId, GleanService, ImagePolicy, ReaderHostMode, RefreshCtx,
+    RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1029,37 +1029,25 @@ impl SpikeState {
             return;
         }
         let entry = match &self.open_detail {
-            Some(e) => e.clone(),
+            Some(e) => e.summary.id,
             None => return,
         };
-        // Skip if already extracted or content is long enough.
-        if !entry.extracted_html.is_empty() {
-            return;
-        }
-        if !should_extract(&entry.content_html, entry.summary.url.as_deref()) {
-            return;
-        }
-        let url = match entry.summary.url.as_deref() {
-            Some(u) => u.to_string(),
-            None => return,
+        // force=false：自动抽取，已抽取/正文够长/Pixiv 作品页自动跳过。
+        let task = match self.service.prepare_extract_task(entry, false) {
+            Ok(Some(t)) => t,
+            _ => return,
         };
-        let task = ExtractTask {
-            entry_id: entry.summary.id,
-            url,
-        };
+        // 优先走代理 client（与图片缓存一致），未配置代理时回退直连。
+        let client = self
+            .service
+            .http_proxy()
+            .map(|c| c.inner.clone())
+            .unwrap_or_else(|| self.service.http().inner.clone());
         let (tx, rx) = mpsc::channel::<ExtractOutcome>();
         self.extract_rx = Some(rx);
-        self.extract_in_flight = Some(entry.summary.id);
+        self.extract_in_flight = Some(entry);
         self.status = "正在抽取全文…".into();
         thread::spawn(move || {
-            // Build a throwaway blocking client (glean-core's HttpClient isn't
-            // Send-safely shareable across thread::spawn without an Arc, and
-            // extraction is a one-shot per-article fetch).
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .build()
-                .expect("extract client");
             let outcome = run_extract_task(&client, &task);
             let _ = tx.send(outcome);
         });
@@ -1078,6 +1066,18 @@ impl SpikeState {
                 ExtractOutcome::Extracted { entry_id, .. } => *entry_id,
                 ExtractOutcome::Failed { entry_id, .. } => *entry_id,
             };
+            match &outcome {
+                ExtractOutcome::Extracted { html, .. } => {
+                    write_debug_log(&format!(
+                        "[extract] 成功 entry={} html_len={}",
+                        id.0,
+                        html.len()
+                    ));
+                }
+                ExtractOutcome::Failed { error, .. } => {
+                    write_debug_log(&format!("[extract] 失败 entry={} error={}", id.0, error));
+                }
+            }
             let events = self.service.apply_extract_outcome(outcome);
             for ev in events {
                 self.apply_event(ev);
@@ -1091,13 +1091,45 @@ impl SpikeState {
         }
     }
 
-    /// Manual "抽取全文" button (always triggers regardless of auto setting).
+    /// Manual "抽取全文" button: force=true, 走代理异步。
     pub fn extract_current(&mut self) {
-        if let Some(entry) = &self.open_detail {
-            self.dispatch(AppCommand::ExtractEntry {
-                id: entry.summary.id,
-            });
+        if self.extract_rx.is_some() {
+            self.status = "全文抽取进行中，请稍候…".into();
+            return;
         }
+        let entry = match &self.open_detail {
+            Some(e) => e.summary.id,
+            None => return,
+        };
+        // force=true：允许重抽已抽取内容；Pixiv 作品页仍跳过（插件已提供图文）。
+        let task = match self.service.prepare_extract_task(entry, true) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                self.status = "无法抽取：无 URL 或为插件已提供正文的来源（如 Pixiv）".into();
+                return;
+            }
+            Err(e) => {
+                self.status = format!("抽取准备失败: {e}");
+                return;
+            }
+        };
+        let client = self
+            .service
+            .http_proxy()
+            .map(|c| c.inner.clone())
+            .unwrap_or_else(|| self.service.http().inner.clone());
+        let (tx, rx) = mpsc::channel::<ExtractOutcome>();
+        self.extract_rx = Some(rx);
+        self.extract_in_flight = Some(entry);
+        self.status = "正在抽取全文…".into();
+        write_debug_log(&format!(
+            "[extract] 手动触发 entry={} url={}",
+            entry.0, task.url
+        ));
+        thread::spawn(move || {
+            let outcome = run_extract_task(&client, &task);
+            let _ = tx.send(outcome);
+        });
     }
 
     /// 手动触发 AI 增强（摘要/翻译）。异步：prepare → spawn worker → poll。

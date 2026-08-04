@@ -212,6 +212,19 @@ fn register_pure_fns(engine: &mut Engine) {
             chars[s..e].iter().collect()
         },
     );
+    // Unix 秒 → "YYYY-MM-DD HH:MM" 本地时间字符串。
+    // 供 Pixiv 等插件在 meta 区显示发帖时间。
+    engine.register_fn("unix_to_date", |ts: i64| -> String {
+        if ts <= 0 {
+            return "".to_string();
+        }
+        chrono::DateTime::from_timestamp(ts, 0)
+            .map(|utc| {
+                let local: chrono::DateTime<chrono::Local> = utc.into();
+                local.format("%Y-%m-%d %H:%M").to_string()
+            })
+            .unwrap_or_default()
+    });
 }
 
 /// 注册 HTTP host 函数（仅当 manifest 声明 `feed_fetch` 域名白名单时）。

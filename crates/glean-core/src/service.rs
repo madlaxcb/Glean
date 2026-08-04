@@ -771,25 +771,40 @@ impl GleanService {
 
     // --- Async extraction: UI calls prepare → thread → apply ---
 
-    /// Build an extraction task for an entry. Returns None if the entry has no
-    /// URL, is already long enough (full feed content), or already extracted.
-    pub fn prepare_extract_task(&self, id: EntryId) -> Result<Option<ExtractTask>> {
+    /// 构建抽取任务。
+    /// - `force = false`（自动抽取）：已抽取 / 正文够长 / 无 URL / Pixiv 作品页 → None
+    /// - `force = true`（手动「抽取全文」）：允许重抽已抽取内容；仍跳过无 URL、
+    ///   Pixiv 作品页（插件已提供图文，网页需登录无正文可读）
+    pub fn prepare_extract_task(&self, id: EntryId, force: bool) -> Result<Option<ExtractTask>> {
         let entry = self.store.get_entry(id)?;
-        // Skip if already extracted (don't re-extract on every open).
-        if !entry.extracted_html.is_empty() {
+        let url = match entry.summary.url.as_deref() {
+            Some(u) => u,
+            None => return Ok(None),
+        };
+        // Pixiv 作品页：插件 API 已给出图+说明，网页抽取必然失败且无意义。
+        if crate::extract::is_pixiv_artwork_url(Some(url)) {
             return Ok(None);
         }
-        // Skip if the feed content is already substantial.
-        if !crate::extract::should_extract(&entry.content_html, entry.summary.url.as_deref()) {
-            return Ok(None);
+        if !force {
+            // 自动：已抽取过就跳过，避免每次打开都重抽。
+            if !entry.extracted_html.is_empty() {
+                return Ok(None);
+            }
+            // 自动：正文已够长也跳过。
+            if !crate::extract::should_extract(&entry.content_html, Some(url)) {
+                return Ok(None);
+            }
+        } else {
+            // 手动强制：只要有 http(s) URL 就允许（含已抽取、含长正文重抽）。
+            match url::Url::parse(url) {
+                Ok(u) if matches!(u.scheme(), "http" | "https") => {}
+                _ => return Ok(None),
+            }
         }
-        match entry.summary.url {
-            Some(u) => Ok(Some(ExtractTask {
-                entry_id: id,
-                url: u,
-            })),
-            None => Ok(None),
-        }
+        Ok(Some(ExtractTask {
+            entry_id: id,
+            url: url.to_string(),
+        }))
     }
 
     /// Apply one background extraction result; returns events to emit.

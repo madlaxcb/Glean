@@ -272,8 +272,10 @@ while page_i < max_pages {
         if len(thumb) == 0 { thumb = str_safe(json_path(item, "image_urls.medium")); }
         if len(thumb) > 0 { set_field("thumbnail", thumb); }
 
-        // 元信息：收藏数 / 浏览量 / 标签
+        // 元信息：发帖时间 / 收藏数 / 浏览量 / 标签
         let meta = "";
+        let date_str = unix_to_date(published);
+        if len(date_str) > 0 { meta += "<span>📅 " + date_str + "</span> "; }
         let bm = json_path(item, "total_bookmarks");
         if type_of(bm) == "i64" { meta += "<span>♥ " + str_safe(bm) + "</span> "; }
         let vw = json_path(item, "total_view");

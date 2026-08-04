@@ -23,8 +23,8 @@ pub use command::AppCommand;
 pub use error::{CoreError, Result};
 pub use event::AppEvent;
 pub use extract::{
-    extract_content, fetch_article_html, run_extract_task, should_extract, ExtractOutcome,
-    ExtractTask,
+    extract_content, fetch_article_html, is_pixiv_artwork_url, run_extract_task, should_extract,
+    ExtractOutcome, ExtractTask,
 };
 pub use favicon_cache::FaviconCache;
 pub use feed::{discover_feed_urls, run_refresh_task, RefreshOutcome, RefreshTask};
