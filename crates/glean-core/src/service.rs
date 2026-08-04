@@ -781,9 +781,8 @@ impl GleanService {
             Some(u) => u,
             None => return Ok(None),
         };
-        // Pixiv 作品页：插件 API 已给出图+说明，自动抽取跳过；
-        // 手动抽取（force=true）允许，尊重用户主动操作。
-        if !force && crate::extract::is_pixiv_artwork_url(Some(url)) {
+        // Pixiv 作品页：插件 API 已给出图+说明，网页抽取必然失败且无意义。
+        if crate::extract::is_pixiv_artwork_url(Some(url)) {
             return Ok(None);
         }
         if !force {
