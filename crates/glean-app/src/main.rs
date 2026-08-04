@@ -862,7 +862,13 @@ impl SpikeState {
     ///   的代理/OAuth/Headers 逻辑（直连抓 pixiv.net 原文会失败，见 #37 遗留）；
     /// - 普通订阅：ExtractEntry 重新抓正文（已按订阅代理设置选客户端）。
     pub fn refresh_single_entry(&mut self, entry_id: EntryId) {
-        if !self.service.entry_in_plugin_feed(entry_id) {
+        let feed_id = self.service.entry_feed_id(entry_id);
+        let in_plugin = self.service.entry_in_plugin_feed(entry_id);
+        write_debug_log(&format!(
+            "[refresh-single] entry={} feed_id={:?} in_plugin={}",
+            entry_id.0, feed_id, in_plugin
+        ));
+        if !in_plugin {
             self.dispatch(AppCommand::ExtractEntry { id: entry_id });
             return;
         }
