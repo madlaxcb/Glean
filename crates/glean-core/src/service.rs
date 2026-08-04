@@ -330,9 +330,26 @@ impl GleanService {
         let Some(feed) = feeds.into_iter().find(|f| f.id == fid) else {
             return false;
         };
-        self.plugin_mgr
+        let mgr_is_some = self.plugin_mgr.is_some();
+        let plugins: Vec<String> = self
+            .plugin_mgr
             .as_deref()
-            .is_some_and(|m| m.find_for_url(&feed.feed_url).is_some())
+            .map(|m| {
+                m.list()
+                    .iter()
+                    .map(|p| p.manifest.plugin.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let hit = self
+            .plugin_mgr
+            .as_deref()
+            .is_some_and(|m| m.find_for_url(&feed.feed_url).is_some());
+        write_debug_log(&format!(
+            "[plugin-check] entry={} feed={} feed_url={:?} plugin_mgr={} plugins={:?} hit={}",
+            entry_id.0, fid.0, feed.feed_url, mgr_is_some, plugins, hit
+        ));
+        hit
     }
 
     /// 构建一份刷新上下文快照供 worker 线程使用：共享 `PluginManager`/`HttpClient`，
