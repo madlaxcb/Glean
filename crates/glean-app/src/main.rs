@@ -1323,11 +1323,14 @@ impl SpikeState {
                     .map(|c| c.inner.clone())
                     .unwrap_or_else(|| self.service.http().inner.clone());
                 let (rewritten, _) = cache.cache_images_in_html(&body, &client);
+                // 关键：图片缓存重渲染也必须带上 AI 增强区块，否则会覆盖
+                // 刚显示在正文顶部的摘要/翻译结果（本 bug 曾导致「点了没反应」）。
+                let body_with_enhancements = with_enhancements(&rewritten, &entry.enhancements);
                 let html = render_entry_body(
                     &entry.summary.title,
                     entry.summary.url.as_deref(),
                     entry.author.as_deref(),
-                    &rewritten,
+                    &body_with_enhancements,
                     dark,
                     true,
                     policy,
@@ -1718,6 +1721,30 @@ impl SpikeState {
 
 // --- Config load / save helpers ---
 
+/// 把 AI 增强结果（摘要/翻译）区块放到正文 HTML 上方。正文可能很长，
+/// 追加在末尾用户滚动不到；转义文本避免被当成 HTML。
+fn with_enhancements(body: &str, enhancements: &[(String, String)]) -> String {
+    if enhancements.is_empty() {
+        return body.to_string();
+    }
+    let mut html = String::new();
+    for (kind, content) in enhancements {
+        let label = match kind.as_str() {
+            "summary" => "AI 摘要",
+            "translate" => "AI 翻译",
+            _ => "AI 增强",
+        };
+        let escaped = escape_html_text(content);
+        // 换行转 <br>，保留段落感。
+        let with_br = escaped.replace('\n', "<br>");
+        html.push_str(&format!(
+            r#"<div class="ai-enhancement"><div class="ai-label">{label}</div><div class="ai-content">{with_br}</div></div>"#
+        ));
+    }
+    html.push_str(body);
+    html
+}
+
 /// Render an entry to reader HTML. Prefers `extracted_html` (full-text from
 /// readability) over `content_html` (feed-provided body) when non-empty.
 fn render_entry(
@@ -1732,28 +1759,7 @@ fn render_entry(
     } else {
         &entry.content_html
     };
-    // AI 增强结果（摘要/翻译）显示在正文上方：正文可能很长，追加在末尾
-    // 用户滚动不到、看不到结果。转义文本避免被当成 HTML。
-    let body_with_enhancements = if entry.enhancements.is_empty() {
-        body.to_string()
-    } else {
-        let mut html = String::new();
-        for (kind, content) in &entry.enhancements {
-            let label = match kind.as_str() {
-                "summary" => "AI 摘要",
-                "translate" => "AI 翻译",
-                _ => "AI 增强",
-            };
-            let escaped = escape_html_text(content);
-            // 换行转 <br>，保留段落感。
-            let with_br = escaped.replace('\n', "<br>");
-            html.push_str(&format!(
-                r#"<div class="ai-enhancement"><div class="ai-label">{label}</div><div class="ai-content">{with_br}</div></div>"#
-            ));
-        }
-        html.push_str(body);
-        html
-    };
+    let body_with_enhancements = with_enhancements(body, &entry.enhancements);
     let has_content = !body.is_empty();
     render_entry_body(
         &entry.summary.title,
