@@ -281,7 +281,7 @@ impl eframe::App for SpikeApp {
                         ui.add_enabled_ui(!translate_busy, |ui| {
                             if ui.button("翻译").clicked() {
                                 self.state.enhance_current(EnhanceAction::Translate {
-                                    target_lang: "中文".into(),
+                                    target_lang: self.state.config.ai_translate_lang.clone(),
                                 });
                             }
                         });
@@ -1236,6 +1236,28 @@ impl eframe::App for SpikeApp {
                                 }
                             });
                             hint(ui, "OpenAI 兼容协议。api_key 加密存储（Windows DPAPI），不落明文；留空则保留已存 key。");
+                            ui.horizontal(|ui| {
+                                ui.label("翻译目标语言");
+                                let te = egui::TextEdit::singleline(&mut self.state.ai_lang_input)
+                                    .id(egui::Id::new("ai_lang_input"))
+                                    .desired_width(120.0)
+                                    .hint_text("中文 / English / 日本語");
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    let lang = self.state.ai_lang_input.trim().to_string();
+                                    if !lang.is_empty() && lang != self.state.config.ai_translate_lang
+                                    {
+                                        self.state.config.ai_translate_lang = lang;
+                                        self.state.sync_config();
+                                        self.state.save_config();
+                                    }
+                                }
+                            });
+                            hint(ui, "「翻译」按钮把文章翻译成该语言（可填任意语言名）");
                             ui.horizontal(|ui| {
                                 if ui.button("保存").clicked() {
                                     self.state.save_ai_config();

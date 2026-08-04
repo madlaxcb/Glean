@@ -12,6 +12,13 @@ pub fn sanitize_html(html: &str) -> String {
 /// Clean feed HTML with a specific image policy.
 pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
     let mut builder = ammonia::Builder::default();
+    // 保留 class 属性：AI 增强区块（.ai-enhancement/.ai-label/.ai-content）依赖
+    // class 应用阅读区样式。class 本身无脚本风险。
+    builder.generic_attributes(
+        ["class"]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+    );
     match policy {
         ImagePolicy::Block | ImagePolicy::LoadOnDemand => {
             // LoadOnDemand strips at sanitize time; the reader re-renders with
@@ -70,5 +77,17 @@ mod tests {
         let input = r#"<img src="data:image/jpeg;base64,aGVsbG8=">"#;
         let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
         assert!(output.contains(r#"src="data:image/jpeg;base64,aGVsbG8=""#));
+    }
+
+    /// AI 增强区块（摘要/翻译结果）必须能穿透消毒管线：class 保留、文本保留。
+    #[test]
+    fn enhancement_block_survives_sanitize() {
+        let input = r#"<p>原文</p><div class="ai-enhancement"><div class="ai-label">AI 摘要</div><div class="ai-content">第一句。<br>第二句。</div></div>"#;
+        let output = sanitize_html_with_policy(input, ImagePolicy::Block);
+        assert!(
+            output.contains("class=\"ai-enhancement\""),
+            "ai-enhancement class 被剥掉: {output}"
+        );
+        assert!(output.contains("第一句"), "增强文本丢失: {output}");
     }
 }

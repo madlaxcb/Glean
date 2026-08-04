@@ -2,8 +2,9 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.4.0 · 日期：2026-07-30  
-> 修订说明：**M1–M2 已落地**（订阅/阅读/组织/搜索/离线缓存全通，40 测试绿）；**M3 部分完成**（主题/快捷键/并发刷新/图片三档/设置页已做，布局记忆与性能指标待补待测）；**§11.5 插件系统设计就绪**（Rhai + 配置规则，排期 M5/M6）
+> 文档版本：0.5.0 · 日期：2026-08-03  
+> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，136+ 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流等）已整理进 **§13**。  
+> 剩余未完成：M4 正式安装包与用户手册、§0.4 性能指标实测、M6 安装时权限确认 UI、M7 的 Twitter/X、Fantia、Fanbox 适配器。
 
 ---
 
@@ -679,13 +680,16 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ---
 
-### M3 — 打磨（部分完成）
+### M3 — 打磨（已落地，指标待实测）
 
 - [x] 深浅色、快捷键  
 - [x] 布局记忆（窗口位置/大小/最大化持久化到 config.json，启动时恢复）  
 - [x] 并发刷新与错误 UI  
 - [x] 图片策略三档设置（Block / LoadOnDemand / Allow）  
-- [x] 设置页  
+- [x] 设置页（含 AI 增强、缓存目录、插件管理入口；关闭按钮在标题栏右上角）  
+- [x] 主题色色板 + 弹窗几何（设置/插件/错误日志/OPML）持久化  
+- [x] 托盘（Windows，最小化到托盘 + 直接 Win32 恢复窗口）、单实例（CreateMutexW）  
+- [ ] §0.4 性能指标实测（冷启动/内存/100 源刷新/滚动 fps）
 
 **验证：** §0.4 启动/刷新指标初测。（尚未实测）
 
@@ -693,8 +697,9 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ### M4 — 分发（部分完成）
 
-- [ ] 安装包 / 可选便携（脚本就绪：package-inno.iss / portable-mode.txt；尚未产出正式发布包）  
+- [ ] 安装包 / 可选便携（脚本就绪：package-inno.iss / portable-mode.txt；CI 已自动产出 Windows Release EXE + Inno Setup 安装器，尚未发布正式 Release）  
 - [x] 更新检查（appcast.json，prompt-only）  
+- [x] GitHub Actions Windows 构建流水线（push main 自动构建）  
 - [ ] 用户手册  
 - [ ] 1.0 清单  
 
@@ -711,7 +716,24 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 - [x] 集成到 `GleanService`：`open_path_with_proxy` 加载插件目录 + 凭证存储；`plugins()`/`credentials()`/`credentials_mut()` 访问器  
 - [x] 测试：40 旧测 + 40 新测全过；`cargo check` (core + app) + `cargo clippy` 新代码零警告 + `cargo fmt --check` 干净  
 
-**M5 范围之外（推到 M6，§11.5.11）**：Bilibili 端到端验证；Tier 2 `EntryCollector` 接入；Enhancer 接口；DPAPI/keyring 实际加密；manifest 安装时能力确认 UI。
+**M5 范围之外（已随 M6 落地）**：Bilibili / Pixiv 端到端验证；Tier 2 `EntryCollector` 接入；Enhancer 接口；DPAPI/keyring 实际加密。**尚未做**：manifest 安装时能力确认 UI（见 M6）。
+
+---
+
+### M6 — 站点适配器与增强（大部分完成）
+
+- [x] Tier 2 `EntryCollector` 接入（`set_field`/`add_entry`/`set_feed_title`/`set_embed`，自动 commit）  
+- [x] **Pixiv 适配器**（Tier 2 Rhai，`plugins/pixiv/`）：OAuth refresh_token 换 access_token（带 3 次重试）、`include_policy=true`、按 `next_url` 分页拉满 20 页、app-api JSON 字段映射、i.pximg.net 图片带 Referer  
+- [x] **Bilibili 适配器**（Tier 1 + Rhai）：manifest + `wbi_sign` 签名、投稿列表解析（`plugins/bilibili/`）  
+- [x] URL 规范化扩展（`feed/tier0.rs`）：新增 Pixiv 单数 `user/{id}` → 复数 `users/{id}`，并在单源刷新与批量刷新 worker 双路径 fallback  
+- [x] **HTTP 429 限流重试**：指数退避（2/4/8/16s，最多 4 次重试）；`REFRESH_WORKERS` 降为 1（串行刷新）  
+- [x] **Enhancer 接口 + AI 增强**：摘要 / 翻译（OpenAI 兼容 API，Key 由设置持有、加密存储，插件不可读）；`entry_enhancements` 表（schema v9）  
+- [x] **凭证加密存储**：Windows DPAPI（`CryptProtectData`）+ Linux keyring（secret-service + AES-256-GCM）；`EncryptedBlob.scheme` 驱动解密分发  
+- [x] 凭证注入：Rhai `{{slot}}` body 占位符替换 + 声明式 Header 注入（`credential_use` 白名单强制）  
+- [x] 插件管理 UI：安装/卸载/启用停用、凭证槽编辑（含 Header name / Credential value）、代理设置持久化（`AppConfig.plugin_proxy`）；窗口最大高度 720px 内部滚动  
+- [ ] **manifest 安装时能力确认 UI**（§11.5.4：安装/更新展示能力摘要、能力扩大需重新确认）
+
+**未完成（M7+）：** Twitter/X、Fantia、Fanbox 适配器。
 
 ---
 
@@ -994,9 +1016,63 @@ ammonia = "…"
 
 - Spike 结论写入 `docs/spike-ui.md` 并回写本节路径 A/B 选择  
 - 核心/feed/store **在切换 UI 时保持可复用**  
-- 版本史：0.1.0 初稿 → 0.2.0 评审修订 → **0.2.1 锁定路径 A**  
+- 版本史：0.1.0 初稿 → 0.2.0 评审修订 → 0.2.1 锁定路径 A → 0.5.0 整理迭代追加需求（§13）→ 0.5.1 AI 展示修复（消毒保留 class / 翻译语言 / 忙时提示）
 
 ---
 
-**进度：** M0 有条件通过 · M0b 完成 · **M1 完成**（`docs/m1.md`）。  
-**下一步：** 持久化目录、异步刷新、OPML、搜索接线 UI。
+## 13. 迭代追加需求（2026-07/08 开发过程中新增）
+
+> 以下需求来自开发迭代中的用户反馈，多数不在原始里程碑内，落地后登记于此，保证计划书与实际实现一致。
+
+### 13.1 UI / 交互
+
+| # | 需求 | 落地说明 | 状态 |
+|---|------|---------|------|
+| 1 | 添加订阅处分类下拉菜单不出现滚动条 | 加宽 ComboBox 至 150 + popup min-width | ✅ 已实现 |
+| 2 | 导航区多选/非多选行高统一 | 两种模式统一用 `SelectableLabel` 同高渲染 | ✅ 已实现 |
+| 3 | 拖拽订阅时收起未选订阅、只显示文件夹 | 拖拽前保存 `expanded_folders`，释放后恢复 | ✅ 已实现 |
+| 4 | 滚动条与分隔条贴合（消除间隙） | `bar_outer_margin=0` + `auto_shrink` | ✅ 已实现 |
+| 5 | 悬停默认箭头、仅拖拽时 grab 光标 | `on_hover_cursor(Default)` 覆盖 dnd 的 Grab | ✅ 已实现 |
+| 6 | 非多选时零宽勾选框占位保持行高 | `add_sized((0, row_height), SelectableLabel)` | ✅ 已实现 |
+| 7 | 多选工具栏：全选 / 反选 / 取消选择 | 多选模式下工具栏按钮 | ✅ 已实现 |
+| 8 | 列表区行点击修复（可点、无文本选择态） | 行级 `Frame` + `interact(Sense::click())` | ✅ 已实现 |
+| 9 | 设置页关闭按钮移到标题栏右上角 | 启用标题栏 x，移除底部关闭按钮 | ✅ 已实现 |
+| 10 | 导航区订阅拖拽排序 | 「整理」模式（与拖入文件夹互斥），组内行间插入 + 指示线；`feeds.sort_order`（schema v13）持久化 | ✅ 已实现 |
+| 11 | 主题色 / 窗口几何 / 弹窗几何跨会话记忆 | `AppConfig`：accent、window pos/size/maximized、settings/plugins/errors/opml 弹窗几何 | ✅ 已实现 |
+| 12 | 列表虚拟滚动空白区 / 滚动条错位修复 | `ScrollArea::show_rows` 只渲染可见行 | ✅ 已实现 |
+| 13 | 插件管理窗口最大高度 + 内部滚动 | 720px 上限，防无限向下扩展 | ✅ 已实现 |
+| 14 | 批量代理开关（选中订阅统一开启/关闭） | 多选工具栏「开启代理 / 关闭代理」 | ✅ 已实现 |
+
+### 13.2 数据可靠性
+
+| # | 需求 | 落地说明 | 状态 |
+|---|------|---------|------|
+| 15 | 应用内数据库修复 + 强制重建 | 设置页「修复数据库」：WAL checkpoint + integrity_check + FTS5 rebuild + 全表扫描；「强制重建」从 `.db.bak` 恢复 | ✅ 已实现 |
+| 16 | 启动时数据库损坏自动检测与恢复 | `integrity_check` 失败时从 `.db.bak` 恢复 | ✅ 已实现 |
+| 17 | 删除订阅保留星标条目 | `entries.feed_id` 改 `ON DELETE SET NULL`（schema v8） | ✅ 已实现 |
+| 18 | 新订阅追加到同组排序末尾 | `add_feed` 计算 `MAX(sort_order)+1` | ✅ 已实现 |
+
+### 13.3 刷新 / 网络 / 插件
+
+| # | 需求 | 落地说明 | 状态 |
+|---|------|---------|------|
+| 19 | 导入的 Pixiv 订阅 404（单数 `user/` URL） | tier0 规范化 `user/{id}`→`users/{id}`；单源与批量 worker 双路径 fallback；manifest 补单数匹配规则 | ✅ 已实现 |
+| 20 | Pixiv 刷新 429 限流 | 插件 HTTP 层指数退避重试（2/4/8/16s×4）；`REFRESH_WORKERS` 6→1 | ✅ 已实现 |
+| 21 | 每订阅代理开关 | `feeds.use_proxy`（schema v11）+ 设置页全局代理 | ✅ 已实现 |
+| 22 | 插件级代理开关 + 代理 URL 自动规范化校验 | `AppConfig.plugin_proxy`；保存时补 `http://` 前缀 + 校验反馈 | ✅ 已实现 |
+| 23 | Pixiv OAuth 抖动重试 | 3 次尝试、1s 间隔 | ✅ 已实现 |
+| 24 | i.pximg.net 图片 403 | 图片缓存请求带 Referer 头 | ✅ 已实现 |
+| 25 | 插件凭证注入（body 占位符 + Header） | `{{slot}}` 替换 + `credential_use` 声明式 Header 注入 | ✅ 已实现 |
+
+### 13.4 构建 / 分发 / 调试
+
+| # | 需求 | 落地说明 | 状态 |
+|---|------|---------|------|
+| 26 | GitHub Actions Windows 构建 + 安装器 | push main 自动 Release EXE + Inno Setup 安装包 | ✅ 已实现 |
+| 27 | `cargo fmt` CI 修复 | rustfmt 格式化对齐 | ✅ 已实现 |
+| 28 | 本地调试日志 | `glean-debug.log`（可执行目录），记录配置加载/刷新分页等 | ✅ 已实现 |
+
+---
+
+**进度：** M0 有条件通过 · M0b 完成 · M1/M2 完成 · **M3 已落地（指标待实测）** · M4 部分完成（安装包/手册待产） · **M5 完成** · **M6 大部分完成** · M7+ 待做（Twitter/X、Fantia、Fanbox）。  
+**下一步（按优先级）：** ① §0.4 性能指标实测；② M4 正式安装包发布与用户手册；③ M6 安装时权限确认 UI；④ M7 适配器评估（Twitter/X、Fantia、Fanbox）。

@@ -294,6 +294,9 @@ pub struct AppConfig {
     /// `api_key_cipher` 是 `encrypt_secret` 输出的 JSON blob，不在内存里留明文。
     #[serde(default)]
     pub ai: Option<AiConfig>,
+    /// AI 翻译的目标语言（「翻译」按钮用）。默认中文。
+    #[serde(default = "default_translate_lang")]
+    pub ai_translate_lang: String,
     /// 已停用的插件 id 列表（「插件管理」界面启停；路由跳过停用插件）。
     #[serde(default)]
     pub disabled_plugins: Vec<String>,
@@ -351,6 +354,10 @@ fn default_thumbnail_size() -> f32 {
     THUMBNAIL_SIZE_DEFAULT
 }
 
+fn default_translate_lang() -> String {
+    "中文".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -370,6 +377,7 @@ impl Default for AppConfig {
             window_h: None,
             window_maximized: false,
             ai: None,
+            ai_translate_lang: default_translate_lang(),
             disabled_plugins: Vec::new(),
             plugin_proxy: Vec::new(),
             accent: AccentColor::default(),

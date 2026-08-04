@@ -203,6 +203,8 @@ pub struct SpikeState {
     pub ai_model_input: String,
     /// AI 设置缓冲：api_key 明文（password 输入；保存时加密为 cipher）。
     pub ai_key_input: String,
+    /// AI 设置缓冲：翻译目标语言。
+    pub ai_lang_input: String,
     /// Per-article one-shot override: when true, reader renders with Allow
     /// regardless of config.image_policy. Reset on entry switch.
     pub reader_show_images: bool,
@@ -338,6 +340,7 @@ impl SpikeState {
                     glean_core::plugin::credential::decrypt_secret(&a.api_key_cipher).ok()
                 })
                 .unwrap_or_default(),
+            ai_lang_input: config.ai_translate_lang.clone(),
             config,
             config_path,
             auto_refresh_timer: 0.0,
@@ -1065,8 +1068,13 @@ impl SpikeState {
     /// 手动触发 AI 增强（摘要/翻译）。异步：prepare → spawn worker → poll。
     /// 需 `AppConfig.ai` 已配置。同一 (entry, kind) 不重复并发。
     pub fn enhance_current(&mut self, action: EnhanceAction) {
-        // 未配置 AI 或已有任务在跑 → 直接静默返回（UI 按钮应已根据 config.ai 禁用）。
-        if self.config.ai.is_none() || self.enhance_rx.is_some() {
+        // 未配置 AI → 静默返回（UI 按钮应已根据 config.ai 禁用）。
+        if self.config.ai.is_none() {
+            return;
+        }
+        // 已有增强任务在跑 → 明确提示，不再静默跳过（否则用户以为点了没反应）。
+        if self.enhance_rx.is_some() {
+            self.status = "AI 任务进行中，请稍候…".into();
             return;
         }
         let entry = match &self.open_detail {
