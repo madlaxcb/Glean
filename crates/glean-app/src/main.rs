@@ -596,6 +596,14 @@ impl SpikeState {
                     self.config.font_size_px,
                     self.config.line_width_rem,
                 );
+                write_debug_log(&format!(
+                    "[entry-render] id={} enhancements={} html_len={} has_ai_block={} same={}",
+                    entry.summary.id.0,
+                    entry.enhancements.len(),
+                    html.len(),
+                    html.contains("ai-enhancement"),
+                    same,
+                ));
                 self.reader.show_html(&html);
                 self.open_detail = Some(entry);
                 self.refresh_status();
@@ -1124,13 +1132,30 @@ impl SpikeState {
             Ok(Some(t)) => t,
             Ok(None) => {
                 self.status = "无内容可增强".into();
+                write_debug_log(&format!(
+                    "[ai-enhance] entry={} kind={} 无正文可增强（extracted/content 均为空）",
+                    id.0, kind
+                ));
                 return;
             }
             Err(e) => {
                 self.status = format!("AI 准备失败: {e}");
+                write_debug_log(&format!(
+                    "[ai-enhance] entry={} kind={} prepare 失败: {e}",
+                    id.0, kind
+                ));
                 return;
             }
         };
+        write_debug_log(&format!(
+            "[ai-enhance] 触发 kind={} entry={} title_len={} content_len={} base_url={} model={}",
+            kind,
+            id.0,
+            task.title.len(),
+            task.content.len(),
+            cfg.base_url,
+            cfg.model,
+        ));
         let (tx, rx) = mpsc::channel::<EnhanceOutcome>();
         self.enhance_rx = Some(rx);
         self.enhance_in_flight = Some((id, kind.clone()));
@@ -1160,6 +1185,23 @@ impl SpikeState {
                 EnhanceOutcome::Success { entry_id, .. } => *entry_id,
                 EnhanceOutcome::Failed { entry_id, .. } => *entry_id,
             };
+            match &outcome {
+                EnhanceOutcome::Success { kind, result, .. } => {
+                    write_debug_log(&format!(
+                        "[ai-enhance] 收到成功 kind={} entry={} result_len={} 前120字: {}",
+                        kind,
+                        id.0,
+                        result.len(),
+                        &result.chars().take(120).collect::<String>()
+                    ));
+                }
+                EnhanceOutcome::Failed { kind, error, .. } => {
+                    write_debug_log(&format!(
+                        "[ai-enhance] 收到失败 kind={} entry={} error={}",
+                        kind, id.0, error
+                    ));
+                }
+            }
             let events = self.service.apply_enhance_outcome(outcome);
             for ev in events {
                 self.apply_event(ev);
@@ -1167,7 +1209,16 @@ impl SpikeState {
             // 刷新打开的 entry：re-open 会重新拉取 enhancements 列表。
             if let Some(open) = &self.open_detail {
                 if open.summary.id == id {
+                    write_debug_log(&format!(
+                        "[ai-enhance] entry={} 正在 re-open 刷新阅读区",
+                        id.0
+                    ));
                     self.dispatch(AppCommand::OpenEntry { id });
+                } else {
+                    write_debug_log(&format!(
+                        "[ai-enhance] entry={} 已不在阅读区（当前={}），跳过 re-open",
+                        id.0, open.summary.id.0
+                    ));
                 }
             }
         }
