@@ -1101,11 +1101,11 @@ impl SpikeState {
             Some(e) => e.summary.id,
             None => return,
         };
-        // force=true：允许重抽已抽取内容；Pixiv 作品页仍跳过（插件已提供图文）。
+        // force=true：允许重抽已抽取内容；Pixiv 作品页也允许手动抽取。
         let task = match self.service.prepare_extract_task(entry, true) {
             Ok(Some(t)) => t,
             Ok(None) => {
-                self.status = "无法抽取：无 URL 或为插件已提供正文的来源（如 Pixiv）".into();
+                self.status = "无法抽取：无 URL 或 URL 非 http(s)".into();
                 return;
             }
             Err(e) => {
