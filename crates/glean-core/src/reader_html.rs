@@ -86,6 +86,7 @@ pub fn reader_document(
   img {{ max-width: 100%; height: auto; }}
   .pixiv-page {{ color: var(--muted); font-size: 0.82rem; margin: 1rem 0 0.25rem; }}
   .pixiv-meta {{ color: var(--muted); font-size: 0.82rem; margin: 0 0 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; }}
+  .pixiv-meta-date {{ color: var(--muted); font-weight: 600; white-space: nowrap; }}
   .pixiv-tags {{ color: var(--link); }}
   .ai-enhancement {{ margin-top: 2rem; padding: 0.85rem 1rem; border-left: 3px solid var(--link);
     background: color-mix(in srgb, var(--link) 6%, var(--bg)); border-radius: 4px; }}

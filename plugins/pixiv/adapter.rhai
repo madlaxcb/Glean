@@ -272,10 +272,14 @@ while page_i < max_pages {
         if len(thumb) == 0 { thumb = str_safe(json_path(item, "image_urls.medium")); }
         if len(thumb) > 0 { set_field("thumbnail", thumb); }
 
-        // 元信息：发帖时间 / 收藏数 / 浏览量 / 标签
+        // 元信息：发帖时间（JST 原样，create_date 形如 "2026-07-06T19:56:40+09:00"）/
+        // 收藏数 / 浏览量 / 标签
         let meta = "";
-        let date_str = unix_to_date(published);
-        if len(date_str) > 0 { meta += "<span>📅 " + date_str + "</span> "; }
+        let ct = str_safe(json_path(item, "create_date"));
+        if len(ct) >= 16 {
+            meta += "<span class=\"pixiv-meta-date\">🕒 "
+                + ct.substring(0, 10) + " " + ct.substring(11, 16) + "</span> ";
+        }
         let bm = json_path(item, "total_bookmarks");
         if type_of(bm) == "i64" { meta += "<span>♥ " + str_safe(bm) + "</span> "; }
         let vw = json_path(item, "total_view");

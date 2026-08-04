@@ -2630,6 +2630,14 @@ impl SpikeApp {
                     let url = entry.url.clone();
                     // Right-click context menu.
                     resp.context_menu(|ui| {
+                        // 刷新该贴：重新从原文 URL 抓取正文（Pixiv 帖子即重新抓取该帖）。
+                        // 与阅读区「抽取全文」同一命令；无 URL 的文章无法刷新。
+                        if url.is_some() {
+                            if ui.button("刷新该贴").clicked() {
+                                self.state.dispatch(AppCommand::ExtractEntry { id: eid });
+                                ui.close_menu();
+                            }
+                        }
                         if is_read {
                             if ui.button("标记为未读").clicked() {
                                 self.state.dispatch(AppCommand::MarkRead {
