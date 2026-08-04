@@ -323,7 +323,7 @@ pub struct AppConfig {
 
 /// 缩略图大小范围限制（px）。
 pub const THUMBNAIL_SIZE_MIN: f32 = 16.0;
-pub const THUMBNAIL_SIZE_MAX: f32 = 60.0;
+pub const THUMBNAIL_SIZE_MAX: f32 = 120.0;
 pub const THUMBNAIL_SIZE_DEFAULT: f32 = 30.0;
 
 /// OpenAI 兼容协议的 AI 配置。§11.5.13 Enhancer。

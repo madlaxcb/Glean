@@ -2,8 +2,8 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.5.0 · 日期：2026-08-03  
-> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，136+ 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流等）已整理进 **§13**。  
+> 文档版本：0.5.2 · 日期：2026-08-04  
+> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，137 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强可读展示、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流/停止刷新/AI 展示修复等）已整理进 **§13**。  
 > 剩余未完成：M4 正式安装包与用户手册、§0.4 性能指标实测、M6 安装时权限确认 UI、M7 的 Twitter/X、Fantia、Fanbox 适配器。
 
 ---
@@ -727,7 +727,7 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 - [x] **Bilibili 适配器**（Tier 1 + Rhai）：manifest + `wbi_sign` 签名、投稿列表解析（`plugins/bilibili/`）  
 - [x] URL 规范化扩展（`feed/tier0.rs`）：新增 Pixiv 单数 `user/{id}` → 复数 `users/{id}`，并在单源刷新与批量刷新 worker 双路径 fallback  
 - [x] **HTTP 429 限流重试**：指数退避（2/4/8/16s，最多 4 次重试）；`REFRESH_WORKERS` 降为 1（串行刷新）  
-- [x] **Enhancer 接口 + AI 增强**：摘要 / 翻译（OpenAI 兼容 API，Key 由设置持有、加密存储，插件不可读）；`entry_enhancements` 表（schema v9）  
+- [x] **Enhancer 接口 + AI 增强**：摘要 / 翻译（OpenAI 兼容 API，Key 由设置持有、加密存储，插件不可读）；`entry_enhancements` 表（schema v9）；阅读区 `.ai-enhancement` 展示；`ai_translate_lang` 可配置；消毒保留 `class`  
 - [x] **凭证加密存储**：Windows DPAPI（`CryptProtectData`）+ Linux keyring（secret-service + AES-256-GCM）；`EncryptedBlob.scheme` 驱动解密分发  
 - [x] 凭证注入：Rhai `{{slot}}` body 占位符替换 + 声明式 Header 注入（`credential_use` 白名单强制）  
 - [x] 插件管理 UI：安装/卸载/启用停用、凭证槽编辑（含 Header name / Credential value）、代理设置持久化（`AppConfig.plugin_proxy`）；窗口最大高度 720px 内部滚动  
@@ -1042,6 +1042,7 @@ ammonia = "…"
 | 12 | 列表虚拟滚动空白区 / 滚动条错位修复 | `ScrollArea::show_rows` 只渲染可见行 | ✅ 已实现 |
 | 13 | 插件管理窗口最大高度 + 内部滚动 | 720px 上限，防无限向下扩展 | ✅ 已实现 |
 | 14 | 批量代理开关（选中订阅统一开启/关闭） | 多选工具栏「开启代理 / 关闭代理」 | ✅ 已实现 |
+| 32 | 缩略图大小上限提高到 120px | `THUMBNAIL_SIZE_MAX` 60→120；滑块/输入同步放宽 | ✅ 已实现 |
 
 ### 13.2 数据可靠性
 
@@ -1063,6 +1064,7 @@ ammonia = "…"
 | 23 | Pixiv OAuth 抖动重试 | 3 次尝试、1s 间隔 | ✅ 已实现 |
 | 24 | i.pximg.net 图片 403 | 图片缓存请求带 Referer 头 | ✅ 已实现 |
 | 25 | 插件凭证注入（body 占位符 + Header） | `{{slot}}` 替换 + `credential_use` 声明式 Header 注入 | ✅ 已实现 |
+| 33 | 刷新后台化 + 停止刷新按钮 | 刷新本就跑在 worker 线程（DB 写回 UI 线程）；「刷新全部」旁新增「停止刷新」：`Arc<AtomicBool>` 取消标志，worker 在下一订阅前退出 | ✅ 已实现 |
 
 ### 13.4 构建 / 分发 / 调试
 
@@ -1071,6 +1073,14 @@ ammonia = "…"
 | 26 | GitHub Actions Windows 构建 + 安装器 | push main 自动 Release EXE + Inno Setup 安装包 | ✅ 已实现 |
 | 27 | `cargo fmt` CI 修复 | rustfmt 格式化对齐 | ✅ 已实现 |
 | 28 | 本地调试日志 | `glean-debug.log`（可执行目录），记录配置加载/刷新分页等 | ✅ 已实现 |
+
+### 13.5 AI / 阅读区
+
+| # | 需求 | 落地说明 | 状态 |
+|---|------|---------|------|
+| 29 | AI 摘要/翻译点击后内容区无变化 | 根因：ammonia 默认剥 `class`，`.ai-enhancement` 样式失效；`generic_attributes` 保留 `class` + 回归测试 | ✅ 已实现 |
+| 30 | 翻译目标语言可配置 | `AppConfig.ai_translate_lang`（默认「中文」）；设置页输入；翻译按钮读配置 | ✅ 已实现 |
+| 31 | AI 任务进行中静默无反馈 | 已有增强任务时状态栏提示「AI 任务进行中，请稍候…」 | ✅ 已实现 |
 
 ---
 

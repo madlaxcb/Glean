@@ -20,7 +20,8 @@ use glean_core::{
     ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use tray::Tray;
 use ui::SpikeApp;
@@ -108,10 +109,14 @@ const REFRESH_WORKERS: usize = 1;
 /// Spawn bounded worker threads that fetch+parse in parallel, sending each
 /// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;
 /// the receiver sees disconnect only after all workers finish.
+///
+/// `cancel` 是「停止刷新」标志：worker 在每处理一个订阅前检查，置位则
+/// 提前退出（不再发送结果）。正在进行的单个 HTTP 请求不受影响（有超时）。
 fn spawn_refresh_workers(
     tasks: Vec<RefreshTask>,
     ctx: RefreshCtx,
     tx: mpsc::Sender<RefreshOutcome>,
+    cancel: Arc<AtomicBool>,
 ) {
     let n = tasks.len();
     if n == 0 {
@@ -129,8 +134,12 @@ fn spawn_refresh_workers(
         }
         let tx = tx.clone();
         let ctx = ctx.clone();
+        let cancel = cancel.clone();
         thread::spawn(move || {
             for task in chunk {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
                 let outcome = run_refresh_task_with_ctx(task, &ctx);
                 let _ = tx.send(outcome);
             }
@@ -170,6 +179,9 @@ pub struct SpikeState {
     /// Background refresh state.
     refresh_rx: Option<mpsc::Receiver<RefreshOutcome>>,
     refresh_pending: usize,
+    /// 「停止刷新」取消标志：每次启动刷新创建新的 Arc；停止时置 true，
+    /// worker 线程在下一订阅前退出。
+    refresh_cancel: Arc<AtomicBool>,
     /// Clipboard-captured OPML export text (for copy/paste).
     pub opml_export: Option<String>,
     /// Pasted OPML text for import.
@@ -312,6 +324,7 @@ impl SpikeState {
             feed_add_new_folder: String::new(),
             refresh_rx: None,
             refresh_pending: 0,
+            refresh_cancel: Arc::new(AtomicBool::new(false)),
             opml_export: None,
             opml_import_input: String::new(),
             rename_feed: None,
@@ -480,10 +493,11 @@ impl SpikeState {
             let (tx, rx) = mpsc::channel::<RefreshOutcome>();
             self.refresh_rx = Some(rx);
             self.refresh_pending = tasks.len();
+            self.refresh_cancel = Arc::new(AtomicBool::new(false));
             let workers = REFRESH_WORKERS.min(tasks.len());
             self.status = format!("自动刷新中… {} 个源（{} 并发）", tasks.len(), workers);
             let ctx = self.service.refresh_ctx();
-            spawn_refresh_workers(tasks, ctx, tx);
+            spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
         }
     }
 
@@ -805,10 +819,23 @@ impl SpikeState {
         let (tx, rx) = mpsc::channel::<RefreshOutcome>();
         self.refresh_rx = Some(rx);
         self.refresh_pending = tasks.len();
+        self.refresh_cancel = Arc::new(AtomicBool::new(false));
         let workers = REFRESH_WORKERS.min(tasks.len());
         self.status = format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers);
         let ctx = self.service.refresh_ctx();
-        spawn_refresh_workers(tasks, ctx, tx);
+        spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
+    }
+
+    /// 停止正在进行的刷新：置取消标志（worker 在下一订阅前退出），丢弃
+    /// 尚未收到的结果。刷新在后台线程运行，不影响 UI 其他操作。
+    pub fn stop_refresh(&mut self) {
+        if self.refresh_rx.is_none() {
+            return;
+        }
+        self.refresh_cancel.store(true, Ordering::Relaxed);
+        self.refresh_rx = None;
+        self.refresh_pending = 0;
+        self.status = "刷新已停止".into();
     }
 
     pub fn delete_feed(&mut self, id: glean_core::FeedId) {
