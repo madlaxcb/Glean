@@ -2,9 +2,9 @@
 
 > 纯 Windows 本地优先的现代化 RSS / 信息流聚合阅读器  
 > 参考产品：[RSSNext/Folo](https://github.com/RSSNext/Folo)  
-> 文档版本：0.5.9 · 日期：2026-08-04  
-> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，146 测试绿）；**M6 大部分完成**（Pixiv 适配器、AI 增强可读展示、DPAPI/keyring 凭证加密）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流/停止刷新/AI 展示修复等）已整理进 **§13**。  
-> 剩余未完成：M4 正式安装包与用户手册、§0.4 性能指标实测、M6 安装时权限确认 UI、M7 的 Twitter/X、Fantia、Fanbox 适配器。
+> 文档版本：0.6.0 · 日期：2026-08-05  
+> 修订说明：**M0–M5 主线全部落地**（订阅/阅读/组织/搜索/离线/打磨/插件框架，146 测试绿）；**M6 全部完成**（Pixiv 适配器、AI 增强可读展示、DPAPI/keyring 凭证加密、安装时权限确认 UI）；开发过程中追加的临时需求（UI/数据可靠性/刷新限流/停止刷新/AI 展示修复等）已整理进 **§13**。  
+> 剩余未完成：M4 正式安装包与用户手册、§0.4 性能指标实测、M7 的 Twitter/X、Fantia、Fanbox 适配器。
 
 ---
 
@@ -720,7 +720,7 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ---
 
-### M6 — 站点适配器与增强（大部分完成）
+### M6 — 站点适配器与增强（已全部完成）
 
 - [x] Tier 2 `EntryCollector` 接入（`set_field`/`add_entry`/`set_feed_title`/`set_embed`，自动 commit）  
 - [x] **Pixiv 适配器**（Tier 2 Rhai，`plugins/pixiv/`）：OAuth refresh_token 换 access_token（带 3 次重试）、`include_policy=true`、按 `next_url` 分页拉满 20 页、app-api JSON 字段映射、i.pximg.net 图片带 Referer  
@@ -731,7 +731,7 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 - [x] **凭证加密存储**：Windows DPAPI（`CryptProtectData`）+ Linux keyring（secret-service + AES-256-GCM）；`EncryptedBlob.scheme` 驱动解密分发  
 - [x] 凭证注入：Rhai `{{slot}}` body 占位符替换 + 声明式 Header 注入（`credential_use` 白名单强制）  
 - [x] 插件管理 UI：安装/卸载/启用停用、凭证槽编辑（含 Header name / Credential value）、代理设置持久化（`AppConfig.plugin_proxy`）；窗口最大高度 720px 内部滚动  
-- [ ] **manifest 安装时能力确认 UI**（§11.5.4：安装/更新展示能力摘要、能力扩大需重新确认）
+- [x] **manifest 安装时能力确认 UI**（§11.5.4：安装/更新前弹 Modal 展示能力摘要，未确认不落盘；更新覆盖同名插件，能力扩大时高亮新增能力并警告——防供应链攻击；`InstallPreview` + `Capabilities::new_items_relative_to/grows_from` 判定，见 §13.3 #42）
 
 **未完成（M7+）：** Twitter/X、Fantia、Fanbox 适配器。
 
@@ -1089,8 +1089,9 @@ ammonia = "…"
 | 39 | Pixiv「刷新该贴」直连抓 URL 失败 | 根因：`ExtractEntry` 用直连 client 抓 pixiv.net。修复：① ExtractEntry 按订阅 `use_proxy` 选客户端；② 插件订阅的「刷新该贴」改为异步刷新**所属订阅**并自动打开该帖（完全复用插件代理/OAuth/Headers 逻辑） | ✅ 已实现 |
 | 40 | 「刷新该贴」走到 RSS 抓到登录页 | 根因：feed_url 被粘贴成 markdown 反引号链接（`` `https://…` ``），`Url::parse` 失败 → 插件匹配永远 miss → 走默认 RSS 抓 pixiv 网页。修复：① `clean_feed_url()` 在 AddFeedFromUrl/AddFeedLocal/EditFeedUrl 入库前剥反引号；② `normalize()`/插件 `matches()` 兼容存量反引号数据；③ `normalize_pixiv` 单数 `user/` → 复数 `users/`。含 4 个回归测试 | ✅ 已实现 |
 | 41 | 导入的订阅刷新错误（手工添加正常） | 根因：`import_opml` 直接把 OPML 的 URL 原样入库，未走 `clean_feed_url`/`normalize`（手工添加走 `add_feed_from_url` 有清洗）。修复：导入时清洗反引号 + Tier 0 规范化（pixiv 单数→复数）；幂等去重；存量坏 URL 重导时修复旧条目而非重复添加（`set_feed_url` 重置 etag/lm 触发全量刷新）。含 2 个回归测试 | ✅ 已实现 |
+| 42 | 插件安装/更新权限确认 UI（§11.5.4） | 安装前 `preview_install_*` 只读生成 `InstallPreview`（能力摘要 + 是否扩大），egui Modal 确认后才 commit 落盘；`install_from_dir` 改为支持更新覆盖（staging+原子替换，失败不伤旧插件）；更新能力扩大时高亮新增能力并警告（防供应链攻击）；`Capabilities::new_items_relative_to/grows_from` 判定。含 6 个回归测试 | ✅ 已实现 |
 
 ---
 
-**进度：** M0 有条件通过 · M0b 完成 · M1/M2 完成 · **M3 已落地（指标待实测）** · M4 部分完成（安装包/手册待产） · **M5 完成** · **M6 大部分完成** · M7+ 待做（Twitter/X、Fantia、Fanbox）。  
-**下一步（按优先级）：** ① §0.4 性能指标实测；② M4 正式安装包发布与用户手册；③ M6 安装时权限确认 UI；④ M7 适配器评估（Twitter/X、Fantia、Fanbox）。
+**进度：** M0 有条件通过 · M0b 完成 · M1/M2 完成 · **M3 已落地（指标待实测）** · M4 部分完成（安装包/手册待产） · **M5 完成** · **M6 完成** · M7+ 待做（Twitter/X、Fantia、Fanbox）。  
+**下一步（按优先级）：** ① §0.4 性能指标实测；② M4 正式安装包发布与用户手册；③ M7 适配器评估（Twitter/X、Fantia、Fanbox）。

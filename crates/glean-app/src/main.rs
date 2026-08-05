@@ -272,6 +272,31 @@ pub struct SpikeState {
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
     /// 跨帧存活，避免输入被每帧重绘覆盖。
     pub plugin_cred_edits: std::collections::HashMap<String, (String, String)>,
+    /// M6 插件安装权限确认：preview 已生成、尚未落盘，等用户确认后 commit。
+    /// `None` = 无挂起安装。
+    pub plugin_install_pending: Option<PendingPluginInstall>,
+}
+
+/// 挂起的插件安装（§11.5.4 权限确认流程）：来源路径 + 已生成的预览。
+pub enum PendingPluginInstall {
+    /// 文件夹导入。
+    Dir {
+        src: std::path::PathBuf,
+        preview: glean_core::plugin::InstallPreview,
+    },
+    /// zip 导入。
+    Zip {
+        src: std::path::PathBuf,
+        preview: glean_core::plugin::InstallPreview,
+    },
+}
+
+impl PendingPluginInstall {
+    pub fn preview(&self) -> &glean_core::plugin::InstallPreview {
+        match self {
+            Self::Dir { preview, .. } | Self::Zip { preview, .. } => preview,
+        }
+    }
 }
 
 impl SpikeState {
@@ -386,6 +411,7 @@ impl SpikeState {
             feed_sort_mode: false,
             opml_import_overwrite: false,
             plugin_cred_edits: std::collections::HashMap::new(),
+            plugin_install_pending: None,
         };
         // Local loopback server for cached images (full-res Pixiv originals etc.).
         if let Some(dir) = glean_core::cache_images_dir() {
@@ -1688,20 +1714,51 @@ impl SpikeState {
         }
     }
 
-    /// 安装插件（文件夹导入）。
-    pub fn install_plugin_from_dir(&mut self, src: &std::path::Path) {
-        match self.service.install_plugin_dir(src) {
+    /// 请求安装插件（文件夹导入）：先预览生成权限摘要（§11.5.4），
+    /// 等用户确认后才落盘。预览失败只报状态，不写任何文件。
+    pub fn request_install_plugin_dir(&mut self, src: &std::path::Path) {
+        match self.service.preview_install_plugin_dir(src) {
+            Ok(preview) => {
+                self.plugin_install_pending = Some(PendingPluginInstall::Dir {
+                    src: src.to_path_buf(),
+                    preview,
+                });
+            }
+            Err(e) => self.status = format!("安装预览失败: {e}"),
+        }
+    }
+
+    /// 请求安装插件（zip 导入）：同上，先预览再确认。
+    pub fn request_install_plugin_zip(&mut self, zip_path: &std::path::Path) {
+        match self.service.preview_install_plugin_zip(zip_path) {
+            Ok(preview) => {
+                self.plugin_install_pending = Some(PendingPluginInstall::Zip {
+                    src: zip_path.to_path_buf(),
+                    preview,
+                });
+            }
+            Err(e) => self.status = format!("安装预览失败: {e}"),
+        }
+    }
+
+    /// 确认安装：执行 commit（落盘 + 重建插件列表）。
+    pub fn confirm_install_plugin(&mut self) {
+        let Some(pending) = self.plugin_install_pending.take() else {
+            return;
+        };
+        let result = match pending {
+            PendingPluginInstall::Dir { src, .. } => self.service.install_plugin_dir(&src),
+            PendingPluginInstall::Zip { src, .. } => self.service.install_plugin_zip(&src),
+        };
+        match result {
             Ok(id) => self.status = format!("插件已安装: {id}"),
             Err(e) => self.status = format!("安装失败: {e}"),
         }
     }
 
-    /// 安装插件（zip 导入）。
-    pub fn install_plugin_from_zip(&mut self, zip_path: &std::path::Path) {
-        match self.service.install_plugin_zip(zip_path) {
-            Ok(id) => self.status = format!("插件已安装: {id}"),
-            Err(e) => self.status = format!("安装失败: {e}"),
-        }
+    /// 取消安装（不落盘）。
+    pub fn cancel_install_plugin(&mut self) {
+        self.plugin_install_pending = None;
     }
 
     /// 卸载插件。变化写回 `config.disabled_plugins`。

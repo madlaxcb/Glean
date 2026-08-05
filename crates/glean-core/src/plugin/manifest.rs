@@ -125,6 +125,25 @@ impl Capabilities {
             && self.content_transform.is_empty()
             && self.external_call.is_empty()
     }
+
+    /// 相对 `old` 新增的能力项（各字段取差集并集）。用于插件更新时的权限
+    /// 变更判定（§11.5.4 安装/更新时权限确认：能力扩大须重新确认）。
+    pub fn new_items_relative_to(&self, old: &Capabilities) -> Capabilities {
+        fn diff(new: &[String], old: &[String]) -> Vec<String> {
+            new.iter().filter(|x| !old.contains(x)).cloned().collect()
+        }
+        Capabilities {
+            feed_fetch: diff(&self.feed_fetch, &old.feed_fetch),
+            credential_use: diff(&self.credential_use, &old.credential_use),
+            content_transform: diff(&self.content_transform, &old.content_transform),
+            external_call: diff(&self.external_call, &old.external_call),
+        }
+    }
+
+    /// 是否比 `old` 扩大了权限（新增了任一能力项）。
+    pub fn grows_from(&self, old: &Capabilities) -> bool {
+        !self.new_items_relative_to(old).is_empty()
+    }
 }
 
 /// `[compliance]` 段：合规声明。§11.5.2
@@ -248,5 +267,46 @@ version = "0.1"
         let m: Manifest = toml::from_str(toml).unwrap();
         assert!(m.capabilities.is_empty());
         assert_eq!(m.plugin.tier, Tier::Builtin);
+    }
+
+    #[test]
+    fn capabilities_growth_detection() {
+        // 相同能力 → 不扩大
+        let old = Capabilities {
+            feed_fetch: vec!["a.com".into()],
+            credential_use: vec!["tok".into()],
+            content_transform: vec!["embed_ref".into()],
+            external_call: vec!["api.example.com".into()],
+        };
+        let same = old.clone();
+        assert!(!same.grows_from(&old));
+        assert!(same.new_items_relative_to(&old).is_empty());
+
+        // 新增一个域名 → 扩大，且 diff 只含新增项
+        let grown = Capabilities {
+            feed_fetch: vec!["a.com".into(), "b.com".into()],
+            ..old.clone()
+        };
+        assert!(grown.grows_from(&old));
+        let added = grown.new_items_relative_to(&old);
+        assert_eq!(added.feed_fetch, vec!["b.com".to_string()]);
+        assert!(added.credential_use.is_empty());
+        assert!(added.content_transform.is_empty());
+        assert!(added.external_call.is_empty());
+    }
+
+    #[test]
+    fn capabilities_shrunk_is_not_growth() {
+        // 新版去掉了一个域名 → 权限缩小，不算扩大
+        let old = Capabilities {
+            feed_fetch: vec!["a.com".into(), "b.com".into()],
+            ..Default::default()
+        };
+        let shrunk = Capabilities {
+            feed_fetch: vec!["a.com".into()],
+            ..Default::default()
+        };
+        assert!(!shrunk.grows_from(&old));
+        assert!(shrunk.new_items_relative_to(&old).is_empty());
     }
 }

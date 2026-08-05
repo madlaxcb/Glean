@@ -1424,7 +1424,7 @@ impl eframe::App for SpikeApp {
                     ui.horizontal(|ui| {
                         if ui.button("安装插件（文件夹）…").clicked() {
                             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                self.state.install_plugin_from_dir(&dir);
+                                self.state.request_install_plugin_dir(&dir);
                             }
                         }
                         if ui.button("安装插件（zip）…").clicked() {
@@ -1432,7 +1432,7 @@ impl eframe::App for SpikeApp {
                                 .add_filter("zip 压缩包", &["zip"])
                                 .pick_file()
                             {
-                                self.state.install_plugin_from_zip(&file);
+                                self.state.request_install_plugin_zip(&file);
                             }
                         }
                     });
@@ -1459,11 +1459,7 @@ impl eframe::App for SpikeApp {
                                     .plugins()
                                     .map(|m| m.is_disabled(id))
                                     .unwrap_or(false);
-                                let tier_label = match p.manifest.plugin.tier {
-                                    glean_core::Tier::Config => "Tier 1 配置",
-                                    glean_core::Tier::Script => "Tier 2 脚本",
-                                    glean_core::Tier::Builtin => "内置",
-                                };
+                                let tier_label = tier_label(p.manifest.plugin.tier);
                                 egui::Frame::group(ui.style()).show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.horizontal(|ui| {
@@ -1492,33 +1488,9 @@ impl eframe::App for SpikeApp {
                                         hint(ui, format!("匹配: {patterns}"));
                                     }
                                     let caps = &p.manifest.capabilities;
-                                    let mut cap_bits = Vec::new();
-                                    if !caps.feed_fetch.is_empty() {
-                                        cap_bits.push(format!(
-                                            "fetch=[{}]",
-                                            caps.feed_fetch.join(", ")
-                                        ));
-                                    }
-                                    if !caps.credential_use.is_empty() {
-                                        cap_bits.push(format!(
-                                            "creds=[{}]",
-                                            caps.credential_use.join(", ")
-                                        ));
-                                    }
-                                    if !caps.content_transform.is_empty() {
-                                        cap_bits.push(format!(
-                                            "transform=[{}]",
-                                            caps.content_transform.join(", ")
-                                        ));
-                                    }
-                                    if !caps.external_call.is_empty() {
-                                        cap_bits.push(format!(
-                                            "external=[{}]",
-                                            caps.external_call.join(", ")
-                                        ));
-                                    }
-                                    if !cap_bits.is_empty() {
-                                        hint(ui, format!("能力: {}", cap_bits.join(" · ")));
+                                    let cap_lines = capability_lines(caps);
+                                    if !cap_lines.is_empty() {
+                                        hint(ui, format!("能力: {}", cap_lines.join(" · ")));
                                     }
                                     if p.manifest.compliance.uses_user_session {
                                         hint(ui, "合规: 使用用户会话（凭证 Host 注入，插件不可见）");
@@ -1649,7 +1621,15 @@ impl eframe::App for SpikeApp {
             if !open || close {
                 self.show_plugins = false;
                 self.confirm_uninstall = None;
+                // 关闭插件管理窗口时一并取消未确认的安装（§11.5.4）。
+                self.state.cancel_install_plugin();
             }
+        }
+
+        // M6 插件安装权限确认弹窗（§11.5.4）：preview 已生成、未落盘，
+        // 用户确认后才提交安装/更新。
+        if self.state.plugin_install_pending.is_some() {
+            self.plugin_install_confirm(ctx);
         }
 
         // Update available popup (V1: prompt only, no auto-install).
@@ -1765,6 +1745,101 @@ impl eframe::App for SpikeApp {
 // --- Nav column contents (folder-grouped feed list) ---
 
 impl SpikeApp {
+    /// M6 插件安装/更新权限确认弹窗（§11.5.4）。preview 已生成、未落盘；
+    /// 展示插件信息 + 能力摘要（更新时高亮新增能力），确认后才 commit。
+    fn plugin_install_confirm(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.state.plugin_install_pending.take() else {
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("plugin_install_confirm")).show(ctx, |ui| {
+            ui.set_width(430.0);
+            let preview = pending.preview();
+            let meta = &preview.manifest.plugin;
+            ui.label(
+                RichText::new(if preview.is_update {
+                    "更新插件（权限确认）"
+                } else {
+                    "安装插件（权限确认）"
+                })
+                .size(16.0)
+                .strong(),
+            );
+            ui.add_space(4.0);
+            let warn = ui.visuals().warn_fg_color;
+            if preview.capabilities_grown {
+                ui.colored_label(
+                    warn,
+                    if preview.is_update {
+                        "⚠ 新版扩大了权限，请确认来源可信后再更新"
+                    } else {
+                        "⚠ 该插件将获得以下权限，请确认来源可信"
+                    },
+                );
+            } else {
+                hint(ui, "该插件权限与已安装版本一致（未扩大）。");
+            }
+            ui.add_space(6.0);
+            ui.label(RichText::new(format!("{} v{}", meta.name, meta.version)).strong());
+            let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
+            ui.label(
+                RichText::new(format!("(id: {} · {})", meta.id, tier_label(meta.tier)))
+                    .size(12.5)
+                    .color(color),
+            );
+            if preview.is_update {
+                hint(ui, "将覆盖已安装的同名插件（旧版本被替换）。");
+            }
+            let patterns = preview
+                .manifest
+                .r#match
+                .iter()
+                .map(|r| r.url_pattern.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !patterns.is_empty() {
+                hint(ui, format!("匹配: {patterns}"));
+            }
+            let cap_lines = capability_lines(&preview.manifest.capabilities);
+            if cap_lines.is_empty() {
+                hint(ui, "能力: 无（纯离线解析）");
+            } else {
+                ui.add_space(4.0);
+                for line in &cap_lines {
+                    ui.label(RichText::new(format!("• {line}")).size(13.0));
+                }
+            }
+            // 更新时高亮新增能力（diff）。
+            if preview.is_update && !preview.added_capabilities.is_empty() {
+                let added = capability_lines(&preview.added_capabilities);
+                ui.add_space(4.0);
+                ui.colored_label(warn, "新增能力:");
+                for line in &added {
+                    ui.colored_label(warn, format!("  + {line}"));
+                }
+            }
+            if preview.manifest.compliance.uses_user_session {
+                hint(ui, "合规: 使用用户会话（凭证由 Host 注入，插件不可见）");
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("确认安装").clicked() {
+                    confirm = true;
+                }
+                if ui.button("取消").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if confirm {
+            self.state.plugin_install_pending = Some(pending);
+            self.state.confirm_install_plugin();
+        } else if !cancel {
+            self.state.plugin_install_pending = Some(pending);
+        }
+    }
+
     fn draw_nav_contents(&mut self, ui: &mut Ui) {
         // --- 过滤器行：未读总数 + 全部/未读/星标/今日 ---
         ui.horizontal(|ui| {
@@ -2776,6 +2851,45 @@ fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
 fn hint(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
     ui.label(RichText::new(text).size(12.5).color(color))
+}
+
+/// 插件层级显示名（安装确认与插件列表共用）。
+fn tier_label(tier: glean_core::Tier) -> &'static str {
+    match tier {
+        glean_core::Tier::Config => "Tier 1 配置",
+        glean_core::Tier::Script => "Tier 2 脚本",
+        glean_core::Tier::Builtin => "内置",
+    }
+}
+
+/// 能力摘要行（安装权限确认与插件列表共用）。每行描述一种能力原语及其作用域。
+fn capability_lines(caps: &glean_core::Capabilities) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !caps.feed_fetch.is_empty() {
+        lines.push(format!(
+            "网络访问(feed.fetch): {}",
+            caps.feed_fetch.join(", ")
+        ));
+    }
+    if !caps.credential_use.is_empty() {
+        lines.push(format!(
+            "凭证使用(credential.use): {}",
+            caps.credential_use.join(", ")
+        ));
+    }
+    if !caps.content_transform.is_empty() {
+        lines.push(format!(
+            "内容改写(content.transform): {}",
+            caps.content_transform.join(", ")
+        ));
+    }
+    if !caps.external_call.is_empty() {
+        lines.push(format!(
+            "外部调用(external.call): {}",
+            caps.external_call.join(", ")
+        ));
+    }
+    lines
 }
 
 /// 设置窗体的分组标题（16px 加粗 + 适度间距）。

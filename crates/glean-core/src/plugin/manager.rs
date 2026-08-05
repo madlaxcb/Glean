@@ -25,7 +25,7 @@ use crate::error::{CoreError, Result};
 use crate::feed::parse::ParsedFeed;
 use crate::feed::HttpClient;
 use crate::plugin::credential::CredentialStore;
-use crate::plugin::manifest::{Manifest, MatchRule};
+use crate::plugin::manifest::{Capabilities, Manifest, MatchRule};
 use crate::plugin::runtime::Runtime;
 use crate::plugin::tier1;
 use std::collections::HashSet;
@@ -42,6 +42,21 @@ pub struct LoadedPlugin {
     pub manifest: Manifest,
     pub dir: PathBuf,
     pub script: Option<String>,
+}
+
+/// 安装/更新预览结果（§11.5.4 安装时权限确认）。`preview_install_*` 只读
+/// 校验、不动磁盘；用户确认后调用 `install_from_*` 提交落盘。
+#[derive(Debug, Clone)]
+pub struct InstallPreview {
+    /// 将安装的 manifest（含全部能力声明）。
+    pub manifest: Manifest,
+    /// true = 覆盖已存在的同名插件（更新）。
+    pub is_update: bool,
+    /// 相对已安装版本新增的能力（首次安装时为全部能力）。
+    pub added_capabilities: Capabilities,
+    /// 权限是否扩大：首次安装恒为 true（需展示全部能力并确认）；
+    /// 更新时为 `added_capabilities` 非空。
+    pub capabilities_grown: bool,
 }
 
 /// PluginManager：管理已加载的插件集合并提供 URL 路由。
@@ -206,28 +221,82 @@ impl PluginManager {
             .find(|p| p.manifest.r#match.iter().any(|r| matches(url, r)))
     }
 
-    /// 安装插件：把 `src` 目录（含 manifest.toml）复制到 `plugins/<id>/`。
-    /// 校验 manifest 可解析；目标 id 已存在则报错。只动磁盘，列表由调用方
-    /// 重建（rescan）后生效。
-    pub fn install_from_dir(&self, src: &Path) -> Result<String> {
-        let manifest_text = std::fs::read_to_string(src.join("manifest.toml"))
-            .map_err(|e| CoreError::Message(format!("读取 manifest.toml 失败: {e}")))?;
-        let manifest: Manifest = toml::from_str(&manifest_text)
-            .map_err(|e| CoreError::Message(format!("manifest 解析失败: {e}")))?;
+    /// 预览安装/更新（§11.5.4）：校验 manifest 可解析、id 非空，并报告
+    /// 是安装还是更新、能力是否扩大。只读磁盘，不写任何文件。
+    pub fn preview_install_dir(&self, src: &Path) -> Result<InstallPreview> {
+        self.build_preview(read_manifest(src)?)
+    }
+
+    /// 预览 zip 安装/更新：直接从压缩包读取 manifest.toml（顶层或第一层
+    /// 子目录），不落盘、不写临时文件。
+    pub fn preview_install_zip(&self, zip_path: &Path) -> Result<InstallPreview> {
+        self.build_preview(read_manifest_from_zip(zip_path)?)
+    }
+
+    /// 由新 manifest 生成预览：与已安装版本对比能力差异。
+    fn build_preview(&self, manifest: Manifest) -> Result<InstallPreview> {
         let id = manifest.plugin.id.clone();
         if id.is_empty() {
             return Err(CoreError::Message("manifest 缺少 plugin.id".into()));
         }
         let target = self.plugins_dir.join(&id);
-        if target.exists() {
-            return Err(CoreError::Message(format!("插件已存在: {id}")));
+        let is_update = target.exists();
+        let old = if is_update {
+            read_manifest(&target).ok()
+        } else {
+            None
+        };
+        let added_capabilities = match &old {
+            Some(old) => manifest
+                .capabilities
+                .new_items_relative_to(&old.capabilities),
+            None => manifest.capabilities.clone(),
+        };
+        let capabilities_grown = !is_update || !added_capabilities.is_empty();
+        Ok(InstallPreview {
+            manifest,
+            is_update,
+            added_capabilities,
+            capabilities_grown,
+        })
+    }
+
+    /// 安装/更新插件：把 `src` 目录（含 manifest.toml）复制到 `plugins/<id>/`。
+    /// 校验 manifest 可解析；目标 id 已存在时按「更新」覆盖（§11.5.4）。
+    /// 先复制到同目录 staging 再原子替换：更新失败时旧插件不受影响。
+    /// 列表由调用方重建（rescan）后生效。
+    pub fn install_from_dir(&self, src: &Path) -> Result<String> {
+        let manifest = read_manifest(src)?;
+        let id = manifest.plugin.id.clone();
+        if id.is_empty() {
+            return Err(CoreError::Message("manifest 缺少 plugin.id".into()));
         }
-        copy_dir_recursive(src, &target)
-            .map_err(|e| CoreError::Message(format!("复制插件目录失败: {e}")))?;
+        let target = self.plugins_dir.join(&id);
+        let staging = self.plugins_dir.join(format!(
+            ".staging-{id}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Err(e) = copy_dir_recursive(src, &staging) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(CoreError::Message(format!("复制插件目录失败: {e}")));
+        }
+        if target.exists() {
+            std::fs::remove_dir_all(&target)
+                .map_err(|e| CoreError::Message(format!("移除旧插件目录失败: {e}")))?;
+        }
+        if let Err(e) = std::fs::rename(&staging, &target) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(CoreError::Message(format!("替换插件目录失败: {e}")));
+        }
         Ok(id)
     }
 
-    /// 安装插件：解压 zip 后调用 [`install_from_dir`]。zip 顶层或第一层
+    /// 安装/更新插件：解压 zip 后调用 [`install_from_dir`]。zip 顶层或第一层
     /// 子目录含 manifest.toml 均可（兼容常见的目录包裹打包）。
     pub fn install_from_zip(&self, zip_path: &Path) -> Result<String> {
         let file = std::fs::File::open(zip_path)
@@ -335,6 +404,37 @@ impl PluginManager {
         let parsed = rt.run_script(script, url, existing_guids)?;
         Ok(Some(parsed))
     }
+}
+
+/// 读取目录内的 manifest.toml 并解析（预览与安装共用）。
+fn read_manifest(src: &Path) -> Result<Manifest> {
+    let text = std::fs::read_to_string(src.join("manifest.toml"))
+        .map_err(|e| CoreError::Message(format!("读取 manifest.toml 失败: {e}")))?;
+    toml::from_str(&text).map_err(|e| CoreError::Message(format!("manifest 解析失败: {e}")))
+}
+
+/// 从 zip 读取 manifest.toml（顶层或第一层子目录均可），不落盘。
+fn read_manifest_from_zip(zip_path: &Path) -> Result<Manifest> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| CoreError::Message(format!("打开 zip 失败: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| CoreError::Message(format!("zip 解析失败: {e}")))?;
+    let name = archive
+        .file_names()
+        .find(|n| {
+            let n = n.replace('\\', "/");
+            let n = n.trim_end_matches('/');
+            n == "manifest.toml" || (n.split('/').count() == 2 && n.ends_with("manifest.toml"))
+        })
+        .map(str::to_string)
+        .ok_or_else(|| CoreError::Message("zip 内未找到 manifest.toml".into()))?;
+    let mut f = archive
+        .by_name(&name)
+        .map_err(|e| CoreError::Message(format!("读取 manifest.toml 失败: {e}")))?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut f, &mut text)
+        .map_err(|e| CoreError::Message(format!("读取 manifest.toml 失败: {e}")))?;
+    toml::from_str(&text).map_err(|e| CoreError::Message(format!("manifest 解析失败: {e}")))
 }
 
 /// 递归复制目录（std 无内置递归复制）。
@@ -674,8 +774,8 @@ entries_json_path = "$.items"
         // 文件已复制
         assert!(plugins_dir.join("installed-plugin/manifest.toml").is_file());
         assert!(plugins_dir.join("installed-plugin/note.txt").is_file());
-        // 重复安装报错
-        assert!(mgr.install_from_dir(&src).is_err());
+        // 重复安装 = 更新覆盖（§11.5.4），不报错
+        assert!(mgr.install_from_dir(&src).is_ok());
 
         // 重建后可见
         let mgr2 = PluginManager::new(plugins_dir.clone()).expect("rescan");
@@ -683,6 +783,249 @@ entries_json_path = "$.items"
             .list()
             .iter()
             .any(|p| p.manifest.plugin.id == "installed-plugin"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn preview_install_dir_new_plugin() {
+        let tmp = std::env::temp_dir().join(format!("glean-plugin-prev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src = tmp.join("src-plugin");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("manifest.toml"),
+            r#"
+[plugin]
+id = "fresh"
+name = "Fresh"
+version = "0.1"
+tier = 1
+
+[[match]]
+url_pattern = "fresh.example.com/*"
+
+[capabilities]
+feed_fetch = ["api.fresh.example.com"]
+
+[tier1]
+request_url_template = "https://api.fresh.example.com/feed"
+entries_json_path = "$.items"
+"#,
+        )
+        .unwrap();
+        let plugins_dir = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let mgr = PluginManager::new(plugins_dir.clone()).expect("open");
+
+        let preview = mgr.preview_install_dir(&src).expect("preview");
+        assert_eq!(preview.manifest.plugin.id, "fresh");
+        assert!(!preview.is_update, "首次安装不是更新");
+        assert!(preview.capabilities_grown, "首次安装需确认全部能力");
+        assert_eq!(
+            preview.added_capabilities.feed_fetch,
+            vec!["api.fresh.example.com"]
+        );
+        // 预览不写磁盘
+        assert!(!plugins_dir.join("fresh").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn preview_install_dir_update_detects_growth() {
+        let tmp = std::env::temp_dir().join(format!("glean-plugin-prevup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugins_dir = tmp.join("plugins");
+        let v1_dir = plugins_dir.join("up-plugin");
+        std::fs::create_dir_all(&v1_dir).unwrap();
+        std::fs::write(
+            v1_dir.join("manifest.toml"),
+            r#"
+[plugin]
+id = "up-plugin"
+name = "Up"
+version = "0.1"
+tier = 1
+
+[[match]]
+url_pattern = "up.example.com/*"
+
+[capabilities]
+feed_fetch = ["api.up.example.com"]
+
+[tier1]
+request_url_template = "https://api.up.example.com/feed"
+entries_json_path = "$.items"
+"#,
+        )
+        .unwrap();
+        let mgr = PluginManager::new(plugins_dir.clone()).expect("open");
+
+        // v2：域名扩大到两个 → 更新 + 权限扩大
+        let v2_dir = tmp.join("v2");
+        std::fs::create_dir_all(&v2_dir).unwrap();
+        std::fs::write(
+            v2_dir.join("manifest.toml"),
+            r#"
+[plugin]
+id = "up-plugin"
+name = "Up"
+version = "0.2"
+tier = 1
+
+[[match]]
+url_pattern = "up.example.com/*"
+
+[capabilities]
+feed_fetch = ["api.up.example.com", "cdn.up.example.com"]
+
+[tier1]
+request_url_template = "https://api.up.example.com/feed"
+entries_json_path = "$.items"
+"#,
+        )
+        .unwrap();
+        let preview = mgr.preview_install_dir(&v2_dir).expect("preview v2");
+        assert!(preview.is_update, "同 id 已安装 → 更新");
+        assert!(preview.capabilities_grown, "新增域名 → 权限扩大");
+        assert_eq!(
+            preview.added_capabilities.feed_fetch,
+            vec!["cdn.up.example.com"],
+            "diff 只含新增域名"
+        );
+        assert_eq!(preview.manifest.plugin.version, "0.2");
+        // 预览不落盘：磁盘仍是 v0.1
+        let on_disk: Manifest =
+            toml::from_str(&std::fs::read_to_string(v1_dir.join("manifest.toml")).unwrap())
+                .unwrap();
+        assert_eq!(on_disk.plugin.version, "0.1");
+
+        // v3：能力与 v2 相同 → 相对已安装版本（先提交 v2 后）不扩大
+        mgr.install_from_dir(&v2_dir).expect("commit v2");
+        let v3_dir = tmp.join("v3");
+        std::fs::create_dir_all(&v3_dir).unwrap();
+        std::fs::write(
+            v3_dir.join("manifest.toml"),
+            r#"
+[plugin]
+id = "up-plugin"
+name = "Up"
+version = "0.3"
+tier = 1
+
+[[match]]
+url_pattern = "up.example.com/*"
+
+[capabilities]
+feed_fetch = ["api.up.example.com", "cdn.up.example.com"]
+
+[tier1]
+request_url_template = "https://api.up.example.com/feed"
+entries_json_path = "$.items"
+"#,
+        )
+        .unwrap();
+        let preview3 = mgr.preview_install_dir(&v3_dir).expect("preview v3");
+        assert!(preview3.is_update);
+        assert!(!preview3.capabilities_grown, "能力未变 → 不扩大");
+        assert!(preview3.added_capabilities.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_from_dir_updates_existing_plugin() {
+        let tmp = std::env::temp_dir().join(format!("glean-plugin-upd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugins_dir = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        // 先装 v0.1（含旧脚本文件 old.rhai）
+        let v1 = tmp.join("v1");
+        std::fs::create_dir_all(&v1).unwrap();
+        std::fs::write(
+            v1.join("manifest.toml"),
+            r#"
+[plugin]
+id = "upd-plugin"
+name = "Upd"
+version = "0.1"
+tier = 2
+
+[[match]]
+url_pattern = "upd.example.com/*"
+"#,
+        )
+        .unwrap();
+        std::fs::write(v1.join("old.rhai"), "old").unwrap();
+        let mgr = PluginManager::new(plugins_dir.clone()).expect("open");
+        mgr.install_from_dir(&v1).expect("install v1");
+        assert!(plugins_dir.join("upd-plugin/old.rhai").is_file());
+
+        // 再装 v0.2（无 old.rhai，新增 adapter.rhai）→ 覆盖
+        let v2 = tmp.join("v2");
+        std::fs::create_dir_all(&v2).unwrap();
+        std::fs::write(
+            v2.join("manifest.toml"),
+            r#"
+[plugin]
+id = "upd-plugin"
+name = "Upd"
+version = "0.2"
+tier = 2
+
+[[match]]
+url_pattern = "upd.example.com/*"
+"#,
+        )
+        .unwrap();
+        std::fs::write(v2.join("adapter.rhai"), "new").unwrap();
+        let id = mgr.install_from_dir(&v2).expect("update v2");
+        assert_eq!(id, "upd-plugin");
+        // 目录内容已替换：manifest 版本更新，旧文件消失
+        let on_disk =
+            std::fs::read_to_string(plugins_dir.join("upd-plugin/manifest.toml")).unwrap();
+        assert!(on_disk.contains("version = \"0.2\""));
+        assert!(!plugins_dir.join("upd-plugin/old.rhai").exists());
+        assert!(plugins_dir.join("upd-plugin/adapter.rhai").is_file());
+        // 重建后版本可见
+        let mgr2 = PluginManager::new(plugins_dir.clone()).expect("rescan");
+        let p = mgr2
+            .list()
+            .iter()
+            .find(|p| p.manifest.plugin.id == "upd-plugin")
+            .expect("found");
+        assert_eq!(p.manifest.plugin.version, "0.2");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn preview_install_zip_reads_manifest_without_extract() {
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join(format!("glean-plugin-prevzip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugins_dir = tmp.join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let mgr = PluginManager::new(plugins_dir.clone()).expect("open");
+
+        // 构造 zip：第一层子目录包裹（常见分发格式）
+        let zip_path = tmp.join("pkg.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        zw.start_file("pkg/manifest.toml", opts).unwrap();
+        zw.write_all(
+            b"[plugin]\nid = \"preview-zip\"\nname = \"PZ\"\nversion = \"0.1\"\ntier = 1\n\n[[match]]\nurl_pattern = \"pz.example.com/*\"\n\n[capabilities]\ncredential_use = [\"pz_session\"]\n\n[tier1]\nrequest_url_template = \"https://pz.example.com/feed\"\nentries_json_path = \"$.items\"\n",
+        )
+        .unwrap();
+        zw.finish().unwrap();
+
+        let preview = mgr.preview_install_zip(&zip_path).expect("preview zip");
+        assert_eq!(preview.manifest.plugin.id, "preview-zip");
+        assert!(!preview.is_update);
+        assert_eq!(
+            preview.manifest.capabilities.credential_use,
+            vec!["pz_session".to_string()]
+        );
+        // 预览不落盘
+        assert!(!plugins_dir.join("preview-zip").exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -194,15 +194,29 @@ impl GleanService {
         self.plugin_proxy.iter().cloned().collect()
     }
 
-    /// 安装插件（文件夹导入）。返回插件 id；失败时（manifest 无效 /
-    /// id 已存在）不改动任何文件。
+    /// 预览插件安装/更新（§11.5.4 权限确认）。只读校验、不动磁盘；
+    /// 返回 `InstallPreview`（含能力摘要与是否扩大），UI 确认后再提交。
+    pub fn preview_install_plugin_dir(&self, src: &Path) -> Result<crate::plugin::InstallPreview> {
+        self.require_plugin_mgr()?.preview_install_dir(src)
+    }
+
+    /// 预览 zip 插件安装/更新。只读校验（直接从 zip 读 manifest），不落盘。
+    pub fn preview_install_plugin_zip(
+        &self,
+        zip_path: &Path,
+    ) -> Result<crate::plugin::InstallPreview> {
+        self.require_plugin_mgr()?.preview_install_zip(zip_path)
+    }
+
+    /// 安装/更新插件（文件夹导入）。返回插件 id；失败时（manifest 无效）
+    /// 不改动任何文件。
     pub fn install_plugin_dir(&mut self, src: &Path) -> Result<String> {
         let id = self.require_plugin_mgr()?.install_from_dir(src)?;
         self.rebuild_plugins()?;
         Ok(id)
     }
 
-    /// 安装插件（zip 导入）。zip 顶层或第一层子目录含 manifest.toml 均可。
+    /// 安装/更新插件（zip 导入）。zip 顶层或第一层子目录含 manifest.toml 均可。
     pub fn install_plugin_zip(&mut self, zip_path: &Path) -> Result<String> {
         let id = self.require_plugin_mgr()?.install_from_zip(zip_path)?;
         self.rebuild_plugins()?;

@@ -41,8 +41,8 @@ pub use paths::{
 };
 pub use plugin::{
     Capabilities, Compliance, Credential, CredentialStore, Enhancer, EntryPatch, HostApi,
-    LoadedPlugin, Manifest, MatchRule, PluginManager, PluginMeta, Runtime, Tier, Tier1Config,
-    Tier1FieldMap,
+    InstallPreview, LoadedPlugin, Manifest, MatchRule, PluginManager, PluginMeta, Runtime, Tier,
+    Tier1Config, Tier1FieldMap,
 };
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};

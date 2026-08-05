@@ -26,7 +26,7 @@ pub mod tier1;
 
 pub use credential::{Credential, CredentialStore};
 pub use enhancer::{Enhancer, EntryPatch, HostApi};
-pub use manager::{LoadedPlugin, PluginManager};
+pub use manager::{InstallPreview, LoadedPlugin, PluginManager};
 pub use manifest::{
     Capabilities, Compliance, Manifest, MatchRule, PluginMeta, Tier, Tier1Config, Tier1FieldMap,
 };
