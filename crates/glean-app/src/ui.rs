@@ -52,7 +52,6 @@ pub struct SpikeApp {
     visible_thumbnail_ids: std::collections::HashSet<glean_core::EntryId>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
     geometry_timer: f32,
-    memory_log_timer: f32,
     /// 已应用到 ctx 的样式（dark, accent）；变化时才重建 style，避免每帧 set_style。
     applied_style: Option<(bool, AccentColor)>,
     /// 上一帧的 Win32 异步按键状态（用于 WebView2 焦点时快捷键边沿检测）。
@@ -64,11 +63,6 @@ impl SpikeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::fonts::install(&cc.egui_ctx);
         let state = SpikeState::new();
-        crate::write_debug_log(&format!(
-            "[memory-debug-start] exe={:?} pid={}",
-            std::env::current_exe().ok(),
-            std::process::id()
-        ));
         apply_style(&cc.egui_ctx, state.dark, state.config.accent);
         // Give the tray an egui::Context clone so tray event callbacks can
         // directly drive viewport commands and repaints. This is essential
@@ -88,7 +82,6 @@ impl SpikeApp {
             thumbnails: std::collections::HashMap::new(),
             visible_thumbnail_ids: std::collections::HashSet::new(),
             geometry_timer: 0.0,
-            memory_log_timer: 0.0,
             applied_style,
             #[cfg(windows)]
             prev_async_keys: 0,
@@ -122,28 +115,7 @@ impl eframe::App for SpikeApp {
             self.applied_style = Some((self.state.dark, self.state.config.accent));
         }
 
-        // Auto-refresh timer.
         let dt = ctx.input(|i| i.stable_dt);
-        self.memory_log_timer += dt;
-        if self.memory_log_timer >= 10.0 {
-            self.memory_log_timer = 0.0;
-            // #region debug-point A:memory-snapshot
-            let (thumbnail_pending, thumbnail_loaded, favicons, open_html_bytes, img_cache_pending) =
-                self.state.memory_snapshot(self.favicons.len());
-            crate::write_debug_log(&format!(
-                "[memory-debug] rss_bytes={:?} feeds={} entries={} thumbnails={} thumbnail_pending={} thumbnail_loaded={} favicons={} open_html_bytes={} img_cache_pending={}",
-                crate::current_process_working_set_bytes(),
-                self.state.feeds.len(),
-                self.state.entries.len(),
-                self.thumbnails.len(),
-                thumbnail_pending,
-                thumbnail_loaded,
-                favicons,
-                open_html_bytes,
-                img_cache_pending,
-            ));
-            // #endregion
-        }
         self.state.tick_auto_refresh(dt);
 
         // Persist window geometry (§9 M3). Read current viewport info into

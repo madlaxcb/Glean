@@ -300,21 +300,6 @@ impl PendingPluginInstall {
 }
 
 impl SpikeState {
-    pub(crate) fn memory_snapshot(
-        &self,
-        favicon_count: usize,
-    ) -> (usize, usize, usize, usize, usize) {
-        (
-            self.thumbnail_pending.len(),
-            self.thumbnail_loaded.len(),
-            favicon_count,
-            self.open_detail
-                .as_ref()
-                .map_or(0, |entry| entry.content_html.len()),
-            usize::from(self.img_cache_rx.is_some()),
-        )
-    }
-
     pub fn new() -> Self {
         let db = default_db_path();
         let config_path = default_config_path();
@@ -2053,29 +2038,4 @@ pub(crate) fn write_debug_log(message: &str) {
         use std::io::Write;
         let _ = writeln!(file, "{message}");
     }
-}
-
-#[cfg(windows)]
-pub(crate) fn current_process_working_set_bytes() -> Option<u64> {
-    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-    use windows::Win32::System::Threading::GetCurrentProcess;
-
-    let mut counters = PROCESS_MEMORY_COUNTERS {
-        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-        ..Default::default()
-    };
-    unsafe {
-        GetProcessMemoryInfo(
-            GetCurrentProcess(),
-            &mut counters,
-            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-        )
-        .ok()?;
-    }
-    Some(counters.WorkingSetSize as u64)
-}
-
-#[cfg(not(windows))]
-pub(crate) fn current_process_working_set_bytes() -> Option<u64> {
-    None
 }
