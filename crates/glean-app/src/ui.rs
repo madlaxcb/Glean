@@ -49,6 +49,7 @@ pub struct SpikeApp {
     favicons: std::collections::HashMap<glean_core::FeedId, egui::TextureHandle>,
     /// Cached thumbnail textures keyed by EntryId (列表预览图).
     thumbnails: std::collections::HashMap<glean_core::EntryId, egui::TextureHandle>,
+    visible_thumbnail_ids: std::collections::HashSet<glean_core::EntryId>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
     geometry_timer: f32,
     memory_log_timer: f32,
@@ -85,6 +86,7 @@ impl SpikeApp {
             confirm_uninstall: None,
             favicons: std::collections::HashMap::new(),
             thumbnails: std::collections::HashMap::new(),
+            visible_thumbnail_ids: std::collections::HashSet::new(),
             geometry_timer: 0.0,
             memory_log_timer: 0.0,
             applied_style,
@@ -209,7 +211,13 @@ impl eframe::App for SpikeApp {
             self.thumbnails.insert(eid, tex);
         }
         // Spawn thumbnail downloads for entries lacking a texture.
-        self.state.maybe_download_thumbnails();
+        self.thumbnails
+            .retain(|id, _| self.visible_thumbnail_ids.contains(id));
+        self.state.maybe_download_thumbnails(
+            &self.visible_thumbnail_ids,
+            self.state.config.thumbnail_size as usize,
+        );
+        self.visible_thumbnail_ids.clear();
 
         // Load cached favicons on first frame (after Bootstrap).
         if !self.primed {
@@ -2675,6 +2683,7 @@ impl SpikeApp {
                 let mut clicked = None;
                 for i in row_range {
                     let entry = &self.state.entries[i];
+                    self.visible_thumbnail_ids.insert(entry.id);
                     let read_mark = if entry.is_read { "已读" } else { "未读" };
                     let star = if entry.is_starred { "★" } else { "" };
                     let cache = if entry.has_content { "" } else { " ⇊" };

@@ -1562,10 +1562,16 @@ impl SpikeState {
     /// Spawn background thumbnail downloads for entries that have a thumbnail
     /// URL but no texture yet. Pixiv thumbnails on i.pximg.net need a Referer
     /// header and the configured proxy; we reuse the service's HTTP client.
-    pub fn maybe_download_thumbnails(&mut self) {
+    pub fn maybe_download_thumbnails(
+        &mut self,
+        visible_ids: &std::collections::HashSet<EntryId>,
+        max_size: usize,
+    ) {
         if self.thumbnail_rx.is_some() {
             return;
         }
+        self.thumbnail_loaded.retain(|id| visible_ids.contains(id));
+        self.thumbnail_failed.retain(|id| visible_ids.contains(id));
         let client = self
             .service
             .http_proxy()
@@ -1573,6 +1579,9 @@ impl SpikeState {
             .unwrap_or_else(|| self.service.http().inner.clone());
         let mut tasks = Vec::new();
         for e in &self.entries {
+            if !visible_ids.contains(&e.id) {
+                continue;
+            }
             let Some(url) = e.thumbnail_url.as_deref() else {
                 continue;
             };
@@ -1606,7 +1615,8 @@ impl SpikeState {
                     Ok(resp) => match resp.bytes() {
                         Ok(bytes) => match image::load_from_memory(&bytes) {
                             Ok(img) => {
-                                let rgba = img.to_rgba8();
+                                let rgba =
+                                    img.thumbnail(max_size as u32, max_size as u32).to_rgba8();
                                 let (w, h) = rgba.dimensions();
                                 tx.send((eid, rgba.into_raw(), w, h)).is_ok()
                             }
