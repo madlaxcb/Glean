@@ -341,13 +341,17 @@ impl GleanService {
                     .collect()
             })
             .unwrap_or_default();
-        let hit = self
-            .plugin_mgr
-            .as_deref()
-            .is_some_and(|m| m.find_for_url(&feed.feed_url).is_some());
+        // 与刷新 worker 的候选逻辑保持一致：先原始 URL，再 Tier 0 规范化
+        // 后的 URL（pixiv 单数 user/ → 复数 users/）。反引号/空白由
+        // matches() 与 clean_feed_url 容错。
+        let normalized = crate::feed::tier0::normalize(&clean_feed_url(&feed.feed_url));
+        let hit = self.plugin_mgr.as_deref().is_some_and(|m| {
+            m.find_for_url(&feed.feed_url).is_some()
+                || (normalized != feed.feed_url && m.find_for_url(&normalized).is_some())
+        });
         write_debug_log(&format!(
-            "[plugin-check] entry={} feed={} feed_url={:?} plugin_mgr={} plugins={:?} hit={}",
-            entry_id.0, fid.0, feed.feed_url, mgr_is_some, plugins, hit
+            "[plugin-check] entry={} feed={} feed_url={:?} normalized={:?} plugin_mgr={} plugins={:?} hit={}",
+            entry_id.0, fid.0, feed.feed_url, normalized, mgr_is_some, plugins, hit
         ));
         hit
     }
