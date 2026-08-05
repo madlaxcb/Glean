@@ -96,31 +96,20 @@ pub fn extract_content(raw_html: &str) -> String {
     String::new()
 }
 
-/// Pixiv 作品页由插件 API 直接给出图文正文，网页 HTML 需登录且无正文可读；
-/// 自动/手动抽取都跳过，避免无意义的失败。
-pub fn is_pixiv_artwork_url(entry_url: Option<&str>) -> bool {
-    match entry_url.and_then(|u| url::Url::parse(u).ok()) {
-        Some(url) if matches!(url.scheme(), "http" | "https") => {
-            let host = url.host_str().unwrap_or_default();
-            (host == "pixiv.net" || host == "www.pixiv.net") && url.path().starts_with("/artworks/")
-        }
-        _ => false,
-    }
-}
-
 /// Decide whether extraction is worthwhile: only if the feed content is short
-/// (summary-only) and the URL points to http(s). Pixiv artwork pages are skipped
-/// (plugin already supplies full content).
+/// (summary-only) and the URL points to http(s).
 pub fn should_extract(feed_content_html: &str, entry_url: Option<&str>) -> bool {
     if feed_content_html.len() >= SUMMARY_THRESHOLD {
         return false;
     }
-    if is_pixiv_artwork_url(entry_url) {
-        return false;
-    }
     match entry_url.and_then(|u| url::Url::parse(u).ok()) {
-        Some(url) if matches!(url.scheme(), "http" | "https") => true,
-        _ => false,
+        Some(url) if matches!(url.scheme(), "http" | "https") => {
+            let host = url.host_str().unwrap_or_default();
+            !(host == "pixiv.net" || host == "www.pixiv.net")
+                || !url.path().starts_with("/artworks/")
+        }
+        Some(_) => false,
+        None => false,
     }
 }
 
@@ -278,10 +267,6 @@ mod tests {
             "short",
             Some("https://www.pixiv.net/artworks/147652038")
         ));
-        assert!(is_pixiv_artwork_url(Some(
-            "https://www.pixiv.net/artworks/147652038"
-        )));
-        assert!(!is_pixiv_artwork_url(Some("https://x.com/a")));
     }
 
     #[test]
