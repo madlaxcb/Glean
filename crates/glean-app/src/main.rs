@@ -300,6 +300,21 @@ impl PendingPluginInstall {
 }
 
 impl SpikeState {
+    pub(crate) fn memory_snapshot(
+        &self,
+        favicon_count: usize,
+    ) -> (usize, usize, usize, usize, usize) {
+        (
+            self.thumbnail_pending.len(),
+            self.thumbnail_loaded.len(),
+            favicon_count,
+            self.open_detail
+                .as_ref()
+                .map_or(0, |entry| entry.content_html.len()),
+            usize::from(self.img_cache_rx.is_some()),
+        )
+    }
+
     pub fn new() -> Self {
         let db = default_db_path();
         let config_path = default_config_path();
@@ -844,11 +859,19 @@ impl SpikeState {
 
     /// Launch background refresh: HTTP on threads, DB writes on UI thread.
     pub fn refresh_all_feeds_async(&mut self) {
+        self.refresh_feeds_async(None);
+    }
+
+    pub fn refresh_feed_async(&mut self, feed_id: glean_core::FeedId) {
+        self.refresh_feeds_async(Some(feed_id));
+    }
+
+    fn refresh_feeds_async(&mut self, feed_id: Option<glean_core::FeedId>) {
         if self.refresh_rx.is_some() {
             self.status = "刷新进行中…".into();
             return;
         }
-        let tasks: Vec<RefreshTask> = match self.service.prepare_refresh_tasks(None) {
+        let tasks: Vec<RefreshTask> = match self.service.prepare_refresh_tasks(feed_id) {
             Ok(t) => t,
             Err(e) => {
                 self.status = format!("刷新失败: {e}");
@@ -865,7 +888,11 @@ impl SpikeState {
         self.refresh_cancel = Arc::new(AtomicBool::new(false));
         self.pending_open_entry = None;
         let workers = REFRESH_WORKERS.min(tasks.len());
-        self.status = format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers);
+        self.status = if feed_id.is_some() {
+            "正在刷新订阅…".into()
+        } else {
+            format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers)
+        };
         let ctx = self.service.refresh_ctx();
         spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
     }
@@ -2016,4 +2043,29 @@ pub(crate) fn write_debug_log(message: &str) {
         use std::io::Write;
         let _ = writeln!(file, "{message}");
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn current_process_working_set_bytes() -> Option<u64> {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+        .ok()?;
+    }
+    Some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn current_process_working_set_bytes() -> Option<u64> {
+    None
 }

@@ -18,6 +18,7 @@ const FAVICON_SIZE: f32 = 14.0;
 /// 订阅行的交互动作（左键点击选中 / 右键菜单项）。
 enum FeedRowAction {
     Click(glean_core::FeedId),
+    Refresh(glean_core::FeedId),
     Delete(glean_core::FeedId),
     Rename(glean_core::FeedId),
     EditUrl(glean_core::FeedId),
@@ -50,6 +51,7 @@ pub struct SpikeApp {
     thumbnails: std::collections::HashMap<glean_core::EntryId, egui::TextureHandle>,
     /// Accumulator for periodic window-geometry persistence (§9 M3).
     geometry_timer: f32,
+    memory_log_timer: f32,
     /// 已应用到 ctx 的样式（dark, accent）；变化时才重建 style，避免每帧 set_style。
     applied_style: Option<(bool, AccentColor)>,
     /// 上一帧的 Win32 异步按键状态（用于 WebView2 焦点时快捷键边沿检测）。
@@ -79,6 +81,7 @@ impl SpikeApp {
             favicons: std::collections::HashMap::new(),
             thumbnails: std::collections::HashMap::new(),
             geometry_timer: 0.0,
+            memory_log_timer: 0.0,
             applied_style,
             #[cfg(windows)]
             prev_async_keys: 0,
@@ -114,6 +117,26 @@ impl eframe::App for SpikeApp {
 
         // Auto-refresh timer.
         let dt = ctx.input(|i| i.stable_dt);
+        self.memory_log_timer += dt;
+        if self.memory_log_timer >= 10.0 {
+            self.memory_log_timer = 0.0;
+            // #region debug-point A:memory-snapshot
+            let (thumbnail_pending, thumbnail_loaded, favicons, open_html_bytes, img_cache_pending) =
+                self.state.memory_snapshot(self.favicons.len());
+            crate::write_debug_log(&format!(
+                "[memory-debug] rss_bytes={:?} feeds={} entries={} thumbnails={} thumbnail_pending={} thumbnail_loaded={} favicons={} open_html_bytes={} img_cache_pending={}",
+                crate::current_process_working_set_bytes(),
+                self.state.feeds.len(),
+                self.state.entries.len(),
+                self.thumbnails.len(),
+                thumbnail_pending,
+                thumbnail_loaded,
+                favicons,
+                open_html_bytes,
+                img_cache_pending,
+            ));
+            // #endregion
+        }
         self.state.tick_auto_refresh(dt);
 
         // Persist window geometry (§9 M3). Read current viewport info into
@@ -2229,6 +2252,9 @@ impl SpikeApp {
             Some(FeedRowAction::Click(id)) => {
                 self.state.set_filter(EntryFilter::Feed(id));
             }
+            Some(FeedRowAction::Refresh(id)) => {
+                self.state.refresh_feed_async(id);
+            }
             Some(FeedRowAction::Delete(id)) => {
                 self.state.delete_feed(id);
             }
@@ -2545,6 +2571,10 @@ impl SpikeApp {
             }
             if ui.button("编辑 URL").clicked() {
                 *action = Some(FeedRowAction::EditUrl(feed.id));
+                ui.close_menu();
+            }
+            if ui.button("刷新订阅").clicked() {
+                *action = Some(FeedRowAction::Refresh(feed.id));
                 ui.close_menu();
             }
             let mute_label = if feed.muted { "取消静音" } else { "静音" };
