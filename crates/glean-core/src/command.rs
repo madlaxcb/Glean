@@ -44,6 +44,10 @@ pub enum AppCommand {
     DeleteFeed {
         id: FeedId,
     },
+    /// 批量删除订阅（单事务，避免全选删除时逐条提交 + FTS 半失败）。
+    DeleteFeeds {
+        ids: Vec<FeedId>,
+    },
     RenameFeed {
         id: FeedId,
         title: String,

@@ -8,7 +8,7 @@ use crate::paths::cache_entries_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 pub struct Store {
     conn: Connection,
@@ -536,6 +536,76 @@ impl Store {
                 [],
             )?;
         }
+        if ver < 14 {
+            // v14：修正历史 FTS5 外部内容表维护方式。
+            // 旧代码对 content='entries' 的 entries_fts 使用了错误的
+            // `DELETE FROM entries_fts WHERE rowid=…`，会导致 FTS 倒排索引
+            // 与正文不同步，批量删除订阅时出现
+            // `database disk image is malformed`。此处强制 rebuild 一次。
+            let _ = self.rebuild_fts();
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', '14')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 判断是否为 SQLite「disk image is malformed」类错误（含 FTS 损坏）。
+    fn is_malformed_error(err: &rusqlite::Error) -> bool {
+        let s = err.to_string();
+        s.contains("malformed") || s.contains("disk image")
+    }
+
+    /// 重建 FTS5 索引（外部内容表与 entries 对齐）。失败时尝试 drop+重建。
+    fn rebuild_fts(&self) -> Result<()> {
+        match self
+            .conn
+            .execute_batch("INSERT INTO entries_fts(entries_fts) VALUES('rebuild');")
+        {
+            Ok(()) => Ok(()),
+            Err(e) if Self::is_malformed_error(&e) => {
+                // rebuild 也失败：整表重建。
+                self.conn.execute_batch(
+                    "DROP TABLE IF EXISTS entries_fts;
+                     CREATE VIRTUAL TABLE entries_fts USING fts5(
+                        title, summary, content_html,
+                        content='entries', content_rowid='id',
+                        tokenize='trigram'
+                     );
+                     INSERT INTO entries_fts(entries_fts) VALUES('rebuild');",
+                )?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 尽力重建 FTS；失败只记日志，不阻断主流程（内容表已正确）。
+    fn rebuild_fts_best_effort(&self) {
+        if let Err(e) = self.rebuild_fts() {
+            eprintln!("glean: FTS 重建失败: {e}");
+        }
+    }
+
+    /// FTS5 外部内容表（content='entries'）的正确删除方式：
+    /// 必须在正文行仍存在时，用 `INSERT … VALUES('delete', rowid, …列值)`，
+    /// **不能** `DELETE FROM entries_fts`（那会损坏/不同步外部内容索引）。
+    fn fts_delete_rows_sql() -> &'static str {
+        "INSERT INTO entries_fts(entries_fts, rowid, title, summary, content_html)
+         SELECT 'delete', id, title, COALESCE(summary, ''), content_html
+         FROM entries WHERE feed_id = ?1 AND is_starred = 0"
+    }
+
+    /// 单条 entry 的 FTS 外部内容删除（upsert 更新前调用）。
+    fn fts_delete_one(conn: &Connection, id: i64) -> std::result::Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO entries_fts(entries_fts, rowid, title, summary, content_html)
+             SELECT 'delete', id, title, COALESCE(summary, ''), content_html
+             FROM entries WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -1097,9 +1167,11 @@ impl Store {
         )?;
         let is_new = existing_id.is_none();
         let id = existing_id.unwrap_or_else(|| self.conn.last_insert_rowid());
-        let _ = self
-            .conn
-            .execute("DELETE FROM entries_fts WHERE rowid = ?1", params![id]);
+        // FTS5 外部内容表：更新前必须用 'delete' 特殊命令移除旧索引行，
+        // 不能 `DELETE FROM entries_fts`（会损坏外部内容索引）。
+        if !is_new {
+            let _ = Self::fts_delete_one(&self.conn, id);
+        }
         let _ = self.conn.execute(
             "INSERT INTO entries_fts(rowid, title, summary, content_html) VALUES(?1, ?2, ?3, ?4)",
             params![id, title, summary.unwrap_or(""), content_html],
@@ -1115,41 +1187,75 @@ impl Store {
     }
 
     pub fn delete_feed(&mut self, id: FeedId) -> Result<()> {
-        // Delete non-starred entries first (starred entries survive via
-        // ON DELETE SET NULL — their feed_id becomes NULL).
-        // 1. Remove FTS rows for non-starred entries.
-        self.conn.execute(
-            "DELETE FROM entries_fts WHERE rowid IN (
-                SELECT id FROM entries WHERE feed_id = ?1 AND is_starred = 0
-            )",
-            params![id.0],
-        )?;
-        // 2. Remove non-starred entry rows.
-        self.conn.execute(
-            "DELETE FROM entries WHERE feed_id = ?1 AND is_starred = 0",
-            params![id.0],
-        )?;
-        // 3. Delete the feed; remaining starred entries get feed_id = NULL
-        //    via ON DELETE SET NULL.
-        let n = self
-            .conn
-            .execute("DELETE FROM feeds WHERE id = ?1", params![id.0])?;
-        if n == 0 {
-            return Err(CoreError::NotFound(format!("feed {}", id.0)));
+        self.delete_feeds(&[id])
+    }
+
+    /// 批量删除订阅（单事务）。星标条目保留，`feed_id` 由外键 SET NULL。
+    ///
+    /// FTS5 外部内容表删除使用官方 `INSERT … VALUES('delete', …)` 语法；
+    /// 若 FTS 已损坏（`malformed`），自动 rebuild 后重试一次，避免全选删除
+    /// 时出现「部分成功、部分 database disk image is malformed」。
+    pub fn delete_feeds(&mut self, ids: &[FeedId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        match self.delete_feeds_inner(ids) {
+            Ok(()) => Ok(()),
+            Err(CoreError::Sqlite(e)) if Self::is_malformed_error(&e) => {
+                // FTS/页损坏：先 rebuild FTS，再重试一次。
+                self.rebuild_fts_best_effort();
+                self.delete_feeds_inner(ids)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn delete_feeds_inner(&mut self, ids: &[FeedId]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let mut deleted = 0usize;
+        for id in ids {
+            // 1. 正文行仍在时，用 FTS5 'delete' 命令移除外部内容索引行。
+            tx.execute(Self::fts_delete_rows_sql(), params![id.0])?;
+            // 2. 删除未星标条目（星标保留）。
+            tx.execute(
+                "DELETE FROM entries WHERE feed_id = ?1 AND is_starred = 0",
+                params![id.0],
+            )?;
+            // 3. 删除订阅；星标条目 feed_id → NULL。
+            let n = tx.execute("DELETE FROM feeds WHERE id = ?1", params![id.0])?;
+            deleted += n;
+        }
+        tx.commit()?;
+        if deleted == 0 {
+            return Err(CoreError::NotFound(format!(
+                "feeds {:?}",
+                ids.iter().map(|i| i.0).collect::<Vec<_>>()
+            )));
         }
         Ok(())
     }
 
-    /// 覆盖导入用：在单事务里清空全部订阅。等价于逐条 delete_feed,
+    /// 覆盖导入用：在单事务里清空全部订阅。等价于批量 delete_feeds,
     /// 但用集合语句 + 单事务,避免海量自动提交(源+条目)在 WAL 下的边角问题。
     /// 星标条目保留,feed_id 由外键 ON DELETE SET NULL 置 NULL。
     pub fn clear_all_feeds(&mut self) -> Result<()> {
+        match self.clear_all_feeds_inner() {
+            Ok(()) => Ok(()),
+            Err(CoreError::Sqlite(e)) if Self::is_malformed_error(&e) => {
+                self.rebuild_fts_best_effort();
+                self.clear_all_feeds_inner()
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn clear_all_feeds_inner(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
-        // 1. 删除未星标条目的 FTS 行。
+        // 1. FTS5 外部内容正确删除（正文行仍在时发 'delete' 命令）。
         tx.execute(
-            "DELETE FROM entries_fts WHERE rowid IN (
-                SELECT id FROM entries WHERE is_starred = 0
-            )",
+            "INSERT INTO entries_fts(entries_fts, rowid, title, summary, content_html)
+             SELECT 'delete', id, title, COALESCE(summary, ''), content_html
+             FROM entries WHERE is_starred = 0",
             [],
         )?;
         // 2. 删除未星标条目。
@@ -1636,5 +1742,84 @@ mod tests {
             .map(|f| f.id)
             .collect();
         assert_eq!(ids, vec![third, first, second]);
+    }
+
+    /// 批量删除：单事务删多源 + 正确维护 FTS；星标条目保留。
+    #[test]
+    fn batch_delete_feeds_removes_entries_keeps_starred() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = store
+            .add_feed("A", "https://ex/a.xml", None, FeedCategory::Article)
+            .unwrap();
+        let b = store
+            .add_feed("B", "https://ex/b.xml", None, FeedCategory::Article)
+            .unwrap();
+        let c = store
+            .add_feed("C", "https://ex/c.xml", None, FeedCategory::Article)
+            .unwrap();
+        store
+            .upsert_entry(a, "g1", "t1", None, None, None, None, "<p>1</p>", None)
+            .unwrap();
+        store
+            .upsert_entry(b, "g2", "t2", None, None, None, None, "<p>2</p>", None)
+            .unwrap();
+        let starred_new = store
+            .upsert_entry(b, "g3", "star", None, None, None, None, "<p>s</p>", None)
+            .unwrap();
+        assert!(starred_new);
+        let entries = store.list_entries(EntryFilter::Feed(b)).unwrap();
+        let star_id = entries.iter().find(|e| e.title == "star").unwrap().id;
+        assert!(store.toggle_star(star_id).unwrap());
+
+        store.delete_feeds(&[a, b]).unwrap();
+        let feeds = store.list_feeds().unwrap();
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].id, c);
+        // 星标条目仍在（feed_id 已置空）。
+        let starred = store.list_entries(EntryFilter::Starred).unwrap();
+        assert_eq!(starred.len(), 1);
+        assert_eq!(starred[0].title, "star");
+        // FTS 仍可查询（未因错误 DELETE 损坏）。
+        let hits = store.search_entries("star", 10).unwrap();
+        assert!(!hits.is_empty(), "FTS should still find starred entry");
+    }
+
+    /// 错误的 `DELETE FROM entries_fts` 曾是损坏源；正确路径下反复 upsert+删除仍健康。
+    #[test]
+    fn upsert_update_and_delete_keeps_fts_healthy() {
+        let mut store = Store::open_in_memory().unwrap();
+        let f = store
+            .add_feed("F", "https://ex/f.xml", None, FeedCategory::Article)
+            .unwrap();
+        store
+            .upsert_entry(
+                f,
+                "g",
+                "hello",
+                None,
+                None,
+                None,
+                Some("sum"),
+                "<p>a</p>",
+                None,
+            )
+            .unwrap();
+        // 更新同一 guid（走 FTS 'delete' + 再 insert）。
+        store
+            .upsert_entry(
+                f,
+                "g",
+                "hello2",
+                None,
+                None,
+                None,
+                Some("sum2"),
+                "<p>b</p>",
+                None,
+            )
+            .unwrap();
+        store.delete_feed(f).unwrap();
+        assert!(store.list_feeds().unwrap().is_empty());
+        store.rebuild_fts().unwrap();
     }
 }

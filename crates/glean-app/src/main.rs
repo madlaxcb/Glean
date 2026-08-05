@@ -906,14 +906,16 @@ impl SpikeState {
         self.dispatch(AppCommand::DeleteFeed { id });
     }
 
-    /// 批量删除多选的订阅，并清空选择。
+    /// 批量删除多选的订阅（单事务），并清空选择。
     pub fn batch_delete_feeds(&mut self, ids: Vec<glean_core::FeedId>) {
         let n = ids.len();
-        for id in ids {
-            self.dispatch(AppCommand::DeleteFeed { id });
-        }
+        // 一次 DeleteFeeds：单事务 + FTS 正确删除 + malformed 自动 rebuild 重试，
+        // 避免旧路径「逐条 DeleteFeed」中途 FTS malformed 导致只删一部分。
+        self.dispatch(AppCommand::DeleteFeeds { ids });
         self.selected_feeds.clear();
-        self.status = format!("已删除 {n} 个订阅");
+        if !self.status.starts_with("错误") {
+            self.status = format!("已删除 {n} 个订阅");
+        }
     }
 
     /// 批量移动多选的订阅到指定文件夹（None = 移出文件夹）。

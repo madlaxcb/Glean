@@ -519,6 +519,19 @@ impl GleanService {
                 });
                 Ok(ev)
             }
+            AppCommand::DeleteFeeds { ids } => {
+                let n = ids.len();
+                self.store.delete_feeds(&ids)?;
+                let mut ev = self.emit_nav()?;
+                ev.extend(self.emit_entries()?);
+                ev.push(AppEvent::UnreadChanged {
+                    total: self.store.unread_count()?,
+                });
+                ev.push(AppEvent::Status {
+                    message: format!("已删除 {n} 个订阅"),
+                });
+                Ok(ev)
+            }
             AppCommand::RenameFeed { id, title } => {
                 self.store.rename_feed(id, &title)?;
                 let mut ev = self.emit_nav()?;
