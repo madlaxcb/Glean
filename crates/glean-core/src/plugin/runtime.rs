@@ -787,6 +787,120 @@ mod tests {
     }
 
     #[test]
+    fn official_fanbox_script_compiles() {
+        let script = include_str!("../../../../plugins/fanbox/adapter.rhai");
+        let mut m = empty_manifest(Tier::Script);
+        m.capabilities.feed_fetch = vec!["api.fanbox.cc".into()];
+        m.capabilities.credential_use = vec!["fanbox_session".into()];
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        rt.engine
+            .compile(script)
+            .expect("fanbox adapter.rhai compiles");
+    }
+
+    /// Fanbox 脚本的纯辅助函数行为验证（不发起网络请求）。
+    /// 覆盖：创作者 ID 提取、ISO8601 时间转换、响应结构兼容、分页 nextUrl。
+    #[test]
+    fn fanbox_helpers_extract_creator_and_pagination() {
+        let script = r#"
+            fn str_safe(v) {
+                let t = type_of(v);
+                if t == "string" { return v; }
+                if t == "i64" || t == "i32" || t == "int" || t == "f64" { return "" + v; }
+                return "";
+            }
+            fn parse_int_safe(v) {
+                if type_of(v) == "i64" || type_of(v) == "i32" || type_of(v) == "int" { return v; }
+                let s = str_safe(v);
+                if len(s) == 0 { return 0; }
+                try { return s.parse_int(); } catch { return 0; }
+            }
+            fn iso_to_unix(s) {
+                if type_of(s) != "string" || len(s) < 19 { return 0; }
+                let ymd = s.substring(0, 10).split("-");
+                let hms = s.substring(11, 19).split(":");
+                if len(ymd) != 3 || len(hms) != 3 { return 0; }
+                let y = parse_int_safe(ymd[0]);
+                let mo = parse_int_safe(ymd[1]);
+                let d = parse_int_safe(ymd[2]);
+                let h = parse_int_safe(hms[0]);
+                let mi = parse_int_safe(hms[1]);
+                let se = parse_int_safe(hms[2]);
+                if y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31 { return 0; }
+                let y2 = y - (if mo <= 2 { 1 } else { 0 });
+                let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400;
+                let yoe = y2 - era * 400;
+                let mp = mo + (if mo > 2 { -3 } else { 9 });
+                let doy = (153 * mp + 2) / 5 + d - 1;
+                let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                let days = era * 146097 + doe - 719468;
+                let ts = days * 86400 + h * 3600 + mi * 60 + se;
+                let tz = s.substring(19, len(s));
+                if tz.starts_with("+") || tz.starts_with("-") {
+                    let sign = if tz.starts_with("+") { 1 } else { -1 };
+                    let parts = tz.substring(1, len(tz)).split(":");
+                    if len(parts) >= 2 { return ts - sign * (parse_int_safe(parts[0]) * 3600 + parse_int_safe(parts[1]) * 60); }
+                }
+                return ts;
+            }
+            fn extract_creator(url) {
+                let parts = url.split("/");
+                let seen_host = false;
+                for p in parts {
+                    if len(p) == 0 { continue; }
+                    if p == "fanbox.cc" || p == "www.fanbox.cc" { seen_host = true; continue; }
+                    if !seen_host { continue; }
+                    let creator = p;
+                    if creator.starts_with("@") { creator = creator.substring(1, len(creator)); }
+                    if len(creator) == 0 { return ""; }
+                    for c in creator {
+                        if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') { return ""; }
+                    }
+                    return creator;
+                }
+                return "";
+            }
+            fn posts_from_response(json) {
+                let posts = json_path(json, "body.items");
+                if type_of(posts) != "array" { posts = json_path(json, "body.posts"); }
+                if type_of(posts) != "array" { posts = json_path(json, "posts"); }
+                if type_of(posts) != "array" { posts = json_path(json, "items"); }
+                return posts;
+            }
+            fn next_from_response(json) {
+                let next = str_safe(json_path(json, "body.nextUrl"));
+                if len(next) == 0 { next = str_safe(json_path(json, "body.next_url")); }
+                if len(next) == 0 { next = str_safe(json_path(json, "nextUrl")); }
+                if len(next) == 0 { next = str_safe(json_path(json, "next_url")); }
+                return next;
+            }
+
+            let c1 = extract_creator("https://fanbox.cc/@creator");
+            let c2 = extract_creator("https://www.fanbox.cc/creator");
+            let c3 = extract_creator("https://fanbox.cc/");
+            let t = iso_to_unix("2026-07-06T19:56:40+09:00");
+            let tz = iso_to_unix("2026-07-06T10:56:40Z");
+            let j = parse_json(#{
+                "body": #{
+                    "items": [ #{ "id": "1" }, #{ "id": "2" } ],
+                    "nextUrl": "https://api.fanbox.cc/post.listCreator?creatorId=creator&limit=10&offset=10"
+                }
+            }.to_json());
+            let posts = posts_from_response(j);
+            let next = next_from_response(j);
+            c1 == "creator" && c2 == "creator" && c3 == "" && t == tz && len(posts) == 2 && next.starts_with("https://api.fanbox.cc/")
+        "#;
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let ok: bool = rt.engine.eval(script).expect("fanbox helper logic evals");
+        assert!(ok, "fanbox 辅助函数行为不符合预期");
+    }
+
+    #[test]
     fn pixiv_iso_to_unix_accounts_for_timezone_offset() {
         // Pixiv create_date 为 JST(+09:00)，iso_to_unix 必须将其转为 UTC。
         // 直接对官方脚本的 iso_to_unix 做行为验证（不发起网络请求）。

@@ -1,0 +1,17 @@
+[plugin]
+id = "fanbox"
+name = "Fanbox 创作者投稿"
+version = "0.1.0"
+author = "Glean"
+min_glean_version = "0.5.0"
+tier = 2
+
+[[match]]
+url_pattern = "fanbox.cc/@*"
+
+[capabilities]
+feed_fetch = ["api.fanbox.cc"]
+credential_use = ["fanbox_session"]
+
+[compliance]
+uses_user_session = true

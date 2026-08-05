@@ -693,6 +693,24 @@ title = "$.name"
     }
 
     #[test]
+    fn official_fanbox_manifest_parses() {
+        let toml_text = include_str!("../../../../plugins/fanbox/manifest.toml");
+        let m: Manifest = toml::from_str(toml_text).expect("fanbox manifest parse");
+        assert_eq!(m.plugin.id, "fanbox");
+        assert_eq!(m.plugin.tier, crate::plugin::manifest::Tier::Script);
+        assert!(m
+            .capabilities
+            .feed_fetch
+            .contains(&"api.fanbox.cc".to_string()));
+        assert!(m
+            .capabilities
+            .credential_use
+            .contains(&"fanbox_session".to_string()));
+        assert!(m.compliance.uses_user_session);
+        assert!(m.r#match.iter().any(|r| r.url_pattern == "fanbox.cc/@*"));
+    }
+
+    #[test]
     fn plugin_proxy_switch_roundtrip() {
         // 插件级「使用代理」开关：set → 查询 → 外部同步（set_proxy_set）。
         let mut mgr = PluginManager::from_manifests(vec![make_manifest(
@@ -1192,5 +1210,74 @@ entries_json_path = "$.items"
             first.content_html.contains("<img"),
             "content_html 应含封面图"
         );
+    }
+
+    /// 端到端：用官方 fanbox 插件（仓库 `plugins/fanbox/`）订阅创作者主页。
+    /// 需要用户会话凭证（fanbox_session），因此默认忽略，必须显式提供环境变量：
+    /// `GLEAN_FANBOX_URL='https://fanbox.cc/@creator' GLEAN_FANBOX_SESSION='<本地配置的会话>'`
+    /// `cargo test -p glean-core -- --ignored fanbox_end_to_end`
+    ///
+    /// 凭证只通过环境变量注入 Host，绝不写入源码、fixture 或断言。
+    #[test]
+    #[ignore = "需联网 + 用户会话凭证（环境变量 GLEAN_FANBOX_URL / GLEAN_FANBOX_SESSION）"]
+    fn fanbox_end_to_end() {
+        let url = std::env::var("GLEAN_FANBOX_URL")
+            .expect("设置 GLEAN_FANBOX_URL，例如 https://fanbox.cc/@creator");
+        let session = std::env::var("GLEAN_FANBOX_SESSION")
+            .expect("设置 GLEAN_FANBOX_SESSION（本地配置的会话凭证）");
+        let tmp = std::env::temp_dir().join(format!("glean-fanbox-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugin_dir = tmp.join("fanbox");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("manifest.toml"),
+            include_str!("../../../../plugins/fanbox/manifest.toml"),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("adapter.rhai"),
+            include_str!("../../../../plugins/fanbox/adapter.rhai"),
+        )
+        .unwrap();
+        let mgr = PluginManager::new(tmp.clone()).expect("open");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let mut creds = CredentialStore::in_memory();
+        creds.set(
+            "fanbox",
+            "fanbox_session",
+            crate::plugin::Credential {
+                header_name: "Cookie".into(),
+                header_value: session,
+            },
+        );
+        let http = Arc::new(HttpClient::default());
+        let parsed = mgr
+            .run_tier2_for_url(&url, http, Some(Arc::new(creds)), &[])
+            .expect("run_tier2")
+            .expect("matched plugin");
+
+        assert!(
+            parsed.title.starts_with("Fanbox "),
+            "订阅标题应含创作者名（set_feed_title），got: {}",
+            parsed.title
+        );
+        assert!(!parsed.entries.is_empty(), "应至少拿到 1 条投稿");
+        let first = &parsed.entries[0];
+        assert!(
+            first.guid.starts_with("fanbox-"),
+            "guid 应是 fanbox-<id>，got: {}",
+            first.guid
+        );
+        assert!(!first.title.is_empty());
+        assert!(
+            first
+                .url
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("https://fanbox.cc/"),
+            "url 应指向投稿页"
+        );
+        assert!(first.published_at.is_some(), "published_at 不应为空");
     }
 }
