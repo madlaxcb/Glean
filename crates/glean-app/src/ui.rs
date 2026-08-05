@@ -63,6 +63,11 @@ impl SpikeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::fonts::install(&cc.egui_ctx);
         let state = SpikeState::new();
+        crate::write_debug_log(&format!(
+            "[memory-debug-start] exe={:?} pid={}",
+            std::env::current_exe().ok(),
+            std::process::id()
+        ));
         apply_style(&cc.egui_ctx, state.dark, state.config.accent);
         // Give the tray an egui::Context clone so tray event callbacks can
         // directly drive viewport commands and repaints. This is essential
