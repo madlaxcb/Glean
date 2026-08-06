@@ -623,6 +623,9 @@ fn json_path_lookup(json: &Dynamic, path: &str) -> Option<Dynamic> {
 mod tests {
     use super::*;
     use crate::plugin::manifest::PluginMeta;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn empty_manifest(tier: Tier) -> Manifest {
         Manifest {
@@ -639,6 +642,145 @@ mod tests {
             compliance: Default::default(),
             tier1: None,
         }
+    }
+
+    #[test]
+    fn official_fanbox_fixture_collects_complete_entry() {
+        let page_1 = include_str!("fixtures/fanbox_posts_page_1.json");
+        let page_2 = include_str!("fixtures/fanbox_posts_page_2.json");
+        let post_101 = r#"{"body":{"post":{"body":{"text":"正文 & <危险标签>\n第二段","images":[{"originalUrl":"https://img.fanbox.cc/image-101.jpg"},{"url":"https://img.fanbox.cc/image-102.jpg"}]}}}}"#;
+        let post_102 = r#"{"body":{"post":{"body":{"text":"第二篇正文","images":[]}}}}"#;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().expect("fixture request");
+                let mut request = [0_u8; 4096];
+                let size = stream.read(&mut request).expect("fixture read");
+                let request = String::from_utf8_lossy(&request[..size]);
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let (status, body) = if path.starts_with("/post.paginateCreator") {
+                    (
+                        200,
+                        format!(
+                            r#"{{"body":{{"pageUrls":["http://{address}/post.listCreator?page=1","http://{address}/post.listCreator?page=2"]}}}}"#
+                        ),
+                    )
+                } else if path.contains("page=1") {
+                    (200, page_1.to_string())
+                } else if path.contains("page=2") {
+                    (200, page_2.to_string())
+                } else if path.contains("postId=101") {
+                    (200, post_101.to_string())
+                } else if path.contains("postId=102") {
+                    (200, post_102.to_string())
+                } else {
+                    (404, "{}".to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("fixture write");
+            }
+        });
+        let script = include_str!("../../../../plugins/fanbox/adapter.rhai")
+            .replace("https://api.fanbox.cc", &format!("http://{address}"))
+            .replace(
+                "page_url.starts_with(\"https://api.fanbox.cc/\")",
+                &format!("page_url.starts_with(\"http://{address}/\")"),
+            );
+        let mut manifest = empty_manifest(Tier::Script);
+        manifest.plugin.id = "fanbox".into();
+        manifest.capabilities.feed_fetch = vec!["127.0.0.1".into()];
+        manifest.capabilities.credential_use = vec!["fanbox_session".into()];
+        let creds = Arc::new({
+            let mut store = CredentialStore::in_memory();
+            store.set(
+                "fanbox",
+                "fanbox_session",
+                crate::plugin::Credential {
+                    header_name: "Cookie".into(),
+                    header_value: "fixture-session".into(),
+                },
+            );
+            store
+        });
+        let parsed = Runtime::build(manifest, Arc::new(HttpClient::default()), creds)
+            .run_script(&script, "https://fanbox.cc/@fixture", &[])
+            .expect("fanbox fixture run");
+        server.join().expect("fixture server");
+        assert_eq!(parsed.title, "Fanbox Fixture 作者");
+        assert_eq!(parsed.entries.len(), 2);
+        let first = &parsed.entries[0];
+        assert_eq!(first.guid, "fanbox-101");
+        assert_eq!(first.author.as_deref(), Some("Fixture 作者"));
+        assert_eq!(
+            first.thumbnail.as_deref(),
+            Some("https://img.fanbox.cc/cover-101.jpg")
+        );
+        assert!(first.content_html.contains("&amp; &lt;危险标签&gt;"));
+        assert!(first.content_html.contains("image-101.jpg"));
+        assert_eq!(
+            parsed.entries[1].thumbnail.as_deref(),
+            Some("https://img.fanbox.cc/cover-102.jpg")
+        );
+    }
+
+    #[test]
+    fn official_fanbox_fixture_reports_unauthorized_without_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("fixture request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).expect("fixture read");
+                let body = if request.starts_with(b"GET /post.paginateCreator") {
+                    format!(
+                        r#"{{"body":{{"pageUrls":["http://{address}/post.listCreator?page=1"]}}}}"#
+                    )
+                } else {
+                    r#"{"error":{"message":"unauthorized"}}"#.to_string()
+                };
+                let status = if request.starts_with(b"GET /post.paginateCreator") {
+                    "200 OK"
+                } else {
+                    "401 Unauthorized"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("fixture write");
+            }
+        });
+        let script = include_str!("../../../../plugins/fanbox/adapter.rhai")
+            .replace("https://api.fanbox.cc", &format!("http://{address}"))
+            .replace(
+                "page_url.starts_with(\"https://api.fanbox.cc/\")",
+                &format!("page_url.starts_with(\"http://{address}/\")"),
+            );
+        let mut manifest = empty_manifest(Tier::Script);
+        manifest.plugin.id = "fanbox".into();
+        manifest.capabilities.feed_fetch = vec!["127.0.0.1".into()];
+        manifest.capabilities.credential_use = vec!["fanbox_session".into()];
+        let error = Runtime::build(
+            manifest,
+            Arc::new(HttpClient::default()),
+            Arc::new(CredentialStore::in_memory()),
+        )
+        .run_script(&script, "https://fanbox.cc/@fixture", &[])
+        .expect_err("unauthorized fixture should fail");
+        server.join().expect("fixture server");
+        let message = error.to_string();
+        assert!(message.contains("fanbox_session"));
+        assert!(!message.contains("Cookie"));
+        assert!(!message.contains("fixture-session"));
     }
 
     #[test]
