@@ -708,6 +708,42 @@ title = "$.name"
             .contains(&"fanbox_session".to_string()));
         assert!(m.compliance.uses_user_session);
         assert!(m.r#match.iter().any(|r| r.url_pattern == "fanbox.cc/@*"));
+        assert!(m.r#match.iter().any(|r| r.url_pattern == "*.fanbox.cc"));
+    }
+
+    /// fanbox 子域名形式（https://creator.fanbox.cc/）应能命中插件。
+    #[test]
+    fn find_for_url_matches_fanbox_subdomain() {
+        let tmp = std::env::temp_dir().join(format!("glean-fanbox-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugin_dir = tmp.join("fanbox");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("manifest.toml"),
+            include_str!("../../../../plugins/fanbox/manifest.toml"),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("adapter.rhai"),
+            include_str!("../../../../plugins/fanbox/adapter.rhai"),
+        )
+        .unwrap();
+        let mgr = PluginManager::new(tmp.clone()).expect("open");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(
+            mgr.find_for_url("https://mana.fanbox.cc/").is_some(),
+            "裸子域名应命中"
+        );
+        assert!(
+            mgr.find_for_url("https://mana.fanbox.cc/posts/123")
+                .is_some(),
+            "子域名带路径应命中"
+        );
+        assert!(
+            mgr.find_for_url("https://www.fanbox.cc/@mana").is_some(),
+            "@创作者 形式应命中"
+        );
     }
 
     #[test]

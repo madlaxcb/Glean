@@ -845,20 +845,43 @@ mod tests {
                 }
                 return ts;
             }
+            fn is_valid_creator(c) {
+                if len(c) == 0 { return false; }
+                for ch in c {
+                    if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') { return false; }
+                }
+                return true;
+            }
             fn extract_creator(url) {
                 let parts = url.split("/");
-                let seen_host = false;
+                let host = "";
+                let idx = 0;
                 for p in parts {
                     if len(p) == 0 { continue; }
-                    if p == "fanbox.cc" || p == "www.fanbox.cc" { seen_host = true; continue; }
-                    if !seen_host { continue; }
-                    let creator = p;
-                    if creator.starts_with("@") { creator = creator.substring(1, len(creator)); }
-                    if len(creator) == 0 { return ""; }
-                    for c in creator {
-                        if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') { return ""; }
+                    idx += 1;
+                    if idx == 1 { continue; }
+                    host = p;
+                    break;
+                }
+                if len(host) == 0 { return ""; }
+                if host == "fanbox.cc" || host == "www.fanbox.cc" {
+                    let after_host = false;
+                    for p in parts {
+                        if len(p) == 0 { continue; }
+                        if p == host { after_host = true; continue; }
+                        if !after_host { continue; }
+                        let creator = p;
+                        if creator.starts_with("@") { creator = creator.substring(1, len(creator)); }
+                        if is_valid_creator(creator) { return creator; }
+                        return "";
                     }
-                    return creator;
+                    return "";
+                }
+                if host.ends_with(".fanbox.cc") {
+                    let creator = host.substring(0, len(host) - len(".fanbox.cc"));
+                    if creator == "www" { return ""; }
+                    if is_valid_creator(creator) { return creator; }
+                    return "";
                 }
                 return "";
             }
@@ -880,6 +903,9 @@ mod tests {
             let c1 = extract_creator("https://fanbox.cc/@creator");
             let c2 = extract_creator("https://www.fanbox.cc/creator");
             let c3 = extract_creator("https://fanbox.cc/");
+            let c4 = extract_creator("https://mana.fanbox.cc/");
+            let c5 = extract_creator("https://mana.fanbox.cc/posts/123");
+            let c6 = extract_creator("https://www.fanbox.cc/");
             let t = iso_to_unix("2026-07-06T19:56:40+09:00");
             let tz = iso_to_unix("2026-07-06T10:56:40Z");
             let j = parse_json(#{
@@ -890,7 +916,7 @@ mod tests {
             }.to_json());
             let posts = posts_from_response(j);
             let next = next_from_response(j);
-            c1 == "creator" && c2 == "creator" && c3 == "" && t == tz && len(posts) == 2 && next.starts_with("https://api.fanbox.cc/")
+            c1 == "creator" && c2 == "creator" && c3 == "" && c4 == "mana" && c5 == "mana" && c6 == "" && t == tz && len(posts) == 2 && next.starts_with("https://api.fanbox.cc/")
         "#;
         let m = empty_manifest(Tier::Script);
         let http = Arc::new(HttpClient::default());

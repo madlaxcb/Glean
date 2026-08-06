@@ -1521,7 +1521,8 @@ impl eframe::App for SpikeApp {
                                                     RichText::new(format!("凭证槽: {slot}"))
                                                         .size(13.0)
                                                         .color(color),
-                                                );
+                                                )
+                                                .on_hover_text(credential_slot_help(id, slot));
                                                 if has_cred {
                                                     ui.colored_label(
                                                         ui.visuals().hyperlink_color,
@@ -2867,6 +2868,19 @@ fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
 fn hint(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
     ui.label(RichText::new(text).size(12.5).color(color))
+}
+
+/// 凭证槽位悬停提示：说明如何获取该凭证（按插件 + 槽位）。
+fn credential_slot_help(plugin_id: &str, slot: &str) -> &'static str {
+    match (plugin_id, slot) {
+        ("fanbox", "fanbox_session") => {
+            "浏览器登录 fanbox.cc 后，F12 → Network 刷新页面，复制任意请求的 Cookie 头（含 FANBOXSESSID）。Header 名填 Cookie，凭证值填整段 Cookie。"
+        }
+        ("pixiv", "pixiv_refresh_token") => {
+            "在 Pixiv 获取 refresh token（登录后通过开发者工具/获取工具取得）。填到「凭证值」，Header 名留空即可。"
+        }
+        _ => "凭证由 Host 注入，插件脚本不可见。",
+    }
 }
 
 /// 插件层级显示名（安装确认与插件列表共用）。

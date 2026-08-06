@@ -65,20 +65,46 @@ fn html_escape(s) {
     return out.replace("'", "&#39;");
 }
 
+fn is_valid_creator(c) {
+    if len(c) == 0 { return false; }
+    for ch in c {
+        if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') { return false; }
+    }
+    return true;
+}
+
 fn extract_creator(url) {
     let parts = url.split("/");
-    let seen_host = false;
+    let host = "";
+    let idx = 0;
     for p in parts {
         if len(p) == 0 { continue; }
-        if p == "fanbox.cc" || p == "www.fanbox.cc" { seen_host = true; continue; }
-        if !seen_host { continue; }
-        let creator = p;
-        if creator.starts_with("@") { creator = creator.substring(1, len(creator)); }
-        if len(creator) == 0 { return ""; }
-        for c in creator {
-            if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') { return ""; }
+        idx += 1;
+        if idx == 1 { continue; } // 跳过 scheme（https:）
+        host = p;
+        break;
+    }
+    if len(host) == 0 { return ""; }
+    if host == "fanbox.cc" || host == "www.fanbox.cc" {
+        // @创作者 形式：创作者在路径首段。
+        let after_host = false;
+        for p in parts {
+            if len(p) == 0 { continue; }
+            if p == host { after_host = true; continue; }
+            if !after_host { continue; }
+            let creator = p;
+            if creator.starts_with("@") { creator = creator.substring(1, len(creator)); }
+            if is_valid_creator(creator) { return creator; }
+            return "";
         }
-        return creator;
+        return "";
+    }
+    // 子域名形式：https://creator.fanbox.cc/ → 创作者 = 子域名前缀。
+    if host.ends_with(".fanbox.cc") {
+        let creator = host.substring(0, len(host) - len(".fanbox.cc"));
+        if creator == "www" { return ""; }
+        if is_valid_creator(creator) { return creator; }
+        return "";
     }
     return "";
 }

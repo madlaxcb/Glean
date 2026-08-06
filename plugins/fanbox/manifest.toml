@@ -9,6 +9,12 @@ tier = 2
 [[match]]
 url_pattern = "fanbox.cc/@*"
 
+[[match]]
+url_pattern = "*.fanbox.cc"
+
+[[match]]
+url_pattern = "*.fanbox.cc/*"
+
 [capabilities]
 feed_fetch = ["api.fanbox.cc"]
 credential_use = ["fanbox_session"]
