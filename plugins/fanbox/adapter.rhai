@@ -58,11 +58,14 @@ fn iso_to_unix(s) {
 }
 
 fn html_escape(s) {
-    let out = s.replace("&", "&amp;");
-    let out = out.replace("<", "&lt;");
-    let out = out.replace(">", "&gt;");
-    let out = out.replace("\"", "&quot;");
-    return out.replace("'", "&#39;");
+    if type_of(s) != "string" { return ""; }
+    let out = s;
+    out.replace("&", "&amp;");
+    out.replace("<", "&lt;");
+    out.replace(">", "&gt;");
+    out.replace("\"", "&quot;");
+    out.replace("'", "&#39;");
+    return out;
 }
 
 fn is_valid_creator(c) {
@@ -216,7 +219,11 @@ for page_url in page_urls {
 
         // 3) 组装 HTML：正文 + 图片 + 封面兜底。
         let html = "";
-        if len(text) > 0 { html = "<p>" + html_escape(text).replace("\n", "</p><p>") + "</p>"; }
+        if len(text) > 0 {
+            let escaped_text = html_escape(text);
+            escaped_text.replace("\n", "</p><p>");
+            html = "<p>" + escaped_text + "</p>";
+        }
         for img in images {
             html += "<p><img src=\"" + html_escape(img) + "\"></p>";
         }

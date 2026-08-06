@@ -957,6 +957,104 @@ mod tests {
         assert!(ok, "fanbox 辅助函数行为不符合预期");
     }
 
+    /// 复现用户报告的错误：html_escape 收到 UNIT 导致 replace 失败。
+    /// 覆盖：cover.url 缺失、post.info 响应缺失、UNIT 传入等场景。
+    #[test]
+    fn fanbox_html_escape_with_missing_fields() {
+        let script = r#"
+            fn str_safe(v) {
+                let t = type_of(v);
+                if t == "string" { return v; }
+                if t == "i64" || t == "i32" || t == "int" || t == "f64" { return "" + v; }
+                return "";
+            }
+            fn html_escape(s) {
+                if type_of(s) != "string" { return ""; }
+                let out = s;
+                out.replace("&", "&amp;");
+                out.replace("<", "&lt;");
+                out.replace(">", "&gt;");
+                out.replace("\"", "&quot;");
+                out.replace("'", "&#39;");
+                return out;
+            }
+            fn text_from_post(post) {
+                let t = str_safe(json_path(post, "body.text"));
+                if len(t) == 0 { t = str_safe(json_path(post, "excerpt")); }
+                return t;
+            }
+            fn images_from_post(post) {
+                let imgs = json_path(post, "body.images");
+                let out = [];
+                if type_of(imgs) == "array" {
+                    for im in imgs {
+                        let url = str_safe(json_path(im, "originalUrl"));
+                        if len(url) == 0 { url = str_safe(json_path(im, "url")); }
+                        if len(url) > 0 { out.push(url); }
+                    }
+                }
+                return out;
+            }
+
+            // 场景 1：列表条目有 cover.url，post.info 正常。
+            let item1 = #{ "id": "1", "title": "T", "excerpt": "ex", "cover": #{ "type": "image", "url": "https://img.fanbox.cc/a.jpg" }, "user": #{ "name": "U" } };
+            let cover1 = str_safe(json_path(item1, "cover.url"));
+            if len(cover1) == 0 { cover1 = str_safe(json_path(item1, "coverImageUrl")); }
+            let info1 = #{
+                "body": #{
+                    "post": #{
+                        "body": #{
+                            "text": "hello",
+                            "images": [ #{ "originalUrl": "https://img.fanbox.cc/1.jpg" } ]
+                        }
+                    }
+                }
+            };
+            let post1 = json_path(info1, "body.post");
+            if type_of(post1) != "map" { post1 = info1; }
+            let text1 = text_from_post(post1);
+            let images1 = images_from_post(post1);
+            let html1 = "";
+            if len(text1) > 0 {
+                let escaped_text1 = html_escape(text1);
+                escaped_text1.replace("\n", "</p><p>");
+                html1 = "<p>" + escaped_text1 + "</p>";
+            }
+            for img in images1 { html1 += "<p><img src=\"" + html_escape(img) + "\"></p>"; }
+            if len(html1) == 0 && len(cover1) > 0 { html1 = "<p><img src=\"" + html_escape(cover1) + "\"></p>"; }
+
+            // 场景 2：列表条目无 cover，post.info 返回异常（body 非 JSON → UNIT）。
+            let item2 = #{ "id": "2", "title": "T2", "excerpt": "ex2", "user": #{ "name": "U" } };
+            let cover2 = str_safe(json_path(item2, "cover.url"));
+            if len(cover2) == 0 { cover2 = str_safe(json_path(item2, "coverImageUrl")); }
+            let info2 = parse_json("not json at all");
+            let post2 = json_path(info2, "body.post");
+            if type_of(post2) != "map" { post2 = info2; }
+            let text2 = text_from_post(post2);
+            if len(text2) == 0 { text2 = str_safe(json_path(item2, "excerpt")); }
+            let images2 = images_from_post(post2);
+            let html2 = "";
+            if len(text2) > 0 {
+                let escaped_text2 = html_escape(text2);
+                escaped_text2.replace("\n", "</p><p>");
+                html2 = "<p>" + escaped_text2 + "</p>";
+            }
+            for img in images2 { html2 += "<p><img src=\"" + html_escape(img) + "\"></p>"; }
+            if len(html2) == 0 && len(cover2) > 0 { html2 = "<p><img src=\"" + html_escape(cover2) + "\"></p>"; }
+
+            html1.contains("hello") && html1.contains("https://img.fanbox.cc/1.jpg") && html2.contains("ex2")
+        "#;
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let ok: bool = rt
+            .engine
+            .eval(script)
+            .expect("fanbox html_escape flow evals");
+        assert!(ok, "fanbox html_escape 缺失字段场景行为不符合预期");
+    }
+
     #[test]
     fn pixiv_iso_to_unix_accounts_for_timezone_offset() {
         // Pixiv create_date 为 JST(+09:00)，iso_to_unix 必须将其转为 UTC。
