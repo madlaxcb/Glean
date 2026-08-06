@@ -801,7 +801,7 @@ mod tests {
     }
 
     /// Fanbox 脚本的纯辅助函数行为验证（不发起网络请求）。
-    /// 覆盖：创作者 ID 提取、ISO8601 时间转换、响应结构兼容、分页 nextUrl。
+    /// 覆盖：创作者 ID 提取、ISO8601 时间转换、posts/pageUrls/正文/图片提取。
     #[test]
     fn fanbox_helpers_extract_creator_and_pagination() {
         let script = r#"
@@ -886,18 +886,34 @@ mod tests {
                 return "";
             }
             fn posts_from_response(json) {
-                let posts = json_path(json, "body.items");
-                if type_of(posts) != "array" { posts = json_path(json, "body.posts"); }
+                let posts = json_path(json, "body.posts");
+                if type_of(posts) != "array" { posts = json_path(json, "body.items"); }
                 if type_of(posts) != "array" { posts = json_path(json, "posts"); }
                 if type_of(posts) != "array" { posts = json_path(json, "items"); }
                 return posts;
             }
-            fn next_from_response(json) {
-                let next = str_safe(json_path(json, "body.nextUrl"));
-                if len(next) == 0 { next = str_safe(json_path(json, "body.next_url")); }
-                if len(next) == 0 { next = str_safe(json_path(json, "nextUrl")); }
-                if len(next) == 0 { next = str_safe(json_path(json, "next_url")); }
-                return next;
+            fn page_urls_from_response(json) {
+                let urls = json_path(json, "body.pageUrls");
+                if type_of(urls) != "array" { urls = json_path(json, "body"); }
+                if type_of(urls) != "array" { urls = []; }
+                return urls;
+            }
+            fn text_from_post(post) {
+                let t = str_safe(json_path(post, "body.text"));
+                if len(t) == 0 { t = str_safe(json_path(post, "excerpt")); }
+                return t;
+            }
+            fn images_from_post(post) {
+                let imgs = json_path(post, "body.images");
+                let out = [];
+                if type_of(imgs) == "array" {
+                    for im in imgs {
+                        let url = str_safe(json_path(im, "originalUrl"));
+                        if len(url) == 0 { url = str_safe(json_path(im, "url")); }
+                        if len(url) > 0 { out.push(url); }
+                    }
+                }
+                return out;
             }
 
             let c1 = extract_creator("https://fanbox.cc/@creator");
@@ -910,13 +926,28 @@ mod tests {
             let tz = iso_to_unix("2026-07-06T10:56:40Z");
             let j = parse_json(#{
                 "body": #{
-                    "items": [ #{ "id": "1" }, #{ "id": "2" } ],
-                    "nextUrl": "https://api.fanbox.cc/post.listCreator?creatorId=creator&limit=10&offset=10"
+                    "posts": [ #{ "id": "1" }, #{ "id": "2" } ]
                 }
             }.to_json());
             let posts = posts_from_response(j);
-            let next = next_from_response(j);
-            c1 == "creator" && c2 == "creator" && c3 == "" && c4 == "mana" && c5 == "mana" && c6 == "" && t == tz && len(posts) == 2 && next.starts_with("https://api.fanbox.cc/")
+            let pj = parse_json(#{
+                "body": #{
+                    "pageUrls": [ "https://api.fanbox.cc/post.listCreator?creatorId=creator&limit=10&offset=10" ]
+                }
+            }.to_json());
+            let page_urls = page_urls_from_response(pj);
+            let post = #{
+                "body": #{
+                    "text": "hello",
+                    "images": [
+                        #{ "originalUrl": "https://img.fanbox.cc/a.jpg" },
+                        #{ "originalUrl": "https://img.fanbox.cc/b.jpg" }
+                    ]
+                }
+            };
+            let text = text_from_post(post);
+            let images = images_from_post(post);
+            c1 == "creator" && c2 == "creator" && c3 == "" && c4 == "mana" && c5 == "mana" && c6 == "" && t == tz && len(posts) == 2 && len(page_urls) == 1 && page_urls[0].starts_with("https://api.fanbox.cc/") && text == "hello" && len(images) == 2 && images[1] == "https://img.fanbox.cc/b.jpg"
         "#;
         let m = empty_manifest(Tier::Script);
         let http = Arc::new(HttpClient::default());

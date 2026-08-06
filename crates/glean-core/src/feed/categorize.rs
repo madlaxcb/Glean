@@ -77,6 +77,7 @@ const SOCIAL: &[&str] = &[
 /// 图片平台。
 const IMAGE: &[&str] = &[
     "pixiv.net",
+    "fanbox.cc",
     "deviantart.com",
     "flickr.com",
     "500px.com",
@@ -143,6 +144,8 @@ mod tests {
         assert_eq!(cat("https://www.pixiv.net/users/123"), FeedCategory::Image);
         assert_eq!(cat("https://www.flickr.com/photos/x"), FeedCategory::Image);
         assert_eq!(cat("https://unsplash.com/@x"), FeedCategory::Image);
+        assert_eq!(cat("https://www.fanbox.cc/@mana"), FeedCategory::Image);
+        assert_eq!(cat("https://mana.fanbox.cc/"), FeedCategory::Image);
     }
 
     #[test]
