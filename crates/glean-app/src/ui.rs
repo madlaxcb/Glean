@@ -2697,6 +2697,10 @@ impl SpikeApp {
                         } else {
                             Color32::TRANSPARENT
                         })
+                        .stroke(Stroke::new(
+                            1.0_f32,
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ))
                         .inner_margin(Margin::ZERO)
                         .show(ui, |ui| {
                             ui.set_min_width(row_width);
