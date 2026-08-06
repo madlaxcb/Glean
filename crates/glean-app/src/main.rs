@@ -1547,6 +1547,11 @@ impl SpikeState {
     /// Spawn background thumbnail downloads for entries that have a thumbnail
     /// URL but no texture yet. Pixiv thumbnails on i.pximg.net need a Referer
     /// header and the configured proxy; we reuse the service's HTTP client.
+    /// Fanbox images on img.fanbox.cc also enforce hotlink protection.
+    ///
+    /// 下载成功后写盘到缩略图缓存目录；`thumbnail_loaded` 全局保留，
+    /// 条目滚回视口时直接从磁盘加载，避免重复网络下载。
+    /// `thumbnail_failed` 按可见性清理，滚动回来会重试一次。
     pub fn maybe_download_thumbnails(
         &mut self,
         visible_ids: &std::collections::HashSet<EntryId>,
@@ -1555,7 +1560,6 @@ impl SpikeState {
         if self.thumbnail_rx.is_some() {
             return;
         }
-        self.thumbnail_loaded.retain(|id| visible_ids.contains(id));
         self.thumbnail_failed.retain(|id| visible_ids.contains(id));
         let client = self
             .service
@@ -1587,14 +1591,18 @@ impl SpikeState {
         }
         let (tx, rx) = mpsc::channel::<(EntryId, Vec<u8>, u32, u32)>();
         self.thumbnail_rx = Some(rx);
+        let thumb_dir = glean_core::cache_thumbnails_dir();
         for (eid, url) in tasks {
             self.thumbnail_pending.insert(eid);
             let tx = tx.clone();
             let client = client.clone();
+            let thumb_dir = thumb_dir.clone();
             thread::spawn(move || {
                 let mut req = client.get(&url);
                 if url.contains("pximg.net") {
                     req = req.header(reqwest::header::REFERER, "https://www.pixiv.net/");
+                } else if url.contains("fanbox.cc") {
+                    req = req.header(reqwest::header::REFERER, "https://fanbox.cc/");
                 }
                 let sent = match req.send().and_then(|r| r.error_for_status()) {
                     Ok(resp) => match resp.bytes() {
@@ -1603,6 +1611,12 @@ impl SpikeState {
                                 let rgba =
                                     img.thumbnail(max_size as u32, max_size as u32).to_rgba8();
                                 let (w, h) = rgba.dimensions();
+                                // 写盘缓存：滚回视口时直接从磁盘恢复。
+                                if let Some(dir) = &thumb_dir {
+                                    let _ = std::fs::create_dir_all(dir);
+                                    let path = dir.join(format!("{}.png", eid.0));
+                                    let _ = rgba.save(&path);
+                                }
                                 tx.send((eid, rgba.into_raw(), w, h)).is_ok()
                             }
                             Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
@@ -1614,6 +1628,22 @@ impl SpikeState {
                 let _ = sent;
             });
         }
+    }
+
+    /// 从磁盘缩略图缓存读取已下载的缩略图（PNG），返回 RGBA 像素。
+    pub fn load_cached_thumbnail(&self, eid: EntryId) -> Option<(Vec<u8>, u32, u32)> {
+        let dir = glean_core::cache_thumbnails_dir()?;
+        let path = dir.join(format!("{}.png", eid.0));
+        let bytes = std::fs::read(path).ok()?;
+        let img = image::load_from_memory(&bytes).ok()?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        Some((rgba.into_raw(), w, h))
+    }
+
+    /// 该条目的缩略图是否已成功下载（有磁盘缓存）。
+    pub fn is_thumbnail_loaded(&self, eid: EntryId) -> bool {
+        self.thumbnail_loaded.contains(&eid)
     }
 
     /// Poll background thumbnail downloads. Returns all completed results.

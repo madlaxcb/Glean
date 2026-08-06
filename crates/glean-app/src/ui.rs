@@ -182,6 +182,25 @@ impl eframe::App for SpikeApp {
             );
             self.thumbnails.insert(eid, tex);
         }
+        // 从磁盘缓存恢复已下载但纹理被清理的可见缩略图，避免重复网络下载。
+        for id in &self.visible_thumbnail_ids {
+            if self.thumbnails.contains_key(id) {
+                continue;
+            }
+            if !self.state.is_thumbnail_loaded(*id) {
+                continue;
+            }
+            if let Some((rgba, w, h)) = self.state.load_cached_thumbnail(*id) {
+                let size = [w as usize, h as usize];
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                let tex = ctx.load_texture(
+                    format!("thumb_{}", id.0),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.thumbnails.insert(*id, tex);
+            }
+        }
         // Spawn thumbnail downloads for entries lacking a texture.
         self.thumbnails
             .retain(|id, _| self.visible_thumbnail_ids.contains(id));

@@ -87,6 +87,16 @@ pub fn cache_favicons_dir() -> Option<PathBuf> {
     data_base_dir().map(|b| b.join("cache").join("favicons"))
 }
 
+/// Disk cache dir for list thumbnails: `<cache_dir>/thumbnails/`.
+/// Uses custom cache dir if set, otherwise `<data_dir>/cache/thumbnails/`.
+/// 缩略图下载成功后写盘，滚动回视口时直接从磁盘加载，避免重复网络下载。
+pub fn cache_thumbnails_dir() -> Option<PathBuf> {
+    if let Some(custom) = CUSTOM_CACHE_DIR.get() {
+        return Some(custom.join("thumbnails"));
+    }
+    data_base_dir().map(|b| b.join("cache").join("thumbnails"))
+}
+
 /// 插件目录 `<data_dir>/plugins/`。§11.5.8
 /// Returns `None` when no base data dir can be resolved.
 pub fn plugins_dir() -> Option<PathBuf> {
@@ -107,13 +117,14 @@ pub fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
-/// Clear all cache subdirectories (entries, images, favicons).
+/// Clear all cache subdirectories (entries, images, favicons, thumbnails).
 /// Returns the number of files removed.
 pub fn clear_all_cache() -> u64 {
     let dirs = [
         cache_entries_dir(),
         cache_images_dir(),
         cache_favicons_dir(),
+        cache_thumbnails_dir(),
     ];
     let mut removed = 0u64;
     for dir in dirs.iter().flatten() {
