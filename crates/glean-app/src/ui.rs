@@ -2702,13 +2702,35 @@ impl SpikeApp {
                             ui.set_min_width(row_width);
                             ui.set_max_width(row_width);
                             ui.horizontal_top(|ui| {
+                                // 缩略图区域固定为 thumb_size×thumb_size（保证每行行高稳定，
+                                // 与 show_rows 的 row_height 一致，避免底部幽灵空白）。
+                                // 图片本身保持纵横比居中绘制，扁图（如 Fanbox 横幅封面）不会被拉伸。
+                                let (thumb_rect, _) = ui.allocate_exact_size(
+                                    Vec2::splat(thumb_size),
+                                    egui::Sense::hover(),
+                                );
                                 if let Some(tex) = &thumb {
-                                    ui.add(
-                                        egui::Image::new(tex)
-                                            .fit_to_exact_size(Vec2::splat(thumb_size)),
+                                    let tex_size = tex.size_vec2();
+                                    let scale = if tex_size.x > 0.0 && tex_size.y > 0.0 {
+                                        (thumb_size / tex_size.x).min(thumb_size / tex_size.y)
+                                    } else {
+                                        1.0
+                                    };
+                                    let draw_size =
+                                        egui::vec2(tex_size.x * scale, tex_size.y * scale);
+                                    let draw_rect = egui::Rect::from_center_size(
+                                        thumb_rect.center(),
+                                        draw_size,
                                     );
-                                } else {
-                                    ui.allocate_space(Vec2::splat(thumb_size));
+                                    ui.painter().image(
+                                        tex.id(),
+                                        draw_rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
                                 }
                                 let text_width =
                                     (row_width - thumb_size - ui.spacing().item_spacing.x).max(1.0);
