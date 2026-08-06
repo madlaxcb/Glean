@@ -2697,10 +2697,6 @@ impl SpikeApp {
                         } else {
                             Color32::TRANSPARENT
                         })
-                        .stroke(Stroke::new(
-                            1.0_f32,
-                            ui.visuals().widgets.noninteractive.bg_stroke.color,
-                        ))
                         .inner_margin(Margin::ZERO)
                         .show(ui, |ui| {
                             ui.set_min_width(row_width);
@@ -2752,6 +2748,12 @@ impl SpikeApp {
                                 .inner
                             })
                         });
+                    ui.painter().rect_stroke(
+                        row.response.rect,
+                        egui::CornerRadius::ZERO,
+                        Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                        egui::StrokeKind::Inside,
+                    );
                     // Frame 的 response 默认无 click sense，显式加上使整行可点。
                     let resp = row
                         .response
