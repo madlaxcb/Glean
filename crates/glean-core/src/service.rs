@@ -791,9 +791,14 @@ impl GleanService {
             RefreshOutcome::NotModified { feed_id } => {
                 self.store
                     .update_feed_after_fetch(feed_id, None, None, None, None, None)?;
-                if self.is_fantia_feed(feed_id) {
+                let is_fantia = self.is_fantia_feed(feed_id);
+                if is_fantia {
                     self.store.clear_extracted_html_for_feed(feed_id)?;
                 }
+                write_debug_log(&format!(
+                    "[refresh-notmodified] feed_id={} fantia={}",
+                    feed_id.0, is_fantia
+                ));
                 Ok(vec![])
             }
             RefreshOutcome::Updated {
@@ -810,7 +815,8 @@ impl GleanService {
                     last_modified.as_deref(),
                     None,
                 )?;
-                if self.is_fantia_feed(feed_id) {
+                let is_fantia = self.is_fantia_feed(feed_id);
+                if is_fantia {
                     self.store.clear_extracted_html_for_feed(feed_id)?;
                 }
                 // Persist favicon URL if the feed provides one.
@@ -835,16 +841,18 @@ impl GleanService {
                     }
                 }
                 write_debug_log(&format!(
-                    "[refresh-updated] feed_id={} parsed={} new_items={}",
+                    "[refresh-updated] feed_id={} parsed={} new_items={} fantia={}",
                     feed_id.0,
                     parsed.entries.len(),
-                    new_items
+                    new_items,
+                    is_fantia
                 ));
                 Ok(vec![AppEvent::Status {
                     message: format!("「{}」+{} 篇", parsed.title, new_items),
                 }])
             }
             RefreshOutcome::Error { feed_id, error } => {
+                let is_fantia = self.is_fantia_feed(feed_id);
                 self.store.update_feed_after_fetch(
                     feed_id,
                     None,
@@ -853,6 +861,10 @@ impl GleanService {
                     None,
                     Some(&error),
                 )?;
+                write_debug_log(&format!(
+                    "[refresh-error] feed_id={} fantia={} error={}",
+                    feed_id.0, is_fantia, error
+                ));
                 Ok(vec![AppEvent::Error {
                     message: format!("源 {} 失败: {error}", feed_id.0),
                 }])
