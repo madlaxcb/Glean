@@ -84,15 +84,35 @@ fn is_video_url(url) {
 }
 
 // ---- URL 解析 ----
+// 域名优先级：URL 自带域名 > 插件设置中的 domain > 默认 civitai.com
 
 let parts = SOURCE_URL.split("/");
+let url_host = "";
+if len(parts) >= 3 {
+    url_host = parts[2];
+}
+
+// 从插件设置读取域名（用户在设置页面选择）。
+let config_domain = "civitai.com";
+if len(PLUGIN_CONFIG) > 0 {
+    try {
+        let cfg = parse_json(PLUGIN_CONFIG);
+        let d = str_safe(json_path(cfg, "domain"));
+        if len(d) > 0 { config_domain = d; }
+    } catch {}
+}
+
+// URL 中的域名优先（用户订阅 .red 就走 .red），
+// URL 不含 civitai 域名时用设置中的域名。
 let base = "";
+if url_host.contains("civitai") {
+    base = "https://" + url_host;
+} else {
+    base = "https://" + config_domain;
+}
+
 let username = "";
 let section = "";
-
-if len(parts) >= 3 {
-    base = "https://" + parts[2];
-}
 
 let i = 0;
 while i < len(parts) {

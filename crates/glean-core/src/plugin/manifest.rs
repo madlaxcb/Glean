@@ -78,6 +78,9 @@ pub struct Manifest {
     /// Tier 1 配置；仅当 `tier = 1` 时有意义。
     #[serde(default)]
     pub tier1: Option<Tier1Config>,
+    /// 插件自定义设置项（§11.5.8）。
+    #[serde(default)]
+    pub settings: Vec<SettingField>,
 }
 
 /// `[plugin]` 段。
@@ -151,6 +154,30 @@ impl Capabilities {
 pub struct Compliance {
     #[serde(default)]
     pub uses_user_session: bool,
+}
+
+/// `[[settings]]` 段：插件自定义设置项。§11.5.8
+///
+/// 声明后在插件设置页面渲染对应控件，值通过 `PLUGIN_CONFIG` JSON 注入脚本。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingField {
+    /// 设置键名（脚本通过此键读取值）。
+    pub key: String,
+    /// UI 显示标签。
+    pub label: String,
+    /// 控件类型：`select`（下拉选择）或 `text`（文本输入）。
+    #[serde(default = "default_setting_type")]
+    pub r#type: String,
+    /// 默认值。
+    #[serde(default)]
+    pub default: String,
+    /// `select` 类型的可选值列表。
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+fn default_setting_type() -> String {
+    "text".into()
 }
 
 /// `[tier1]` 段：纯配置驱动的适配器规则。

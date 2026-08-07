@@ -12,7 +12,7 @@ use crate::feed::{
 use crate::model::{AiConfig, EntryFilter, EntryId, FeedId};
 use crate::opml;
 use crate::paths;
-use crate::plugin::{CredentialStore, PluginManager};
+use crate::plugin::{CredentialStore, PluginManager, PluginSettings};
 use crate::store::Store;
 use std::collections::HashSet;
 use std::path::Path;
@@ -42,6 +42,8 @@ pub struct GleanService {
     /// §11.5.9 凭证存储。`None` 表示 in-memory 模式。owned 在此负责可变写入 + 落盘；
     /// worker 线程通过 `Clone` 取快照。
     credentials: Option<CredentialStore>,
+    /// §11.5.8 插件自定义设置存储（明文 JSON）。`None` 表示 in-memory 模式。
+    plugin_settings: Option<PluginSettings>,
     /// AI 增强配置（OpenAI 兼容）。`None` 表示未配置；仅同步 fallback 路径
     /// (`AppCommand::EnhanceEntry`) 会用到。异步路径由 UI 直接把 `AppConfig.ai`
     /// 传给 worker 线程，不经过 service。
@@ -66,6 +68,7 @@ impl GleanService {
             plugin_disabled: HashSet::new(),
             plugin_proxy: HashSet::new(),
             credentials: None,
+            plugin_settings: None,
             ai_config: None,
         })
     }
@@ -81,6 +84,8 @@ impl GleanService {
             .and_then(|d| PluginManager::new(d).ok())
             .map(Arc::new);
         let credentials = paths::credentials_path().and_then(|p| CredentialStore::open(p).ok());
+        let plugin_settings =
+            paths::plugin_settings_path().and_then(|p| PluginSettings::open(p).ok());
         let (proxy_url, http, http_proxy) = build_http_clients(proxy_url)?;
         Ok(Self {
             store: Store::open_path(path)?,
@@ -93,6 +98,7 @@ impl GleanService {
             plugin_disabled: HashSet::new(),
             plugin_proxy: HashSet::new(),
             credentials,
+            plugin_settings,
             ai_config: None,
         })
     }
@@ -304,6 +310,32 @@ impl GleanService {
         self.credentials.as_ref()?.get(plugin_id, slot)
     }
 
+    /// 设置插件自定义配置项并落盘。
+    pub fn set_plugin_setting(&mut self, plugin_id: &str, key: &str, value: &str) -> Result<()> {
+        let store = self
+            .plugin_settings
+            .as_mut()
+            .ok_or_else(|| CoreError::Message("插件设置不可用（内存模式）".into()))?;
+        store.set(plugin_id, key, value);
+        store.flush()
+    }
+
+    /// 读取插件自定义配置项。未设置时返回 None。
+    pub fn get_plugin_setting(&self, plugin_id: &str, key: &str) -> Option<&str> {
+        self.plugin_settings.as_ref()?.get(plugin_id, key)
+    }
+
+    /// 读取插件全部自定义配置。
+    pub fn get_all_plugin_settings(
+        &self,
+        plugin_id: &str,
+    ) -> std::collections::HashMap<String, String> {
+        self.plugin_settings
+            .as_ref()
+            .map(|s| s.get_all(plugin_id))
+            .unwrap_or_default()
+    }
+
     /// 设置 AI 配置（来自 `AppConfig.ai`）。UI 启动时若有 AI 配置则调用一次。
     /// 仅同步 fallback 路径 (`AppCommand::EnhanceEntry`) 会用到；异步路径由
     /// UI 直接把 `AppConfig.ai` 传给 worker 线程。
@@ -378,6 +410,7 @@ impl GleanService {
             http: Arc::clone(&self.http),
             http_proxy: self.http_proxy.clone(),
             credentials: self.credentials.clone(),
+            plugin_settings: self.plugin_settings.clone(),
             shallow: false,
         }
     }
@@ -410,8 +443,15 @@ impl GleanService {
         }
         // Tier 2：Rhai 脚本，需要凭证快照（如有）。
         let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        mgr.run_tier2_for_url(url, effective, creds, existing_guids, false)
-            .transpose()
+        mgr.run_tier2_for_url(
+            url,
+            effective,
+            creds,
+            self.plugin_settings.as_ref(),
+            existing_guids,
+            false,
+        )
+        .transpose()
     }
 
     pub fn handle(&mut self, cmd: AppCommand) -> Vec<AppEvent> {
@@ -1382,6 +1422,8 @@ pub struct RefreshCtx {
     /// 带代理的客户端（`use_proxy = true` 的订阅使用）；`None` = 未配置代理，回退直连。
     pub http_proxy: Option<Arc<HttpClient>>,
     pub credentials: Option<CredentialStore>,
+    /// 插件自定义设置（明文 JSON）。
+    pub plugin_settings: Option<PluginSettings>,
     /// 浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
     pub shallow: bool,
 }
@@ -1446,6 +1488,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
                     url,
                     Arc::clone(client),
                     creds,
+                    ctx.plugin_settings.as_ref(),
                     &task.existing_guids,
                     ctx.shallow,
                 )

@@ -41,6 +41,8 @@ pub struct Runtime {
     collector: Option<Arc<Mutex<EntryCollector>>>,
     /// 浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
     shallow: bool,
+    /// 插件自定义设置值（JSON 字符串，通过 PLUGIN_CONFIG 常量注入脚本）。
+    plugin_config: String,
 }
 
 impl Runtime {
@@ -92,12 +94,19 @@ impl Runtime {
             credentials,
             collector,
             shallow: false,
+            plugin_config: String::new(),
         }
     }
 
     /// 启用浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
     pub fn with_shallow(mut self) -> Self {
         self.shallow = true;
+        self
+    }
+
+    /// 注入插件自定义设置值（JSON 字符串）。
+    pub fn with_config(mut self, config: String) -> Self {
+        self.plugin_config = config;
         self
     }
 
@@ -131,6 +140,8 @@ impl Runtime {
         scope.push_constant("EXISTING_GUIDS", guid_set);
         // 浅检模式标志：适配器据此在遇到已有条目时提前停止分页。
         scope.push_constant("SHALLOW_MODE", if self.shallow { "true" } else { "false" });
+        // 插件自定义设置（JSON 字符串，脚本通过 parse_json 读取）。
+        scope.push_constant("PLUGIN_CONFIG", self.plugin_config.clone());
         let _ = self
             .engine
             .eval_with_scope::<rhai::Dynamic>(&mut scope, script)
@@ -672,6 +683,7 @@ mod tests {
             capabilities: Capabilities::default(),
             compliance: Default::default(),
             tier1: None,
+            settings: vec![],
         }
     }
 

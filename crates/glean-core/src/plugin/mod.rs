@@ -22,12 +22,15 @@ pub mod enhancer;
 pub mod manager;
 pub mod manifest;
 pub mod runtime;
+pub mod settings;
 pub mod tier1;
 
 pub use credential::{Credential, CredentialStore};
 pub use enhancer::{Enhancer, EntryPatch, HostApi};
 pub use manager::{InstallPreview, LoadedPlugin, PluginManager};
 pub use manifest::{
-    Capabilities, Compliance, Manifest, MatchRule, PluginMeta, Tier, Tier1Config, Tier1FieldMap,
+    Capabilities, Compliance, Manifest, MatchRule, PluginMeta, SettingField, Tier, Tier1Config,
+    Tier1FieldMap,
 };
 pub use runtime::Runtime;
+pub use settings::PluginSettings;

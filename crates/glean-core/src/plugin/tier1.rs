@@ -303,6 +303,7 @@ mod tests {
                     content_html_template: None,
                 },
             }),
+            settings: vec![],
         }
     }
 
@@ -445,6 +446,7 @@ mod tests {
                     content_html_template: None,
                 },
             }),
+            settings: vec![],
         };
         let http = HttpClient::default();
         let feed = run(&manifest, &http, "https://github.com/rust-lang/rust")

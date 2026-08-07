@@ -280,6 +280,8 @@ pub struct SpikeState {
     /// 插件凭证槽编辑缓冲：key = `plugin_id:slot`，value = (header_name, header_value)。
     /// 跨帧存活，避免输入被每帧重绘覆盖。
     pub plugin_cred_edits: std::collections::HashMap<String, (String, String)>,
+    /// 插件设置编辑缓冲区（key → value）。
+    pub plugin_setting_edits: std::collections::HashMap<String, String>,
     /// M6 插件安装权限确认：preview 已生成、尚未落盘，等用户确认后 commit。
     /// `None` = 无挂起安装。
     pub plugin_install_pending: Option<PendingPluginInstall>,
@@ -420,6 +422,7 @@ impl SpikeState {
             feed_sort_mode: false,
             opml_import_overwrite: false,
             plugin_cred_edits: std::collections::HashMap::new(),
+            plugin_setting_edits: std::collections::HashMap::new(),
             plugin_install_pending: None,
         };
         // Local loopback server for cached images (full-res Pixiv originals etc.).

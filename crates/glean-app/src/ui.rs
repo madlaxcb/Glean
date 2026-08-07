@@ -1623,6 +1623,74 @@ impl eframe::App for SpikeApp {
                                             }
                                         }
                                     }
+                                    // 插件自定义设置（§11.5.8）。
+                                    if !p.manifest.settings.is_empty() {
+                                        let skey = format!("settings:{id}");
+                                        for field in &p.manifest.settings {
+                                            let current = self
+                                                .state
+                                                .service
+                                                .get_plugin_setting(id, &field.key)
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| field.default.clone());
+                                            let edit_key = format!("{skey}:{}", field.key);
+                                            ui.horizontal(|ui| {
+                                                let color = ui.visuals().strong_text_color().gamma_multiply(0.85);
+                                                ui.label(
+                                                    RichText::new(&field.label)
+                                                        .size(13.0)
+                                                        .color(color),
+                                                );
+                                                // 初始化编辑缓冲区。
+                                                let entry = self
+                                                    .state
+                                                    .plugin_setting_edits
+                                                    .entry(edit_key.clone())
+                                                    .or_insert_with(|| current.clone());
+                                                if field.r#type == "select" && !field.options.is_empty() {
+                                                    let options = &field.options;
+                                                    egui::ComboBox::from_id_salt(&edit_key)
+                                                        .selected_text(entry.as_str())
+                                                        .show_ui(ui, |ui| {
+                                                            for opt in options {
+                                                                ui.selectable_value(entry, opt.clone(), opt);
+                                                            }
+                                                        });
+                                                } else {
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(entry)
+                                                            .id(egui::Id::new(&edit_key))
+                                                            .desired_width(180.0),
+                                                    );
+                                                }
+                                                if ui.button("保存").clicked() {
+                                                    let val = self
+                                                        .state
+                                                        .plugin_setting_edits
+                                                        .get(&edit_key)
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    match self
+                                                        .state
+                                                        .service
+                                                        .set_plugin_setting(id, &field.key, &val)
+                                                    {
+                                                        Ok(()) => {
+                                                            self.state.status = format!(
+                                                                "设置已保存: {}:{}",
+                                                                id, field.key
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            self.state.status = format!(
+                                                                "设置保存失败: {e}"
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
                                     ui.horizontal(|ui| {
                                         let mut enabled = !disabled;
                                         if ui.checkbox(&mut enabled, "启用").changed() {

@@ -109,6 +109,12 @@ pub fn credentials_path() -> Option<PathBuf> {
     data_base_dir().map(|b| b.join("credentials.json"))
 }
 
+/// 插件设置路径 `<data_dir>/plugin_settings.json`。
+/// Returns `None` when no base data dir can be resolved.
+pub fn plugin_settings_path() -> Option<PathBuf> {
+    data_base_dir().map(|b| b.join("plugin_settings.json"))
+}
+
 /// `config.json` next to the DB file.
 pub fn default_config_path() -> PathBuf {
     default_db_path()

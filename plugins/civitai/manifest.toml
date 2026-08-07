@@ -18,3 +18,10 @@ credential_use = ["civitai_api_key"]
 
 [compliance]
 uses_user_session = false
+
+[[settings]]
+key = "domain"
+label = "默认域名"
+type = "select"
+default = "civitai.com"
+options = ["civitai.com", "civitai.red"]

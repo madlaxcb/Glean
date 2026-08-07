@@ -27,6 +27,7 @@ use crate::feed::HttpClient;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Capabilities, Manifest, MatchRule};
 use crate::plugin::runtime::Runtime;
+use crate::plugin::settings::PluginSettings;
 use crate::plugin::tier1;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -382,6 +383,7 @@ impl PluginManager {
         url: &str,
         http: Arc<HttpClient>,
         credentials: Option<Arc<CredentialStore>>,
+        plugin_settings: Option<&PluginSettings>,
         existing_guids: &[String],
         shallow: bool,
     ) -> Result<Option<ParsedFeed>> {
@@ -404,6 +406,31 @@ impl PluginManager {
         let mut rt = Runtime::build(plugin.manifest.clone(), http, creds);
         if shallow {
             rt = rt.with_shallow();
+        }
+        // 注入插件自定义设置：从 store 取用户已设值，未设的用 manifest 默认值。
+        let config_json = if let Some(settings) = plugin_settings {
+            let pid = &plugin.manifest.plugin.id;
+            let mut map = serde_json::Map::new();
+            for field in &plugin.manifest.settings {
+                let val = settings
+                    .get(pid, &field.key)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| field.default.clone());
+                map.insert(field.key.clone(), serde_json::Value::String(val));
+            }
+            serde_json::Value::Object(map).to_string()
+        } else {
+            // 无 store 时用 manifest 默认值。
+            let map: serde_json::Map<String, serde_json::Value> = plugin
+                .manifest
+                .settings
+                .iter()
+                .map(|f| (f.key.clone(), serde_json::Value::String(f.default.clone())))
+                .collect();
+            serde_json::Value::Object(map).to_string()
+        };
+        if !config_json.is_empty() && config_json != "{}" {
+            rt = rt.with_config(config_json);
         }
         let parsed = rt.run_script(script, url, existing_guids)?;
         Ok(Some(parsed))
@@ -529,6 +556,7 @@ mod tests {
             capabilities: Capabilities::default(),
             compliance: Compliance::default(),
             tier1: None,
+            settings: vec![],
         }
     }
 
@@ -1219,7 +1247,7 @@ entries_json_path = "$.items"
         let http = Arc::new(HttpClient::default());
         let url = format!("https://space.bilibili.com/{mid}");
         let parsed = mgr
-            .run_tier2_for_url(&url, http, None, &[], false)
+            .run_tier2_for_url(&url, http, None, None, &[], false)
             .expect("run_tier2")
             .expect("matched plugin");
 
@@ -1293,7 +1321,7 @@ entries_json_path = "$.items"
         );
         let http = Arc::new(HttpClient::default());
         let parsed = mgr
-            .run_tier2_for_url(&url, http, Some(Arc::new(creds)), &[], false)
+            .run_tier2_for_url(&url, http, Some(Arc::new(creds)), None, &[], false)
             .expect("run_tier2")
             .expect("matched plugin");
 
