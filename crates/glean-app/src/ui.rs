@@ -57,6 +57,8 @@ pub struct SpikeApp {
     /// 上一帧的 Win32 异步按键状态（用于 WebView2 焦点时快捷键边沿检测）。
     #[cfg(windows)]
     prev_async_keys: u16,
+    /// 启动时「每天首次自动检查更新」是否已执行（本会话内只执行一次）。
+    auto_check_done: bool,
 }
 
 impl SpikeApp {
@@ -83,6 +85,7 @@ impl SpikeApp {
             visible_thumbnail_ids: std::collections::HashSet::new(),
             geometry_timer: 0.0,
             applied_style,
+            auto_check_done: false,
             #[cfg(windows)]
             prev_async_keys: 0,
         }
@@ -1778,6 +1781,22 @@ impl eframe::App for SpikeApp {
             self.primed = true;
         }
 
+        // 每天首次启动自动检查更新（本会话只执行一次）。
+        if self.primed && !self.auto_check_done {
+            self.auto_check_done = true;
+            let today = today_string();
+            if self.state.config.last_check_update_date != today {
+                self.state.config.last_check_update_date = today.clone();
+                self.state.concurrent_feeds_input =
+                    self.state.config.max_concurrent_feeds.to_string();
+                self.state.sync_config();
+                self.state.save_config();
+                if !self.state.feeds.is_empty() {
+                    self.state.check_all_feeds_async();
+                }
+            }
+        }
+
         // Repaint: faster during refresh/split for responsiveness.
         if self.state.splitting || self.state.refresh_rx.is_some() {
             ctx.request_repaint();
@@ -2938,6 +2957,28 @@ fn apply_style(ctx: &egui::Context, dark: bool, accent: AccentColor) {
 fn hint(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     let color = ui.visuals().strong_text_color().gamma_multiply(0.72);
     ui.label(RichText::new(text).size(12.5).color(color))
+}
+
+/// 返回今天的日期字符串（YYYY-MM-DD，UTC）。
+/// 用于「每天首次启动只检查一次更新」的日期判断。
+fn today_string() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = secs / 86400;
+    // days_from_civil 反算（Howard Hinnant）: days → y/m/d
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
 /// 凭证槽位悬停提示：说明如何获取该凭证（按插件 + 槽位）。

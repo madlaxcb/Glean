@@ -323,6 +323,10 @@ pub struct AppConfig {
     /// 不同域名可并行（如 pixiv 和 fanbox 同时刷新）。默认 1 = 完全串行。
     #[serde(default = "default_max_concurrent_feeds")]
     pub max_concurrent_feeds: u8,
+    /// 上次自动检查更新的日期（YYYY-MM-DD），用于「每天首次启动只检查一次」。
+    /// 空串 = 从未检查过。
+    #[serde(default)]
+    pub last_check_update_date: String,
 }
 
 /// 缩略图大小范围限制（px）。
@@ -393,6 +397,7 @@ impl Default for AppConfig {
             thumbnail_size: THUMBNAIL_SIZE_DEFAULT,
             cache_dir: None,
             max_concurrent_feeds: default_max_concurrent_feeds(),
+            last_check_update_date: String::new(),
         }
     }
 }
