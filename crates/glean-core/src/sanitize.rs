@@ -28,6 +28,7 @@ pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
             ]);
         }
         ImagePolicy::Allow => {
+            builder.add_tags(["video", "source"]);
             builder.rm_tags(["audio", "iframe", "object", "embed", "form"]);
             builder.add_tag_attributes(
                 "video",

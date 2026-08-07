@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn extracts_only_fantia_post_contents() {
         let html = r#"
-            <div id="the-post">
+            <div id="main">
                 <div class="the-post"><p>帖子正文</p></div>
                 <div class="post-contents">
                     <p>主体文字</p>
