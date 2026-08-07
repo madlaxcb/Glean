@@ -319,6 +319,10 @@ pub struct AppConfig {
     /// 设置后，entries/images/favicons 缓存子目录均在此目录下创建。
     #[serde(default)]
     pub cache_dir: Option<String>,
+    /// 并发刷新的不同域名/源数量上限（1-8）。相同域名的源始终串行（避免触发限流），
+    /// 不同域名可并行（如 pixiv 和 fanbox 同时刷新）。默认 1 = 完全串行。
+    #[serde(default = "default_max_concurrent_feeds")]
+    pub max_concurrent_feeds: u8,
 }
 
 /// 缩略图大小范围限制（px）。
@@ -354,6 +358,10 @@ fn default_thumbnail_size() -> f32 {
     THUMBNAIL_SIZE_DEFAULT
 }
 
+fn default_max_concurrent_feeds() -> u8 {
+    1
+}
+
 fn default_translate_lang() -> String {
     "中文".to_string()
 }
@@ -384,6 +392,7 @@ impl Default for AppConfig {
             popup_geometry: std::collections::HashMap::new(),
             thumbnail_size: THUMBNAIL_SIZE_DEFAULT,
             cache_dir: None,
+            max_concurrent_feeds: default_max_concurrent_feeds(),
         }
     }
 }

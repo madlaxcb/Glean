@@ -25,6 +25,16 @@ pub struct RefreshTask {
     pub existing_guids: Vec<String>,
 }
 
+impl RefreshTask {
+    /// 提取 URL 的 host 部分，用于按域名分组并发（相同 host 串行，不同 host 可并行）。
+    pub fn host(&self) -> String {
+        url::Url::parse(&self.url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_default()
+    }
+}
+
 /// Outcome of refreshing one feed (sent back from background thread).
 #[derive(Debug)]
 pub enum RefreshOutcome {

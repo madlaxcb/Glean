@@ -1158,6 +1158,26 @@ impl eframe::App for SpikeApp {
                                 }
                             });
                             hint(ui, "每源可在右键菜单单独设置刷新间隔");
+                            ui.horizontal(|ui| {
+                                ui.label("并发源数量（1-8，不同域名可并行）");
+                                let te = egui::TextEdit::singleline(&mut self.state.concurrent_feeds_input)
+                                    .id(egui::Id::new("concurrent_feeds_input"))
+                                    .desired_width(40.0);
+                                let resp = ui.add(te);
+                                if resp.clicked() || resp.gained_focus() {
+                                    self.state.reader.reclaim_shell_focus();
+                                    resp.request_focus();
+                                }
+                                if resp.lost_focus() {
+                                    if let Ok(v) = self.state.concurrent_feeds_input.parse::<u8>() {
+                                        self.state.set_max_concurrent_feeds(v);
+                                    } else {
+                                        self.state.concurrent_feeds_input =
+                                            self.state.config.max_concurrent_feeds.to_string();
+                                    }
+                                }
+                            });
+                            hint(ui, "相同域名（如多个 pixiv 源）始终串行以防限流；不同域名（如 pixiv 和 fanbox）可同时刷新");
 
                             settings_heading(ui, "全文与缓存");
                             ui.horizontal(|ui| {

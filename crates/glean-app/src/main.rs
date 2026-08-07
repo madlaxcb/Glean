@@ -101,14 +101,9 @@ fn single_instance_lock() -> Option<std::fs::File> {
     Some(file)
 }
 
-/// Max concurrent HTTP fetches during a refresh batch (dev plan §7.1: 4–8).
-/// 调低到 1：Pixiv 等插件 API 对并发限流严格（HTTP 429），2 并发仍会
-/// 触发限流；串行刷新（一次只抓一个订阅）最稳妥，对 RSS 抓取影响很小。
-const REFRESH_WORKERS: usize = 1;
-
-/// Spawn bounded worker threads that fetch+parse in parallel, sending each
-/// `RefreshOutcome` to the shared channel. Sender clones drop per-worker;
-/// the receiver sees disconnect only after all workers finish.
+/// 按 URL host 分组刷新任务：相同 host 的任务始终串行（避免触发同一 API 的
+/// 限流，如 pixiv 的 HTTP 429），不同 host 的任务可并行（如 pixiv 和 fanbox
+/// 同时刷新）。全局并发上限由 `max_concurrent` 控制。
 ///
 /// `cancel` 是「停止刷新」标志：worker 在每处理一个订阅前检查，置位则
 /// 提前退出（不再发送结果）。正在进行的单个 HTTP 请求不受影响（有超时）。
@@ -117,16 +112,27 @@ fn spawn_refresh_workers(
     ctx: RefreshCtx,
     tx: mpsc::Sender<RefreshOutcome>,
     cancel: Arc<AtomicBool>,
+    max_concurrent: usize,
 ) {
     let n = tasks.len();
     if n == 0 {
         return;
     }
-    let workers = REFRESH_WORKERS.min(n);
-    // Round-robin chunk so each worker gets a balanced slice.
-    let mut chunks: Vec<Vec<RefreshTask>> = vec![Vec::new(); workers];
-    for (i, task) in tasks.into_iter().enumerate() {
-        chunks[i % workers].push(task);
+    // 按 host 分组：相同 host 进同一队列（串行执行），不同 host 可并行。
+    let mut groups: std::collections::HashMap<String, Vec<RefreshTask>> =
+        std::collections::HashMap::new();
+    for task in tasks {
+        let host = task.host();
+        groups.entry(host).or_default().push(task);
+    }
+    let chunks: Vec<Vec<RefreshTask>> = groups.into_values().collect();
+    let max = max_concurrent.max(1);
+    // 并发上限小于分组数时，把多余的分组合并到已有 worker（仍按分组内顺序串行）。
+    let mut chunks: Vec<Vec<RefreshTask>> = chunks;
+    while chunks.len() > max {
+        let extra = chunks.pop().unwrap();
+        let idx = chunks.len() % max;
+        chunks[idx].extend(extra);
     }
     for chunk in chunks {
         if chunk.is_empty() {
@@ -206,6 +212,8 @@ pub struct SpikeState {
     /// Persistent buffer for the refresh-interval TextEdit in settings.
     /// Must outlive the frame so user typing isn't overwritten each frame.
     pub refresh_interval_input: String,
+    /// Buffer for concurrent feeds input in settings.
+    pub concurrent_feeds_input: String,
     /// Buffer for font size input in settings.
     pub font_size_input: String,
     /// Buffer for line width input in settings.
@@ -361,6 +369,7 @@ impl SpikeState {
             errors: Vec::new(),
             new_folder_input: String::new(),
             refresh_interval_input: config.refresh_interval_secs.to_string(),
+            concurrent_feeds_input: config.max_concurrent_feeds.to_string(),
             font_size_input: config.font_size_px.to_string(),
             line_width_input: config.line_width_rem.to_string(),
             cache_dir_input: config.cache_dir.clone().unwrap_or_default(),
@@ -529,10 +538,16 @@ impl SpikeState {
             self.refresh_pending = tasks.len();
             self.refresh_cancel = Arc::new(AtomicBool::new(false));
             self.pending_open_entry = None;
-            let workers = REFRESH_WORKERS.min(tasks.len());
+            let workers = self.effective_workers();
             self.status = format!("自动刷新中… {} 个源（{} 并发）", tasks.len(), workers);
             let ctx = self.service.refresh_ctx();
-            spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
+            spawn_refresh_workers(
+                tasks,
+                ctx,
+                tx,
+                self.refresh_cancel.clone(),
+                self.config.max_concurrent_feeds as usize,
+            );
         }
     }
 
@@ -877,7 +892,7 @@ impl SpikeState {
         self.refresh_pending = tasks.len();
         self.refresh_cancel = Arc::new(AtomicBool::new(false));
         self.pending_open_entry = None;
-        let workers = REFRESH_WORKERS.min(tasks.len());
+        let workers = self.effective_workers();
         let mode = if shallow { "检查更新" } else { "刷新" };
         self.status = if feed_id.is_some() {
             format!("正在{}订阅…", mode)
@@ -886,7 +901,18 @@ impl SpikeState {
         };
         let mut ctx = self.service.refresh_ctx();
         ctx.shallow = shallow;
-        spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
+        spawn_refresh_workers(
+            tasks,
+            ctx,
+            tx,
+            self.refresh_cancel.clone(),
+            self.config.max_concurrent_feeds as usize,
+        );
+    }
+
+    /// 返回当前配置的并发 worker 数（1-8）。
+    fn effective_workers(&self) -> usize {
+        self.config.max_concurrent_feeds.clamp(1, 8) as usize
     }
 
     /// 停止正在进行的刷新：置取消标志（worker 在下一订阅前退出），丢弃
@@ -942,7 +968,13 @@ impl SpikeState {
         self.refresh_pending = tasks.len();
         self.refresh_cancel = Arc::new(AtomicBool::new(false));
         let ctx = self.service.refresh_ctx();
-        spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
+        spawn_refresh_workers(
+            tasks,
+            ctx,
+            tx,
+            self.refresh_cancel.clone(),
+            self.config.max_concurrent_feeds as usize,
+        );
         self.pending_open_entry = Some(entry_id);
         self.status = format!("正在刷新该贴…（{n} 个源）");
     }
@@ -1890,6 +1922,15 @@ impl SpikeState {
         } else {
             "自动刷新已关闭".into()
         };
+    }
+
+    pub fn set_max_concurrent_feeds(&mut self, n: u8) {
+        let clamped = n.clamp(1, 8);
+        self.config.max_concurrent_feeds = clamped;
+        self.concurrent_feeds_input = clamped.to_string();
+        self.sync_config();
+        self.save_config();
+        self.status = format!("并发源数量: {}", clamped);
     }
 }
 
