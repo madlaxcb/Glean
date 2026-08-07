@@ -2987,6 +2987,9 @@ fn credential_slot_help(plugin_id: &str, slot: &str) -> &'static str {
         ("fanbox", "fanbox_session") => {
             "浏览器登录 fanbox.cc 后，F12 → Network 刷新页面，复制任意请求的 Cookie 头（含 FANBOXSESSID）。Header 名填 Cookie，凭证值填整段 Cookie。"
         }
+        ("fantia", "fantia_session") => {
+            "浏览器登录 fantia.jp 后，F12 → Network 刷新页面，复制任意请求的 Cookie 头（含 _session_id）。Header 名填 Cookie，凭证值填整段 Cookie。"
+        }
         ("pixiv", "pixiv_refresh_token") => {
             "在 Pixiv 获取 refresh token（登录后通过开发者工具/获取工具取得）。填到「凭证值」，Header 名留空即可。"
         }
