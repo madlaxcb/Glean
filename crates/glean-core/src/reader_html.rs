@@ -57,7 +57,9 @@ pub fn reader_document(
     // Allow on a per-article "显示图片" click, which swaps CSP too.
     let img_src = match image_policy {
         ImagePolicy::Block | ImagePolicy::LoadOnDemand => "img-src data: glean-img:;",
-        ImagePolicy::Allow => "img-src data: glean-img: https: http:;",
+        ImagePolicy::Allow => {
+            "img-src data: glean-img: https: http:; media-src data: glean-img: https: http:;"
+        }
     };
 
     format!(
@@ -84,6 +86,7 @@ pub fn reader_document(
   p, li {{ font-size: inherit; }}
   a {{ color: var(--link); }}
   img {{ max-width: 100%; height: auto; }}
+  video {{ max-width: 100%; height: auto; }}
   .pixiv-page {{ color: var(--muted); font-size: 0.82rem; margin: 1rem 0 0.25rem; }}
   .pixiv-meta {{ color: var(--muted); font-size: 0.82rem; margin: 0 0 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; }}
   .pixiv-meta-date {{ color: var(--muted); font-weight: 600; white-space: nowrap; }}

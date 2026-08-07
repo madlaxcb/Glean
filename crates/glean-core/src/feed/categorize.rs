@@ -78,7 +78,6 @@ const SOCIAL: &[&str] = &[
 const IMAGE: &[&str] = &[
     "pixiv.net",
     "fanbox.cc",
-    "fantia.jp",
     "deviantart.com",
     "flickr.com",
     "500px.com",
@@ -147,6 +146,12 @@ mod tests {
         assert_eq!(cat("https://unsplash.com/@x"), FeedCategory::Image);
         assert_eq!(cat("https://www.fanbox.cc/@mana"), FeedCategory::Image);
         assert_eq!(cat("https://mana.fanbox.cc/"), FeedCategory::Image);
+    }
+
+    #[test]
+    fn fantia_is_article() {
+        assert_eq!(cat("https://fantia.jp/fanclubs/509981"), FeedCategory::Article);
+        assert_eq!(cat("https://fantia.jp/posts/3986720"), FeedCategory::Article);
     }
 
     #[test]

@@ -231,6 +231,7 @@ while has_more && page < max_pages && count < max_posts {
         let thumb = "";
         let published = 0;
         let images = [];
+        let content_html = "";
 
         // 请求间延迟：降低触发 IP 封锁的概率。
         sleep_ms(1000 + (parse_int_safe(id) % 1000));
@@ -275,19 +276,31 @@ while has_more && page < max_pages && count < max_posts {
             } catch {}
         }
 
+        sleep_ms(1000 + (parse_int_safe(id) % 1000));
+        let page_resp = http_get(post_url, hdrs, "fantia_session");
+        if page_resp["status"] == 429 {
+            throw("fantia post.page HTTP 429：IP 被临时封锁，请等待较长时间（30分钟以上）后再试。");
+        }
+        if page_resp["status"] == 200 {
+            content_html = extract_fantia_post_contents(str_safe(page_resp["body"]));
+        }
+
         if len(title) == 0 { title = "Fantia 投稿 " + id; }
 
-        // 3) 组装 HTML。
-        let content_html = "";
-        if len(text) > 0 {
+        // 3) 页面主体提取失败时，使用 API 字段组装最小正文。
+        if len(content_html) == 0 && len(text) > 0 {
             let escaped_text = html_escape(text);
             escaped_text.replace("\n", "</p><p>");
             content_html = "<p>" + escaped_text + "</p>";
         }
-        for img in images {
-            content_html += "<p><img src=\"" + html_escape(img) + "\"></p>";
+        if len(content_html) == 0 {
+            for img in images {
+                content_html += "<p><img src=\"" + html_escape(img) + "\"></p>";
+            }
+            if len(content_html) == 0 && len(thumb) > 0 {
+                content_html = "<p><img src=\"" + html_escape(thumb) + "\"></p>";
+            }
         }
-        if len(content_html) == 0 && len(thumb) > 0 { content_html = "<p><img src=\"" + html_escape(thumb) + "\"></p>"; }
 
         set_field("guid", guid);
         set_field("title", title);

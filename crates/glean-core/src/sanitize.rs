@@ -28,7 +28,12 @@ pub fn sanitize_html_with_policy(html: &str, policy: ImagePolicy) -> String {
             ]);
         }
         ImagePolicy::Allow => {
-            builder.rm_tags(["video", "audio", "iframe", "object", "embed", "form"]);
+            builder.rm_tags(["audio", "iframe", "object", "embed", "form"]);
+            builder.add_tag_attributes(
+                "video",
+                ["controls", "preload", "playsinline", "poster", "src"],
+            );
+            builder.add_tag_attributes("source", ["src", "type"]);
             // Keep remote images and the local image-cache custom protocol.
             builder.add_url_schemes(&["data", "glean-img"]);
         }
@@ -77,6 +82,18 @@ mod tests {
         let input = r#"<img src="data:image/jpeg;base64,aGVsbG8=">"#;
         let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
         assert!(output.contains(r#"src="data:image/jpeg;base64,aGVsbG8=""#));
+    }
+
+    #[test]
+    fn allow_policy_keeps_non_autoplay_video() {
+        let input = r#"<video controls preload="metadata" playsinline autoplay><source src="https://example.com/a.mp4" type="video/mp4"></video>"#;
+        let output = sanitize_html_with_policy(input, ImagePolicy::Allow);
+        assert!(output.contains("<video"));
+        assert!(output.contains("controls"));
+        assert!(output.contains("preload=\"metadata\""));
+        assert!(output.contains("playsinline"));
+        assert!(output.contains("a.mp4"));
+        assert!(!output.contains("autoplay"));
     }
 
     /// AI 增强区块（摘要/翻译结果）必须能穿透消毒管线：class 保留、文本保留。

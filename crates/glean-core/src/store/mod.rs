@@ -922,6 +922,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn clear_extracted_html_for_feed(&mut self, feed_id: FeedId) -> Result<()> {
+        self.conn.execute(
+            "UPDATE entries SET content_extracted = '' WHERE feed_id = ?1",
+            params![feed_id.0],
+        )?;
+        Ok(())
+    }
+
     /// 写入/覆盖一条 AI 增强结果（摘要或翻译）。重新触发同一 kind 会覆盖。
     pub fn set_enhancement(&mut self, id: EntryId, kind: &str, content: &str) -> Result<()> {
         self.conn.execute(

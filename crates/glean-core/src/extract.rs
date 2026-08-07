@@ -96,6 +96,20 @@ pub fn extract_content(raw_html: &str) -> String {
     String::new()
 }
 
+pub fn extract_fantia_post_contents(raw_html: &str) -> String {
+    let document = Html::parse_document(raw_html);
+    let mut output = String::new();
+    for selector_text in ["#main .the-post.border-bottom", "#main .post-contents"] {
+        let Some(selector) = Selector::parse(selector_text).ok() else {
+            continue;
+        };
+        if let Some(element) = document.select(&selector).next() {
+            output.push_str(&element.inner_html());
+        }
+    }
+    output
+}
+
 /// Decide whether extraction is worthwhile: only if the feed content is short
 /// (summary-only) and the URL points to http(s).
 pub fn should_extract(feed_content_html: &str, entry_url: Option<&str>) -> bool {
@@ -272,5 +286,50 @@ mod tests {
     #[test]
     fn empty_html_returns_empty() {
         assert_eq!(extract_content(""), "");
+    }
+
+    #[test]
+    fn extracts_only_fantia_post_contents() {
+        let html = r#"
+            <div id="the-post">
+                <div class="the-post"><p>帖子正文</p></div>
+                <div class="post-contents">
+                    <p>主体文字</p>
+                    <img src="https://cdn.example/image.jpg">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.example/video.mp4" type="video/mp4">
+                    </video>
+                </div>
+                <div class="comments"><p>评论不应出现</p></div>
+            </div>
+        "#;
+        let out = extract_fantia_post_contents(html);
+        assert!(out.contains("主体文字"));
+        assert!(out.contains("帖子正文"));
+        assert!(out.contains("image.jpg"));
+        assert!(out.contains("video.mp4"));
+        assert!(!out.contains("评论不应出现"));
+    }
+
+    #[test]
+    fn fantia_extraction_does_not_fallback_to_comments() {
+        let html = r#"<div id="the-post"><div class="comments">只有评论</div></div>"#;
+        assert_eq!(extract_fantia_post_contents(html), "");
+    }
+
+    #[test]
+    fn fantia_extraction_keeps_the_post_and_contents() {
+        let html = r#"
+            <div id="main">
+                <div class="the-post border-bottom"><p>帖子主体</p></div>
+                <div class="post-contents"><p>媒体说明</p><video src="https://cdn.example/a.mp4"></video></div>
+                <div class="comments"><p>评论</p></div>
+            </div>
+        "#;
+        let out = extract_fantia_post_contents(html);
+        assert!(out.contains("帖子主体"));
+        assert!(out.contains("媒体说明"));
+        assert!(out.contains("a.mp4"));
+        assert!(!out.contains("评论"));
     }
 }

@@ -15,6 +15,7 @@
 use crate::error::{CoreError, Result};
 use crate::feed::parse::{ParsedEntry, ParsedFeed};
 use crate::feed::HttpClient;
+use crate::extract::extract_fantia_post_contents;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Capabilities, Manifest, Tier};
 use rhai::{Dynamic, Engine, ImmutableString, Map};
@@ -202,6 +203,7 @@ fn register_pure_fns(engine: &mut Engine) {
     engine.register_fn("json_path", |json: Dynamic, path: String| -> Dynamic {
         json_path_lookup(&json, &path).unwrap_or(Dynamic::UNIT)
     });
+    engine.register_fn("extract_fantia_post_contents", extract_fantia_post_contents);
     // 通用 MD5 hex 摘要（非 Bilibili 专属，所有脚本可用）。
     engine.register_fn("md5", |s: String| -> String {
         use md5::{Digest, Md5};

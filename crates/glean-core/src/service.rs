@@ -677,6 +677,11 @@ impl GleanService {
             AppCommand::ExtractEntry { id } => {
                 // Manual trigger. UI normally uses prepare_extract_task +
                 // apply_extract_outcome for async; this is a sync fallback.
+                if self.entry_in_plugin_feed(id) {
+                    return Err(CoreError::Message(
+                        "插件订阅由适配器提供正文，不使用通用全文抽取".into(),
+                    ));
+                }
                 let detail = self.store.get_entry(id)?;
                 let url = match detail.summary.url.as_deref() {
                     Some(u) => u.to_string(),
@@ -786,6 +791,9 @@ impl GleanService {
             RefreshOutcome::NotModified { feed_id } => {
                 self.store
                     .update_feed_after_fetch(feed_id, None, None, None, None, None)?;
+                if self.is_fantia_feed(feed_id) {
+                    self.store.clear_extracted_html_for_feed(feed_id)?;
+                }
                 Ok(vec![])
             }
             RefreshOutcome::Updated {
@@ -802,6 +810,9 @@ impl GleanService {
                     last_modified.as_deref(),
                     None,
                 )?;
+                if self.is_fantia_feed(feed_id) {
+                    self.store.clear_extracted_html_for_feed(feed_id)?;
+                }
                 // Persist favicon URL if the feed provides one.
                 if parsed.favicon_url.is_some() {
                     self.store
@@ -855,6 +866,9 @@ impl GleanService {
     /// URL, is already long enough (full feed content), or already extracted.
     pub fn prepare_extract_task(&self, id: EntryId) -> Result<Option<ExtractTask>> {
         let entry = self.store.get_entry(id)?;
+        if self.entry_in_plugin_feed(id) {
+            return Ok(None);
+        }
         // Skip if already extracted (don't re-extract on every open).
         if !entry.extracted_html.is_empty() {
             return Ok(None);
@@ -870,6 +884,16 @@ impl GleanService {
             })),
             None => Ok(None),
         }
+    }
+
+    fn is_fantia_feed(&self, feed_id: FeedId) -> bool {
+        self.store
+            .list_feeds()
+            .ok()
+            .and_then(|feeds| feeds.into_iter().find(|feed| feed.id == feed_id))
+            .and_then(|feed| url::Url::parse(&feed.feed_url).ok())
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .is_some_and(|host| host == "fantia.jp" || host.ends_with(".fantia.jp"))
     }
 
     /// Apply one background extraction result; returns events to emit.
