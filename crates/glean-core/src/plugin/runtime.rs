@@ -854,6 +854,55 @@ mod tests {
     }
 
     #[test]
+    fn official_fanbox_fixture_handles_malformed_json_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("fixture request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).expect("fixture read");
+                let body = if request.starts_with(b"GET /post.paginateCreator") {
+                    format!(
+                        r#"{{"body":{{"pageUrls":["http://{address}/post.listCreator?page=1"]}}}}"#
+                    )
+                } else {
+                    // CDN/代理返回 HTML 错误页，但状态码仍是 200
+                    "<html><body>502 Bad Gateway</body></html>".to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("fixture write");
+            }
+        });
+        let script = include_str!("../../../../plugins/fanbox/adapter.rhai")
+            .replace("https://api.fanbox.cc", &format!("http://{address}"))
+            .replace(
+                "page_url.starts_with(\"https://api.fanbox.cc/\")",
+                &format!("page_url.starts_with(\"http://{address}/\")"),
+            );
+        let mut manifest = empty_manifest(Tier::Script);
+        manifest.plugin.id = "fanbox".into();
+        manifest.capabilities.feed_fetch = vec!["127.0.0.1".into()];
+        manifest.capabilities.credential_use = vec!["fanbox_session".into()];
+        let error = Runtime::build(
+            manifest,
+            Arc::new(HttpClient::default()),
+            Arc::new(CredentialStore::in_memory()),
+        )
+        .run_script(&script, "https://fanbox.cc/@fixture", &[])
+        .expect_err("malformed JSON should fail");
+        server.join().expect("fixture server");
+        let message = error.to_string();
+        assert!(!message.contains("Cookie"));
+        assert!(!message.contains("fixture-session"));
+    }
+
+    #[test]
     fn build_engine_with_no_caps_registers_only_pure_fns() {
         let m = empty_manifest(Tier::Script);
         let http = Arc::new(HttpClient::default());
