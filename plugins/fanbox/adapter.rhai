@@ -158,6 +158,8 @@ let max_pages = 20;
 let max_posts = 40;
 let count = 0;
 let author = "";
+let shallow = SHALLOW_MODE == "true";
+let existing = EXISTING_GUIDS;
 
 // 1) 获取分页 URL 列表（post.paginateCreator）。
 let page_urls = [];
@@ -190,10 +192,17 @@ for page_url in page_urls {
     if type_of(posts) != "array" { throw("fanbox posts 响应结构异常：未找到 posts 数组"); }
     if len(posts) == 0 { break; }
     let page_count = 0;
+    let page_has_overlap = false;
     for item in posts {
         if count >= max_posts { break; }
         let id = str_safe(json_path(item, "id"));
         if len(id) == 0 { continue; }
+        // 已有条目：跳过 post.info 请求（省 1 次 HTTP），标记本页有重叠。
+        let guid = "fanbox-" + id;
+        if len(existing) > 0 && existing.contains("," + guid + ",") {
+            page_has_overlap = true;
+            continue;
+        }
         let title = str_safe(json_path(item, "title"));
         if len(title) == 0 { title = "Fanbox 投稿 " + id; }
         let item_author = str_safe(json_path(item, "user.name"));
@@ -243,6 +252,10 @@ for page_url in page_urls {
         count += 1;
         page_count += 1;
         sleep_ms(150);
+    }
+    if shallow && page_has_overlap {
+        log("info", "fanbox 第 " + page + " 页命中已有内容，浅检停止分页");
+        break;
     }
     log("info", "fanbox creator=" + creator + " 第 " + page + " 页 +" + page_count + " 条，累计 " + count);
     sleep_ms(300);

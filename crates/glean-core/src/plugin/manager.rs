@@ -383,6 +383,7 @@ impl PluginManager {
         http: Arc<HttpClient>,
         credentials: Option<Arc<CredentialStore>>,
         existing_guids: &[String],
+        shallow: bool,
     ) -> Result<Option<ParsedFeed>> {
         let Some(plugin) = self.find_for_url(url) else {
             return Ok(None);
@@ -400,7 +401,10 @@ impl PluginManager {
             )));
         };
         let creds = credentials.unwrap_or_else(|| Arc::new(CredentialStore::in_memory()));
-        let rt = Runtime::build(plugin.manifest.clone(), http, creds);
+        let mut rt = Runtime::build(plugin.manifest.clone(), http, creds);
+        if shallow {
+            rt = rt.with_shallow();
+        }
         let parsed = rt.run_script(script, url, existing_guids)?;
         Ok(Some(parsed))
     }
@@ -1215,7 +1219,7 @@ entries_json_path = "$.items"
         let http = Arc::new(HttpClient::default());
         let url = format!("https://space.bilibili.com/{mid}");
         let parsed = mgr
-            .run_tier2_for_url(&url, http, None, &[])
+            .run_tier2_for_url(&url, http, None, &[], false)
             .expect("run_tier2")
             .expect("matched plugin");
 
@@ -1289,7 +1293,7 @@ entries_json_path = "$.items"
         );
         let http = Arc::new(HttpClient::default());
         let parsed = mgr
-            .run_tier2_for_url(&url, http, Some(Arc::new(creds)), &[])
+            .run_tier2_for_url(&url, http, Some(Arc::new(creds)), &[], false)
             .expect("run_tier2")
             .expect("matched plugin");
 

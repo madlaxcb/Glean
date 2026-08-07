@@ -38,6 +38,8 @@ pub struct Runtime {
     pub credentials: Arc<CredentialStore>,
     /// Tier 2 脚本的 entry 收集器；非 Script 插件为 `None`。
     collector: Option<Arc<Mutex<EntryCollector>>>,
+    /// 浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
+    shallow: bool,
 }
 
 impl Runtime {
@@ -88,7 +90,14 @@ impl Runtime {
             http,
             credentials,
             collector,
+            shallow: false,
         }
+    }
+
+    /// 启用浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
+    pub fn with_shallow(mut self) -> Self {
+        self.shallow = true;
+        self
     }
 
     /// 执行 Tier 2 适配器脚本，返回脚本通过 `set_field`/`add_entry` 收集到的
@@ -119,6 +128,8 @@ impl Runtime {
             format!(",{},", existing_guids.join(","))
         };
         scope.push_constant("EXISTING_GUIDS", guid_set);
+        // 浅检模式标志：适配器据此在遇到已有条目时提前停止分页。
+        scope.push_constant("SHALLOW_MODE", if self.shallow { "true" } else { "false" });
         let _ = self
             .engine
             .eval_with_scope::<rhai::Dynamic>(&mut scope, script)

@@ -378,6 +378,7 @@ impl GleanService {
             http: Arc::clone(&self.http),
             http_proxy: self.http_proxy.clone(),
             credentials: self.credentials.clone(),
+            shallow: false,
         }
     }
 
@@ -409,7 +410,7 @@ impl GleanService {
         }
         // Tier 2：Rhai 脚本，需要凭证快照（如有）。
         let creds = self.credentials.as_ref().map(|c| Arc::new(c.clone()));
-        mgr.run_tier2_for_url(url, effective, creds, existing_guids)
+        mgr.run_tier2_for_url(url, effective, creds, existing_guids, false)
             .transpose()
     }
 
@@ -1345,6 +1346,8 @@ pub struct RefreshCtx {
     /// 带代理的客户端（`use_proxy = true` 的订阅使用）；`None` = 未配置代理，回退直连。
     pub http_proxy: Option<Arc<HttpClient>>,
     pub credentials: Option<CredentialStore>,
+    /// 浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
+    pub shallow: bool,
 }
 
 /// 按订阅的 use_proxy 选择 HTTP 客户端；未配置代理时回退直连。
@@ -1403,7 +1406,13 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
             }
             let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
             if let Some(res) = mgr
-                .run_tier2_for_url(url, Arc::clone(client), creds, &task.existing_guids)
+                .run_tier2_for_url(
+                    url,
+                    Arc::clone(client),
+                    creds,
+                    &task.existing_guids,
+                    ctx.shallow,
+                )
                 .transpose()
             {
                 write_debug_log(&format!(

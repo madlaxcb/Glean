@@ -186,6 +186,8 @@ let url = "https://app-api.pixiv.net/v1/user/illusts?user_id=" + mid;
 let count = 0;
 let author = "";
 let page_i = 0;
+let shallow = SHALLOW_MODE == "true";
+let existing = EXISTING_GUIDS;
 while page_i < max_pages {
     page_i += 1;
     log("info", "pixiv user/illusts 第 " + page_i + " 页");
@@ -239,15 +241,21 @@ while page_i < max_pages {
     }
 
     let page_count = 0;
+    let page_has_overlap = false;
     for item in illusts {
         let id = json_path(item, "id");
         if type_of(id) != "i64" { continue; }
+        let guid = "pixiv-" + str_safe(id);
+        // 已有条目：跳过处理，标记本页有重叠。
+        if len(existing) > 0 && existing.contains("," + guid + ",") {
+            page_has_overlap = true;
+            continue;
+        }
         let title = str_safe(json_path(item, "title"));
         if len(title) == 0 { title = "Untitled"; }
         let caption = str_safe(json_path(item, "caption"));
         let item_author = str_safe(json_path(item, "user.name"));
         let published = iso_to_unix(str_safe(json_path(item, "create_date")));
-        let guid = "pixiv-" + str_safe(id);
 
         // 作品类型标识：R-18 / R-18G / 多图页数
         let type_tag = "";
@@ -332,6 +340,10 @@ while page_i < max_pages {
         add_entry();
         page_count += 1;
         count += 1;
+    }
+    if shallow && page_has_overlap {
+        log("info", "pixiv 第 " + page_i + " 页命中已有内容，浅检停止分页");
+        break;
     }
     log("info", "pixiv 第 " + page_i + " 页 +" + page_count + " 条，累计 " + count);
     let next = str_safe(json_path(json, "next_url"));

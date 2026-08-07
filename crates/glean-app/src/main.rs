@@ -844,14 +844,19 @@ impl SpikeState {
 
     /// Launch background refresh: HTTP on threads, DB writes on UI thread.
     pub fn refresh_all_feeds_async(&mut self) {
-        self.refresh_feeds_async(None);
+        self.refresh_feeds_async(None, false);
     }
 
     pub fn refresh_feed_async(&mut self, feed_id: glean_core::FeedId) {
-        self.refresh_feeds_async(Some(feed_id));
+        self.refresh_feeds_async(Some(feed_id), false);
     }
 
-    fn refresh_feeds_async(&mut self, feed_id: Option<glean_core::FeedId>) {
+    /// 浅检模式：只拉最新 1-2 页，遇到已有条目即停止。快速发现新内容。
+    pub fn check_all_feeds_async(&mut self) {
+        self.refresh_feeds_async(None, true);
+    }
+
+    fn refresh_feeds_async(&mut self, feed_id: Option<glean_core::FeedId>, shallow: bool) {
         if self.refresh_rx.is_some() {
             self.status = "刷新进行中…".into();
             return;
@@ -873,12 +878,14 @@ impl SpikeState {
         self.refresh_cancel = Arc::new(AtomicBool::new(false));
         self.pending_open_entry = None;
         let workers = REFRESH_WORKERS.min(tasks.len());
+        let mode = if shallow { "检查更新" } else { "刷新" };
         self.status = if feed_id.is_some() {
-            "正在刷新订阅…".into()
+            format!("正在{}订阅…", mode)
         } else {
-            format!("刷新中… {} 个源（{} 并发）", tasks.len(), workers)
+            format!("{}中… {} 个源（{} 并发）", mode, tasks.len(), workers)
         };
-        let ctx = self.service.refresh_ctx();
+        let mut ctx = self.service.refresh_ctx();
+        ctx.shallow = shallow;
         spawn_refresh_workers(tasks, ctx, tx, self.refresh_cancel.clone());
     }
 

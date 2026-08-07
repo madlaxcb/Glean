@@ -261,6 +261,9 @@ impl eframe::App for SpikeApp {
                     if ui.button("刷新全部").clicked() {
                         self.state.refresh_all_feeds_async();
                     }
+                    if ui.button("检查更新").clicked() {
+                        self.state.check_all_feeds_async();
+                    }
                     ui.add_enabled_ui(self.state.refresh_rx.is_some(), |ui| {
                         if ui.button("停止刷新").clicked() {
                             self.state.stop_refresh();
