@@ -1,0 +1,20 @@
+[plugin]
+id = "civitai"
+name = "Civitai 创作者订阅"
+version = "0.1.0"
+author = "Glean"
+min_glean_version = "0.5.0"
+tier = 2
+
+[[match]]
+url_pattern = "civitai.com/user/*"
+
+[[match]]
+url_pattern = "civitai.red/user/*"
+
+[capabilities]
+feed_fetch = ["civitai.com", "civitai.red"]
+credential_use = ["civitai_api_key"]
+
+[compliance]
+uses_user_session = false

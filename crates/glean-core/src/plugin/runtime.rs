@@ -203,6 +203,10 @@ fn register_pure_fns(engine: &mut Engine) {
     engine.register_fn("json_path", |json: Dynamic, path: String| -> Dynamic {
         json_path_lookup(&json, &path).unwrap_or(Dynamic::UNIT)
     });
+    // 通用 URL 编码（tRPC GET 请求的 input 参数需要）。
+    engine.register_fn("url_encode", |s: String| -> String {
+        urlencoding::encode(&s).into_owned()
+    });
     engine.register_fn("extract_fantia_post_contents", extract_fantia_post_contents);
     engine.register_fn("extract_fantia_post_ids", |html: String| -> rhai::Array {
         extract_fantia_post_ids(&html)

@@ -161,6 +161,18 @@ mod tests {
     }
 
     #[test]
+    fn civitai_is_article() {
+        assert_eq!(
+            cat("https://civitai.com/user/madlaxcb"),
+            FeedCategory::Article
+        );
+        assert_eq!(
+            cat("https://civitai.red/user/madlaxcb/videos"),
+            FeedCategory::Article
+        );
+    }
+
+    #[test]
     fn music_platforms() {
         assert_eq!(cat("https://soundcloud.com/artist"), FeedCategory::Music);
         assert_eq!(cat("https://music.163.com/#/artist"), FeedCategory::Music);

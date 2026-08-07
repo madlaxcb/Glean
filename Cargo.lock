@@ -1894,6 +1894,7 @@ dependencies = [
  "thiserror 2.0.19",
  "toml",
  "url",
+ "urlencoding",
  "windows 0.58.0",
  "zip",
 ]
