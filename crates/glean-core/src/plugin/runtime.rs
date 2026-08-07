@@ -204,7 +204,15 @@ fn register_pure_fns(engine: &mut Engine) {
         json_path_lookup(&json, &path).unwrap_or(Dynamic::UNIT)
     });
     engine.register_fn("extract_fantia_post_contents", extract_fantia_post_contents);
-    engine.register_fn("extract_fantia_post_ids", extract_fantia_post_ids);
+    engine.register_fn(
+        "extract_fantia_post_ids",
+        |html: String| -> rhai::Array {
+            extract_fantia_post_ids(&html)
+                .into_iter()
+                .map(rhai::Dynamic::from)
+                .collect()
+        },
+    );
     // 通用 MD5 hex 摘要（非 Bilibili 专属，所有脚本可用）。
     engine.register_fn("md5", |s: String| -> String {
         use md5::{Digest, Md5};
