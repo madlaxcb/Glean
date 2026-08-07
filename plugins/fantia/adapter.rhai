@@ -1,10 +1,18 @@
 // Fantia 创作者投稿适配器（Tier 2 脚本）。
 //
-// API：
-//   GET https://fantia.jp/api/v1/fanclubs/{id}/posts?page={N}
-//     → { posts: [{ id, title, published_at, fanclub: { ... } }] }
-//   GET https://fantia.jp/api/v1/posts/{post_id}
-//     → { post: { title, comment, body: { sections: [...] }, thumb: { ... } } }
+// 数据获取方式：
+//   1. 帖子列表（HTML 页面）：
+//      GET https://fantia.jp/fanclubs/{id}/posts?page={N}
+//      → HTML，通过正则提取 /posts/{id} 链接获取帖子 ID 列表
+//
+//   2. 帖子详情（JSON API）：
+//      GET https://fantia.jp/api/v1/posts/{post_id}
+//      → { post: { title, comment, posted_at, fanclub: { creator_name },
+//                  thumb: { main, thumb }, post_contents: [...] } }
+//
+//   3. 创作者信息（JSON API）：
+//      GET https://fantia.jp/api/v1/fanclubs/{id}
+//      → { fanclub: { creator_name, name, user: { name } } }
 //
 // 限流策略：
 //   Fantia 的 429 是按 IP 封锁，冷却期极长（半小时以上），继续请求只会
@@ -28,19 +36,6 @@ fn parse_int_safe(v) {
     let s = str_safe(v);
     if len(s) == 0 { return 0; }
     try { return s.parse_int(); } catch { return 0; }
-}
-
-fn extract_api_error(resp) {
-    let body = str_safe(resp["body"]);
-    if len(body) == 0 { return ""; }
-    let clip = if len(body) > 180 { body.substring(0, 180) } else { body };
-    try {
-        let j = parse_json(body);
-        let msg = str_safe(json_path(j, "error.message"));
-        if len(msg) == 0 { msg = str_safe(json_path(j, "message")); }
-        if len(msg) == 0 { msg = clip; }
-        return msg;
-    } catch { return clip; }
 }
 
 fn iso_to_unix(s) {
@@ -85,30 +80,23 @@ fn html_escape(s) {
 
 /// 从 SOURCE_URL 提取 fanclub ID。
 /// 支持 https://fantia.jp/fanclubs/{id} 和 https://fantia.jp/@{name} 两种格式。
-/// 对于 @name 格式，name 本身可能就是 fanclub 的 slug，直接用于 API。
 fn extract_fanclub_id(url) {
-    // 匹配 fantia.jp/fanclubs/{id}
     if url.contains("/fanclubs/") {
         let parts = url.split("/fanclubs/");
         if len(parts) >= 2 {
-            let id_part = parts[1];
-            // 取纯数字部分（去掉 query string 等）
             let id = "";
-            for ch in id_part {
+            for ch in parts[1] {
                 if ch >= '0' && ch <= '9' { id += ch; } else { break; }
             }
             if len(id) > 0 { return id; }
         }
     }
-    // 匹配 fantia.jp/@{name}
     if url.contains("/@") {
         let parts = url.split("/@");
         if len(parts) >= 2 {
-            let name = parts[1];
-            // 去掉 query string
             let clean = "";
-            for ch in name {
-                if ch == '?' || ch == '#' { break; }
+            for ch in parts[1] {
+                if ch == '?' || ch == '#' || ch == '/' { break; }
                 clean += ch;
             }
             if len(clean) > 0 { return clean; }
@@ -117,25 +105,64 @@ fn extract_fanclub_id(url) {
     return "";
 }
 
+/// 从 HTML 页面中提取帖子 ID 列表。
+/// Fantia 的帖子列表页是 HTML，帖子链接格式为 /posts/{数字ID}。
+fn extract_post_ids_from_html(html) {
+    let ids = [];
+    let search = "/posts/";
+    let slen = len(search);
+    let hlen = len(html);
+    let seen = #{};
+    let pos = 0;
+    while pos + slen <= hlen {
+        let seg = html.substring(pos, pos + slen);
+        if seg == search {
+            // 提取紧随其后的数字 ID。
+            let start = pos + slen;
+            let id = "";
+            let i = start;
+            while i < hlen {
+                let sub = html.substring(i, i + 1);
+                if sub >= "0" && sub <= "9" {
+                    id += sub;
+                } else {
+                    break;
+                }
+                i += 1;
+            }
+            pos = start;
+            if len(id) > 0 && !(id in seen) {
+                seen[id] = true;
+                ids.push(id);
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    return ids;
+}
+
 /// 检查 HTTP 响应状态。429 时立即终止（Fantia 的 IP 封锁不可重试）。
 /// 返回 true = 正常继续，false = 应终止（已 throw）。
 fn check_status(resp, context) {
     let status = resp["status"];
     if status == 200 { return true; }
-    let detail = extract_api_error(resp);
     if status == 429 {
-        // Fantia 的 429 是 IP 级封锁，冷却期极长（半小时以上）。
-        // 不重试、不继续，直接终止并告知用户。
         throw("fantia " + context + " HTTP 429：IP 被临时封锁，请等待较长时间（30分钟以上）后再试。"
             + " Fantia 的限流按 IP 计算，继续请求只会延长封锁时间。");
     }
     if status == 401 || status == 403 {
         throw("fantia " + context + " HTTP " + status + "：fantia_session 无效、未设置或没有访问权限");
     }
+    if status == 404 {
+        throw("fantia " + context + " HTTP 404：fanclub 不存在或 ID 错误");
+    }
     if status == 0 {
         throw("fantia " + context + " 请求失败：请先配置 fantia_session，并检查代理或网络；" + str_safe(resp["error"]));
     }
-    throw("fantia " + context + " HTTP " + status + " " + detail);
+    let body = str_safe(resp["body"]);
+    let clip = if len(body) > 180 { body.substring(0, 180) } else { body };
+    throw("fantia " + context + " HTTP " + status + " " + clip);
 }
 
 let fanclub_id = extract_fanclub_id(SOURCE_URL);
@@ -147,11 +174,10 @@ let hdrs = #{
     "User-Agent": UA,
     "Origin": "https://fantia.jp",
     "Referer": "https://fantia.jp/",
-    "Accept": "application/json",
+    "Accept": "text/html,application/xhtml+xml,application/json",
 };
 
 // Fantia 限流比 pixiv/fanbox 严格得多：连续 4-5 个用户即触发 IP 封锁。
-// 限制单次刷新的最大分页数和条目数。
 let max_pages = 5;
 let max_posts = 20;
 let count = 0;
@@ -159,104 +185,117 @@ let author = "";
 let shallow = SHALLOW_MODE == "true";
 let existing = EXISTING_GUIDS;
 
+// 获取创作者名称（1 次 API 请求）。
+let fc_resp = http_get("https://fantia.jp/api/v1/fanclubs/" + fanclub_id, hdrs, "fantia_session");
+if fc_resp["status"] == 200 {
+    try {
+        let fc_json = parse_json(fc_resp["body"]);
+        let fc = json_path(fc_json, "fanclub");
+        if type_of(fc) == "map" {
+            author = str_safe(json_path(fc, "creator_name"));
+            if len(author) == 0 { author = str_safe(json_path(fc, "name")); }
+            if len(author) == 0 { author = str_safe(json_path(fc, "user.name")); }
+        }
+    } catch {}
+}
+
 let page = 0;
 let has_more = true;
 
 while has_more && page < max_pages && count < max_posts {
     page += 1;
-    // 1) 拉取投稿列表页。
-    let list_url = "https://fantia.jp/api/v1/fanclubs/" + fanclub_id + "/posts?page=" + page;
+    // 1) 拉取帖子列表页（HTML）。
+    let list_url = "https://fantia.jp/fanclubs/" + fanclub_id + "/posts?page=" + page;
     let resp = http_get(list_url, hdrs, "fantia_session");
-    // 429 → check_status 内部直接 throw 终止（不继续后续页面）。
     if !check_status(resp, "posts page=" + page) { break; }
 
-    let json = parse_json(resp["body"]);
-    let posts = json_path(json, "posts");
-    if type_of(posts) != "array" { posts = json_path(json, "data.posts"); }
-    if type_of(posts) != "array" { throw("fantia posts 响应结构异常：未找到 posts 数组"); }
-    if len(posts) == 0 { break; }
+    let html = str_safe(resp["body"]);
+    let post_ids = extract_post_ids_from_html(html);
+    if len(post_ids) == 0 { break; }
 
     let page_count = 0;
     let page_has_overlap = false;
-    for item in posts {
+    for id in post_ids {
         if count >= max_posts { break; }
-        let id = str_safe(json_path(item, "id"));
-        if len(id) == 0 { continue; }
-
         let guid = "fantia-" + id;
-        // 浅检模式：已有条目 → 跳过 post 详情请求（省 HTTP），标记重叠。
+        // 浅检模式：已有条目 → 跳过详情请求（省 HTTP），标记重叠。
         if len(existing) > 0 && existing.contains("," + guid + ",") {
             page_has_overlap = true;
             continue;
         }
 
-        let title = str_safe(json_path(item, "title"));
-        if len(title) == 0 { title = "Fantia 投稿 " + id; }
-
-        let item_author = str_safe(json_path(item, "fanclub.creator_name"));
-        if len(item_author) == 0 { item_author = str_safe(json_path(item, "fanclub.user.name")); }
-        if len(author) == 0 && len(item_author) > 0 { author = item_author; }
-
-        let published = iso_to_unix(str_safe(json_path(item, "published_at")));
-        if published == 0 { published = iso_to_unix(str_safe(json_path(item, "posted_at"))); }
-
+        // 2) 拉取帖子详情（JSON API）。
         let post_url = "https://fantia.jp/posts/" + id;
-        let thumb = str_safe(json_path(item, "thumb.main"));
-        if len(thumb) == 0 { thumb = str_safe(json_path(item, "thumb.thumb")); }
-
-        // 2) 拉取完整正文（post detail）。列表接口不含正文。
+        let title = "";
         let text = "";
+        let thumb = "";
+        let published = 0;
         let images = [];
+
         // 请求间延迟：降低触发 IP 封锁的概率。
-        sleep_ms(1000 + (id.len() % 1000));
+        sleep_ms(1000 + (parse_int_safe(id) % 1000));
         let info_resp = http_get("https://fantia.jp/api/v1/posts/" + id, hdrs, "fantia_session");
-        // 429 → 立即终止（不继续后续投稿）。
+        // 429 → 立即终止。
         if info_resp["status"] == 429 {
-            throw("fantia post.info HTTP 429：IP 被临时封锁，请等待较长时间（30分钟以上）后再试。");
+            throw("fantia post.detail HTTP 429：IP 被临时封锁，请等待较长时间（30分钟以上）后再试。");
         }
         if info_resp["status"] == 200 {
-            let info_json = parse_json(info_resp["body"]);
-            let post = json_path(info_json, "post");
-            if type_of(post) != "map" { post = info_json; }
-            text = str_safe(json_path(post, "comment"));
-            if len(text) == 0 { text = str_safe(json_path(post, "body.text")); }
+            try {
+                let info_json = parse_json(info_resp["body"]);
+                let post = json_path(info_json, "post");
+                if type_of(post) != "map" { post = info_json; }
+                title = str_safe(json_path(post, "title"));
+                text = str_safe(json_path(post, "comment"));
+                published = iso_to_unix(str_safe(json_path(post, "posted_at")));
 
-            // 提取图片：body.sections 中的 photo 类型。
-            let sections = json_path(post, "body.sections");
-            if type_of(sections) == "array" {
-                for sec in sections {
-                    let sec_type = str_safe(json_path(sec, "post_content_type"));
-                    if sec_type == "photo" || sec_type == "image" {
-                        let img_url = str_safe(json_path(sec, "post_content_photos.0.url"));
-                        if len(img_url) == 0 { img_url = str_safe(json_path(sec, "url")); }
-                        if len(img_url) > 0 { images.push(img_url); }
+                let p_author = str_safe(json_path(post, "fanclub.creator_name"));
+                if len(p_author) == 0 { p_author = str_safe(json_path(post, "fanclub.user.name")); }
+                if len(author) == 0 && len(p_author) > 0 { author = p_author; }
+
+                thumb = str_safe(json_path(post, "thumb.main"));
+                if len(thumb) == 0 { thumb = str_safe(json_path(post, "thumb.thumb")); }
+
+                // 提取图片：post_contents 数组中的 photo_gallery 类型。
+                let contents = json_path(post, "post_contents");
+                if type_of(contents) == "array" {
+                    for content in contents {
+                        let cat = str_safe(json_path(content, "category"));
+                        if cat == "photo_gallery" {
+                            let photos = json_path(content, "post_content_photos");
+                            if type_of(photos) == "array" {
+                                for photo in photos {
+                                    let url = str_safe(json_path(photo, "url.original"));
+                                    if len(url) == 0 { url = str_safe(json_path(photo, "url.main")); }
+                                    if len(url) > 0 { images.push(url); }
+                                }
+                            }
+                        }
                     }
                 }
-            }
+            } catch {}
         }
 
-        if len(text) == 0 { text = str_safe(json_path(item, "excerpt")); }
-        if len(text) == 0 { text = str_safe(json_path(item, "comment")); }
+        if len(title) == 0 { title = "Fantia 投稿 " + id; }
 
         // 3) 组装 HTML。
-        let html = "";
+        let content_html = "";
         if len(text) > 0 {
             let escaped_text = html_escape(text);
             escaped_text.replace("\n", "</p><p>");
-            html = "<p>" + escaped_text + "</p>";
+            content_html = "<p>" + escaped_text + "</p>";
         }
         for img in images {
-            html += "<p><img src=\"" + html_escape(img) + "\"></p>";
+            content_html += "<p><img src=\"" + html_escape(img) + "\"></p>";
         }
-        if len(html) == 0 && len(thumb) > 0 { html = "<p><img src=\"" + html_escape(thumb) + "\"></p>"; }
+        if len(content_html) == 0 && len(thumb) > 0 { content_html = "<p><img src=\"" + html_escape(thumb) + "\"></p>"; }
 
         set_field("guid", guid);
         set_field("title", title);
         set_field("url", post_url);
-        set_field("author", item_author);
+        set_field("author", author);
         if published > 0 { set_field("published_at", published); }
         if len(text) > 0 { set_field("summary", text); }
-        set_field("content_html", html);
+        set_field("content_html", content_html);
         if len(thumb) > 0 { set_field("thumbnail", thumb); }
         add_entry();
         count += 1;
@@ -270,16 +309,9 @@ while has_more && page < max_pages && count < max_posts {
 
     log("info", "fantia fanclub=" + fanclub_id + " 第 " + page + " 页 +" + page_count + " 条，累计 " + count);
 
-    // 判断是否还有更多页：Fantia 的分页通过 has_more 或 posts 数组长度判断。
-    let more = json_path(json, "has_more");
-    if type_of(more) == "bool" {
-        has_more = more;
-    } else {
-        // 如果本页满了（通常 30 条/页），可能还有下一页。
-        has_more = len(posts) >= 30;
-    }
+    // Fantia 每页约 20-30 条帖子，如果本页有帖子则尝试下一页。
+    has_more = len(post_ids) >= 20;
 
-    // 分页间延迟：降低触发 IP 封锁的概率。
     if has_more && page < max_pages && count < max_posts {
         sleep_ms(2000);
     }
