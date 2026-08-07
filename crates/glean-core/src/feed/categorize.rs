@@ -150,8 +150,14 @@ mod tests {
 
     #[test]
     fn fantia_is_article() {
-        assert_eq!(cat("https://fantia.jp/fanclubs/509981"), FeedCategory::Article);
-        assert_eq!(cat("https://fantia.jp/posts/3986720"), FeedCategory::Article);
+        assert_eq!(
+            cat("https://fantia.jp/fanclubs/509981"),
+            FeedCategory::Article
+        );
+        assert_eq!(
+            cat("https://fantia.jp/posts/3986720"),
+            FeedCategory::Article
+        );
     }
 
     #[test]

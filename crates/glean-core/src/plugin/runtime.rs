@@ -13,9 +13,9 @@
 //!    （见 `service.rs` 的 upsert_entry 路径）。
 
 use crate::error::{CoreError, Result};
+use crate::extract::extract_fantia_post_contents;
 use crate::feed::parse::{ParsedEntry, ParsedFeed};
 use crate::feed::HttpClient;
-use crate::extract::extract_fantia_post_contents;
 use crate::plugin::credential::CredentialStore;
 use crate::plugin::manifest::{Capabilities, Manifest, Tier};
 use rhai::{Dynamic, Engine, ImmutableString, Map};
