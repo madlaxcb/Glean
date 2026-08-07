@@ -78,6 +78,7 @@ const SOCIAL: &[&str] = &[
 const IMAGE: &[&str] = &[
     "pixiv.net",
     "fanbox.cc",
+    "fantia.jp",
     "deviantart.com",
     "flickr.com",
     "500px.com",

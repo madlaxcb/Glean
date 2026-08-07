@@ -1,0 +1,20 @@
+[plugin]
+id = "fantia"
+name = "Fantia 创作者投稿"
+version = "0.1.0"
+author = "Glean"
+min_glean_version = "0.5.0"
+tier = 2
+
+[[match]]
+url_pattern = "fantia.jp/fanclubs/*"
+
+[[match]]
+url_pattern = "fantia.jp/@*"
+
+[capabilities]
+feed_fetch = ["fantia.jp"]
+credential_use = ["fantia_session"]
+
+[compliance]
+uses_user_session = true

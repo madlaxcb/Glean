@@ -456,7 +456,15 @@ fn do_http(
             // §11.5 限流重试：HTTP 429（Too Many Requests）时指数退避重试，
             // 最多 5 次尝试（首次 + 4 次重试），间隔 2/4/8/16 秒。
             // Pixiv 等订阅并发刷新时容易触发限流，退避需足够长才能避开。
-            if status == 429 {
+            //
+            // 例外：Fantia（fantia.jp）的 429 是按 IP 封锁，冷却期极长（半小时
+            // 以上），继续重试只会延长封锁。因此 Fantia 的 429 直接返回，不重试。
+            let is_fantia = url
+                .split('/')
+                .nth(2)
+                .map(|h| h == "fantia.jp" || h.ends_with(".fantia.jp"))
+                .unwrap_or(false);
+            if status == 429 && !is_fantia {
                 const MAX_429_RETRIES: u32 = 4;
                 let mut retries: u32 = 0;
                 loop {
