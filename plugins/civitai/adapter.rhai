@@ -265,6 +265,15 @@ if do_images || do_videos {
                     set_field("title", title);
                     set_field("url", base + "/images/" + id);
                     set_field("author", username);
+                    // 缩略图：图片直接用自身 URL，视频用 poster 帧或首帧。
+                    if video {
+                        let poster = str_safe(json_path(item, "thumbnailUrl"));
+                        if len(poster) > 0 {
+                            set_field("thumbnail", poster);
+                        }
+                    } else {
+                        set_field("thumbnail", img_url);
+                    }
                     set_field("content_html", html);
                     add_entry();
                     if video { vid_count += 1; } else { img_count += 1; }

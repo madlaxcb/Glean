@@ -1174,6 +1174,10 @@ impl SpikeState {
         if !entry.extracted_html.is_empty() {
             return;
         }
+        // 插件订阅由适配器提供正文，跳过通用全文抽取。
+        if self.service.entry_in_plugin_feed(entry.summary.id) {
+            return;
+        }
         if !should_extract(&entry.content_html, entry.summary.url.as_deref()) {
             return;
         }
