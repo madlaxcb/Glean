@@ -107,39 +107,10 @@ fn extract_fanclub_id(url) {
 
 /// 从 HTML 页面中提取帖子 ID 列表。
 /// Fantia 的帖子列表页是 HTML，帖子链接格式为 /posts/{数字ID}。
+/// 列表页 HTML 很大，逐字符扫描会触发 Rhai 操作数上限，因此由宿主
+/// `extract_fantia_post_ids` 在 Rust 侧高效解析并返回去重后的 ID 数组。
 fn extract_post_ids_from_html(html) {
-    let ids = [];
-    let search = "/posts/";
-    let slen = len(search);
-    let hlen = len(html);
-    let seen = #{};
-    let pos = 0;
-    while pos + slen <= hlen {
-        let seg = html.substring(pos, pos + slen);
-        if seg == search {
-            // 提取紧随其后的数字 ID。
-            let start = pos + slen;
-            let id = "";
-            let i = start;
-            while i < hlen {
-                let sub = html.substring(i, i + 1);
-                if sub >= "0" && sub <= "9" {
-                    id += sub;
-                } else {
-                    break;
-                }
-                i += 1;
-            }
-            pos = start;
-            if len(id) > 0 && !(id in seen) {
-                seen[id] = true;
-                ids.push(id);
-            }
-        } else {
-            pos += 1;
-        }
-    }
-    return ids;
+    return extract_fantia_post_ids(html);
 }
 
 /// 检查 HTTP 响应状态。429 时立即终止（Fantia 的 IP 封锁不可重试）。

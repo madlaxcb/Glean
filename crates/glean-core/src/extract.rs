@@ -110,6 +110,35 @@ pub fn extract_fantia_post_contents(raw_html: &str) -> String {
     output
 }
 
+/// 从 Fantia 帖子列表 HTML 中提取 `/posts/{数字ID}`，返回去重后的 ID 数组。
+/// 列表页 HTML 很大，Rhai 逐字符扫描会触发操作数上限，因此放在 Rust 侧实现。
+pub fn extract_fantia_post_ids(raw_html: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    let bytes = raw_html.as_bytes();
+    let needle = b"/posts/";
+    let mut i = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let start = i + needle.len();
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                let id = &raw_html[start..j];
+                if seen.insert(id.to_string()) {
+                    result.push(id.to_string());
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    result
+}
+
 /// Decide whether extraction is worthwhile: only if the feed content is short
 /// (summary-only) and the URL points to http(s).
 pub fn should_extract(feed_content_html: &str, entry_url: Option<&str>) -> bool {
@@ -331,5 +360,23 @@ mod tests {
         assert!(out.contains("媒体说明"));
         assert!(out.contains("a.mp4"));
         assert!(!out.contains("评论"));
+    }
+
+    #[test]
+    fn fantia_post_ids_extracted_and_deduped() {
+        let html = r#"
+            <a href="/posts/123">t1</a>
+            <a href="/posts/456">t2</a>
+            <a href="/posts/123">dup</a>
+            <a href="/posts/abc">no</a>
+            <a href="https://fantia.jp/posts/789">full</a>
+        "#;
+        let ids = extract_fantia_post_ids(html);
+        assert_eq!(ids, vec!["123", "456", "789"]);
+    }
+
+    #[test]
+    fn fantia_post_ids_empty_when_no_posts() {
+        assert!(extract_fantia_post_ids("<html>no posts here</html>").is_empty());
     }
 }
