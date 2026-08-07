@@ -784,6 +784,76 @@ mod tests {
     }
 
     #[test]
+    fn official_fanbox_fixture_retries_rate_limit_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let address = listener.local_addr().expect("fixture address");
+        let page1_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let page1_hits_server = page1_hits.clone();
+        let server = thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().expect("fixture request");
+                let mut request = [0_u8; 4096];
+                let size = stream.read(&mut request).expect("fixture read");
+                let request = String::from_utf8_lossy(&request[..size]);
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let (status, body) = if path.starts_with("/post.paginateCreator") {
+                    (
+                        "200 OK",
+                        format!(
+                            r#"{{"body":{{"pageUrls":["http://{address}/post.listCreator?page=1"]}}}}"#
+                        ),
+                    )
+                } else if path.contains("page=1") {
+                    let hit = page1_hits_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if hit == 0 {
+                        (
+                            "429 Too Many Requests",
+                            r#"{"error":{"message":"rate limited"}}"#.to_string(),
+                        )
+                    } else {
+                        (
+                            "200 OK",
+                            include_str!("fixtures/fanbox_posts_page_1.json").to_string(),
+                        )
+                    }
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"body":{"post":{"body":{"text":"重试成功","images":[]}}}}"#.to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("fixture write");
+            }
+        });
+        let script = include_str!("../../../../plugins/fanbox/adapter.rhai")
+            .replace("https://api.fanbox.cc", &format!("http://{address}"))
+            .replace(
+                "page_url.starts_with(\"https://api.fanbox.cc/\")",
+                &format!("page_url.starts_with(\"http://{address}/\")"),
+            );
+        let mut manifest = empty_manifest(Tier::Script);
+        manifest.plugin.id = "fanbox".into();
+        manifest.capabilities.feed_fetch = vec!["127.0.0.1".into()];
+        manifest.capabilities.credential_use = vec!["fanbox_session".into()];
+        let parsed = Runtime::build(
+            manifest,
+            Arc::new(HttpClient::default()),
+            Arc::new(CredentialStore::in_memory()),
+        )
+        .run_script(&script, "https://fanbox.cc/@fixture", &[])
+        .expect("429 should be retried");
+        server.join().expect("fixture server");
+        assert_eq!(page1_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(parsed.entries.len(), 2);
+    }
+
+    #[test]
     fn build_engine_with_no_caps_registers_only_pure_fns() {
         let m = empty_manifest(Tier::Script);
         let http = Arc::new(HttpClient::default());
