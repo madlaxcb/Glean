@@ -147,6 +147,10 @@ let hdrs = #{
     "Referer": base + "/",
 };
 
+// civitai.red 含 NSFW 内容，REST API 默认过滤，需显式传 nsfw=true。
+// civitai.com 仅 SFW，nsfw 参数无副作用但保持一致。
+let nsfw_param = "&nsfw=true";
+
 // ---- 状态 ----
 
 let existing = EXISTING_GUIDS;
@@ -155,7 +159,7 @@ let count = 0;
 // ---- 拉取模型 (REST API) ----
 
 if do_models {
-    let url = base + "/api/v1/models?username=" + username + "&sort=Newest&limit=20";
+    let url = base + "/api/v1/models?username=" + username + "&sort=Newest&limit=20" + nsfw_param;
     log("info", "civitai 请求模型: " + url);
     let resp = http_get(url, hdrs, "civitai_api_key");
     if resp["status"] == 200 {
@@ -220,7 +224,7 @@ if do_models {
 // ---- 拉取图片/视频 (REST API) ----
 
 if do_images || do_videos {
-    let url = base + "/api/v1/images?username=" + username + "&sort=Newest&limit=100";
+    let url = base + "/api/v1/images?username=" + username + "&sort=Newest&limit=100" + nsfw_param;
     log("info", "civitai 请求图片/视频: " + url);
     let resp = http_get(url, hdrs, "civitai_api_key");
     if resp["status"] == 200 {
@@ -279,7 +283,7 @@ if do_images || do_videos {
 // ---- 拉取文章 (tRPC) ----
 
 if do_articles {
-    let inner = "{\"username\":\"" + username + "\",\"sort\":\"Newest\",\"limit\":20}";
+    let inner = "{\"username\":\"" + username + "\",\"sort\":\"Newest\",\"limit\":20,\"period\":\"AllTime\"}";
     let input = url_encode("{\"json\":" + inner + "}");
     let url = base + "/api/trpc/article.getInfinite?input=" + input;
     log("info", "civitai 请求文章: " + url);
