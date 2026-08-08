@@ -192,7 +192,11 @@ fn register_pure_fns(engine: &mut Engine) {
     });
     engine.register_fn("log", |level: String, msg: String| {
         eprintln!("[plugin:{level}] {msg}");
-        let line = format!("[plugin:{level}] {msg}\n");
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let line = format!("[{timestamp}][plugin:{level}] {msg}\n");
         let path = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))

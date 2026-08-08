@@ -1376,6 +1376,10 @@ fn clean_feed_url(raw: &str) -> String {
 }
 
 fn write_debug_log(message: &str) {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
     let path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("glean-debug.log")))
@@ -1386,7 +1390,7 @@ fn write_debug_log(message: &str) {
         .open(path)
     {
         use std::io::Write;
-        let _ = writeln!(file, "{message}");
+        let _ = writeln!(file, "[{timestamp}]{message}");
     }
 }
 

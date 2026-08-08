@@ -25,6 +25,7 @@
 // 匿名访问可用，但限速更低。
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const ADAPTER_VERSION = "20260808-1";
 
 // ---- 工具函数 ----
 
@@ -161,6 +162,7 @@ let nsfw_param = "&nsfw=true";
 
 let existing = EXISTING_GUIDS;
 let count = 0;
+log("info", "civitai adapter_version=" + ADAPTER_VERSION);
 
 // ---- 拉取模型 (REST API) ----
 
