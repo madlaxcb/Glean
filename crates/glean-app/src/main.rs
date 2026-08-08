@@ -1392,7 +1392,7 @@ impl SpikeState {
         // cache_images=false 时，如果 HTML 含防盗链域名（i.pximg.net 等），
         // 仍然触发缓存——这类图片 WebView 直接加载会 403，必须后端代理
         // （带 Referer）下载。其他情况尊重 cache_images 开关。
-        let has_hotlink = body.contains("pximg.net/");
+        let has_hotlink = body.contains("pximg.net/") || body.contains("image.civitai.com/");
         let should_cache = self.config.cache_images || has_hotlink;
         if !should_cache {
             return;
@@ -1649,6 +1649,8 @@ impl SpikeState {
                     req = req.header(reqwest::header::REFERER, "https://www.pixiv.net/");
                 } else if url.contains("fanbox.cc") {
                     req = req.header(reqwest::header::REFERER, "https://fanbox.cc/");
+                } else if url.contains("image.civitai.com") {
+                    req = req.header(reqwest::header::REFERER, "https://civitai.com/");
                 }
                 let sent = match req.send().and_then(|r| r.error_for_status()) {
                     Ok(resp) => match resp.bytes() {

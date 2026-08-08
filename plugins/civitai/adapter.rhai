@@ -86,7 +86,7 @@ fn is_video_url(url) {
 
 fn civitai_image_url(url, width) {
     let result = url;
-    result.replace("original=true", "width=" + width);
+    result = result.replace("original=true", "width=" + width);
     return result;
 }
 
@@ -248,9 +248,10 @@ if do_images || do_videos {
                     let id = str_safe(json_path(item, "id"));
                     if len(img_url) == 0 || len(id) == 0 { continue; }
 
-                    let video = is_video_url(img_url);
+                    let media_type = str_safe(json_path(item, "type"));
+                    let video = media_type == "video" || is_video_url(img_url);
                     let content_url = if video { img_url } else { civitai_image_url(img_url, "1200") };
-                    let thumbnail_url = if video { "" } else { civitai_image_url(img_url, "450") };
+                    let thumbnail_url = civitai_image_url(img_url, "450");
                     if video && !do_videos { continue; }
                     if !video && !do_images { continue; }
 
@@ -280,6 +281,8 @@ if do_images || do_videos {
                         let poster = str_safe(json_path(item, "thumbnailUrl"));
                         if len(poster) > 0 {
                             set_field("thumbnail", poster);
+                        } else {
+                            set_field("thumbnail", thumbnail_url);
                         }
                     } else {
                         set_field("thumbnail", thumbnail_url);

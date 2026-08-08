@@ -262,17 +262,8 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Glean/0.0.1 (+RSS reader)",
         ),
     );
-    // i.pximg.net 要求 Referer 为 pixiv 页面，否则返回 403。
-    if let Some(host) = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-    {
-        if host == "i.pximg.net" || host.ends_with(".pximg.net") {
-            req = req.header(
-                reqwest::header::REFERER,
-                reqwest::header::HeaderValue::from_static("https://www.pixiv.net/"),
-            );
-        }
+    if let Some(referer) = media_referer(url) {
+        req = req.header(reqwest::header::REFERER, referer);
     }
     let resp = req.send().map_err(|e| CoreError::Http(e.to_string()))?;
     if !resp.status().is_success() {
@@ -293,6 +284,33 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>
         .map_err(|e| CoreError::Http(e.to_string()))?
         .to_vec();
     Ok((bytes, content_type))
+}
+
+fn media_referer(url: &str) -> Option<&'static str> {
+    let host = url::Url::parse(url)
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
+    if host == "i.pximg.net" || host.ends_with(".pximg.net") {
+        return Some("https://www.pixiv.net/");
+    }
+    if host == "image.civitai.com" || host.ends_with(".image.civitai.com") {
+        return Some("https://civitai.com/");
+    }
+    None
+}
+
+#[cfg(test)]
+mod media_url_tests {
+    use super::media_referer;
+
+    #[test]
+    fn civitai_media_uses_civitai_referer() {
+        assert_eq!(
+            media_referer("https://image.civitai.com/x/y.jpg").as_deref(),
+            Some("https://civitai.com/")
+        );
+    }
 }
 
 /// Collect all unique image URLs from <img src="…"> tags in `html`.
