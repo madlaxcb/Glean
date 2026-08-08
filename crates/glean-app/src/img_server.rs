@@ -78,22 +78,10 @@ fn handle_request(mut stream: TcpStream, dir: &Path) {
         let body = &bytes[start..=end];
         let range = format!("bytes {start}-{end}/{}", bytes.len());
         if method == "HEAD" {
-            let _ = write_headers_with_range(
-                &mut stream,
-                206,
-                mime,
-                body.len(),
-                true,
-                Some(&range),
-            );
+            let _ =
+                write_headers_with_range(&mut stream, 206, mime, body.len(), true, Some(&range));
         } else {
-            let _ = write_body_with_range(
-                &mut stream,
-                206,
-                mime,
-                body,
-                Some(&range),
-            );
+            let _ = write_body_with_range(&mut stream, 206, mime, body, Some(&range));
         }
         return;
     }
