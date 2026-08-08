@@ -168,6 +168,7 @@ if do_models {
     let url = base + "/api/v1/models?username=" + username + "&sort=Newest&limit=20" + nsfw_param;
     log("info", "civitai 请求模型: " + url);
     let resp = http_get(url, hdrs, "civitai_api_key");
+    log("info", "civitai 模型响应 status=" + str_safe(resp["status"]) + " body_len=" + len(str_safe(resp["body"])));
     if resp["status"] == 200 {
         try {
             let data = parse_json(str_safe(resp["body"]));
@@ -233,6 +234,7 @@ if do_images || do_videos {
     let url = base + "/api/v1/images?username=" + username + "&sort=Newest&limit=100" + nsfw_param;
     log("info", "civitai 请求图片/视频: " + url);
     let resp = http_get(url, hdrs, "civitai_api_key");
+    log("info", "civitai 图片响应 status=" + str_safe(resp["status"]) + " body_len=" + len(str_safe(resp["body"])));
     if resp["status"] == 200 {
         try {
             let data = parse_json(str_safe(resp["body"]));
@@ -305,6 +307,7 @@ if do_articles {
     let url = base + "/api/trpc/article.getInfinite?input=" + input;
     log("info", "civitai 请求文章: " + url);
     let resp = http_get(url, hdrs, "civitai_api_key");
+    log("info", "civitai 文章响应 status=" + str_safe(resp["status"]) + " body_len=" + len(str_safe(resp["body"])));
     if resp["status"] == 200 {
         try {
             let data = parse_json(str_safe(resp["body"]));

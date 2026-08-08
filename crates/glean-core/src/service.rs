@@ -1445,8 +1445,9 @@ fn pick_client<'a>(
 /// 先做插件路由（Tier 1/2），未命中走默认 RSS（fetch + parse）。
 /// 插件不做条件请求，命中即拉新；RSS 路径保留 etag/last_modified。
 pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> RefreshOutcome {
-    let client = pick_client(task.use_proxy, &ctx.http, &ctx.http_proxy);
     let task_url = clean_feed_url(&task.url);
+    let use_proxy = task.use_proxy && !is_civitai_url(&task_url);
+    let client = pick_client(use_proxy, &ctx.http, &ctx.http_proxy);
     // 插件路由候选：先库中原始 URL，未命中再试规范化后的 URL
     // （如 OPML 导入的 pixiv 单数 `user/` → 复数 `users/`）。
     let normalized = crate::feed::tier0::normalize(&task_url);
@@ -1459,7 +1460,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
         "[refresh-worker] feed_id={} url={} proxy={} plugin_mgr={} candidates={:?}",
         task.feed_id.0,
         task_url,
-        task.use_proxy,
+        use_proxy,
         ctx.plugin_mgr.is_some(),
         candidates
     ));
@@ -1547,6 +1548,18 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
             error: e.to_string(),
         },
     }
+}
+
+fn is_civitai_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            host == "civitai.com"
+                || host == "civitai.red"
+                || host.ends_with(".civitai.com")
+                || host.ends_with(".civitai.red")
+        })
 }
 
 #[cfg(test)]
@@ -1711,5 +1724,12 @@ mod tests {
             clean_feed_url(" `https://civitai.red/user/madlaxcb` "),
             "https://civitai.red/user/madlaxcb"
         );
+    }
+
+    #[test]
+    fn civitai_urls_bypass_subscription_proxy() {
+        assert!(is_civitai_url("https://civitai.red/user/madlaxcb"));
+        assert!(is_civitai_url("https://civitai.com/user/madlaxcb"));
+        assert!(!is_civitai_url("https://pixiv.net/users/123"));
     }
 }
