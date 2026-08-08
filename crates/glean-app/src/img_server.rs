@@ -187,7 +187,7 @@ fn write_headers_with_range(
          Accept-Ranges: bytes\r\n\
          Cache-Control: private, max-age=86400\r\n\
          Connection: close\r\n\
-         \r\n"
+         \r\n",
         content_range = range
             .map(|value| format!("Content-Range: {value}\r\n"))
             .unwrap_or_default(),

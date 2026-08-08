@@ -1689,8 +1689,8 @@ impl SpikeState {
         let width = 160usize;
         let height = 90usize;
         let mut pixels = vec![36u8; width * height * 4];
-        for y in 25..65 {
-            for x in 62..98 {
+        for y in 25usize..65 {
+            for x in 62usize..98 {
                 if x >= 62 + (y.abs_diff(45) / 2) && x <= 98 - (y.abs_diff(45) / 2) {
                     let i = (y * width + x) * 4;
                     pixels[i..i + 4].copy_from_slice(&[110, 170, 235, 255]);
