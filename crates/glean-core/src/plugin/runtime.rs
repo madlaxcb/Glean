@@ -1216,10 +1216,7 @@ mod tests {
         assert!(!videos.is_empty(), "应至少拿到 1 个视频");
         let v = &videos[0];
         assert!(
-            v.thumbnail
-                .as_deref()
-                .unwrap_or("")
-                .ends_with(".jpeg"),
+            v.thumbnail.as_deref().unwrap_or("").ends_with(".jpeg"),
             "视频缩略图应是 jpeg 封面帧，got: {:?}",
             v.thumbnail
         );
