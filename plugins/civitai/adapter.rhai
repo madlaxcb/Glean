@@ -83,6 +83,12 @@ fn is_video_url(url) {
         || url.contains("/video/");
 }
 
+fn civitai_image_url(url, width) {
+    let result = url;
+    result.replace("original=true", "width=" + width);
+    return result;
+}
+
 // ---- URL 解析 ----
 // 域名优先级：URL 自带域名 > 插件设置中的 domain > 默认 civitai.com
 
@@ -240,6 +246,8 @@ if do_images || do_videos {
                     if len(img_url) == 0 || len(id) == 0 { continue; }
 
                     let video = is_video_url(img_url);
+                    let content_url = if video { img_url } else { civitai_image_url(img_url, "1200") };
+                    let thumbnail_url = if video { "" } else { civitai_image_url(img_url, "450") };
                     if video && !do_videos { continue; }
                     if !video && !do_images { continue; }
 
@@ -251,9 +259,9 @@ if do_images || do_videos {
 
                     let html = "";
                     if video {
-                        html = "<p><video controls src=\"" + html_escape(img_url) + "\"></video></p>";
+                        html = "<p><video controls src=\"" + html_escape(content_url) + "\"></video></p>";
                     } else {
-                        html = "<p><img src=\"" + html_escape(img_url) + "\"></p>";
+                        html = "<p><img src=\"" + html_escape(content_url) + "\"></p>";
                     }
                     if len(width) > 0 && len(height) > 0 && width != "0" {
                         html += "<p>" + width + " x " + height + "</p>";
@@ -272,7 +280,7 @@ if do_images || do_videos {
                             set_field("thumbnail", poster);
                         }
                     } else {
-                        set_field("thumbnail", img_url);
+                        set_field("thumbnail", thumbnail_url);
                     }
                     set_field("content_html", html);
                     add_entry();
