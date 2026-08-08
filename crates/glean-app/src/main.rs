@@ -1643,7 +1643,14 @@ impl SpikeState {
             let tx = tx.clone();
             let client = client.clone();
             let thumb_dir = thumb_dir.clone();
+            let is_video = url.to_ascii_lowercase().contains(".mp4")
+                || url.to_ascii_lowercase().contains(".webm");
             thread::spawn(move || {
+                if is_video {
+                    let rgba = SpikeState::video_placeholder();
+                    let _ = tx.send((eid, rgba, 160, 90));
+                    return;
+                }
                 let mut req = client.get(&url);
                 if url.contains("pximg.net") {
                     req = req.header(reqwest::header::REFERER, "https://www.pixiv.net/");
@@ -1676,6 +1683,21 @@ impl SpikeState {
                 let _ = sent;
             });
         }
+    }
+
+    fn video_placeholder() -> Vec<u8> {
+        let width = 160usize;
+        let height = 90usize;
+        let mut pixels = vec![36u8; width * height * 4];
+        for y in 25..65 {
+            for x in 62..98 {
+                if x >= 62 + (y.abs_diff(45) / 2) && x <= 98 - (y.abs_diff(45) / 2) {
+                    let i = (y * width + x) * 4;
+                    pixels[i..i + 4].copy_from_slice(&[110, 170, 235, 255]);
+                }
+            }
+        }
+        pixels
     }
 
     /// 从磁盘缩略图缓存读取已下载的缩略图（PNG），返回 RGBA 像素。

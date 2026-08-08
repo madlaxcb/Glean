@@ -53,10 +53,18 @@ fn guess_extension(url: &str, content_type: Option<&str>) -> &'static str {
         if ct.contains("avif") {
             return "avif";
         }
+        if ct.contains("mp4") {
+            return "mp4";
+        }
+        if ct.contains("webm") {
+            return "webm";
+        }
     }
     // Then URL path suffix.
     let lower = url.to_lowercase();
-    for ext in &["jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp"] {
+    for ext in &[
+        "jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp", "mp4", "webm",
+    ] {
         let dot = format!(".{ext}");
         if lower.contains(&dot) {
             // Normalise jpeg → jpg.
@@ -96,7 +104,7 @@ impl ImageCache {
         self.dir.is_some()
     }
 
-    /// Download all remote images in `html` and rewrite their `src` to a local
+    /// Download all remote images and videos in `html` and rewrite their `src` to a local
     /// URL (HTTP base when configured, otherwise `data:`). Returns the
     /// rewritten HTML and the list of (filename, bytes) pairs that were
     /// freshly downloaded (already-cached files are not re-downloaded). On
@@ -111,7 +119,7 @@ impl ImageCache {
         if !self.enabled() {
             return (html.to_string(), Vec::new());
         }
-        let urls = collect_img_urls(html);
+        let urls = collect_media_urls(html);
         if urls.is_empty() {
             return (html.to_string(), Vec::new());
         }
@@ -161,7 +169,7 @@ impl ImageCache {
         if rewritten.is_empty() {
             return (html.to_string(), fetched);
         }
-        (rewrite_img_src(html, &rewritten), fetched)
+        (rewrite_media_src(html, &rewritten), fetched)
     }
 
     fn local_url(&self, filename: &str, bytes: &[u8]) -> String {
@@ -205,6 +213,10 @@ impl ImageCache {
             "image/avif"
         } else if lower.ends_with(".bmp") {
             "image/bmp"
+        } else if lower.ends_with(".mp4") {
+            "video/mp4"
+        } else if lower.ends_with(".webm") {
+            "video/webm"
         } else {
             "image/jpeg"
         }
@@ -313,23 +325,42 @@ mod media_url_tests {
 /// Collect all unique image URLs from <img src="…"> tags in `html`.
 /// Naive regex-free scan; HTML is already ammonia-sanitized so tag shape is
 /// predictable. Handles both single and double quotes.
-fn collect_img_urls(html: &str) -> Vec<String> {
+fn collect_media_urls(html: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let lower = html.to_lowercase();
+    for tag_name in ["img", "video"] {
+        let mut pos = 0;
+        while let Some(idx) = lower[pos..].find(&format!("<{tag_name} ")) {
+            let abs = pos + idx;
+            let tag_end = match lower[abs..].find('>') {
+                Some(e) => abs + e + 1,
+                None => break,
+            };
+            let tag = &html[abs..tag_end];
+            if let Some(url) = extract_attr(tag, "src") {
+                if seen.insert(url.clone()) {
+                    urls.push(url);
+                }
+            }
+            pos = tag_end;
+        }
+    }
+    urls
+}
+
+fn collect_img_urls(html: &str) -> Vec<String> {
+    let mut urls = Vec::new();
     let lower = html.to_lowercase();
     let mut pos = 0;
     while let Some(idx) = lower[pos..].find("<img ") {
         let abs = pos + idx;
-        // Find closing >.
         let tag_end = match lower[abs..].find('>') {
-            Some(e) => abs + e + 1, // include '>'
+            Some(e) => abs + e + 1,
             None => break,
         };
-        let tag = &html[abs..tag_end];
-        if let Some(url) = extract_attr(tag, "src") {
-            if seen.insert(url.clone()) {
-                urls.push(url);
-            }
+        if let Some(url) = extract_attr(&html[abs..tag_end], "src") {
+            urls.push(url);
         }
         pos = tag_end;
     }
@@ -356,11 +387,19 @@ fn extract_attr(tag: &str, attr: &str) -> Option<String> {
 
 /// Rewrite every `<img src="original">` to `<img src="rewritten">` per the
 /// mapping. Preserves other attributes. Same naive scan as `collect_img_urls`.
-fn rewrite_img_src(html: &str, mapping: &HashMap<String, String>) -> String {
+fn rewrite_media_src(html: &str, mapping: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(html.len());
     let lower = html.to_lowercase();
     let mut pos = 0;
-    while let Some(idx) = lower[pos..].find("<img ") {
+    while pos < html.len() {
+        let next = [lower[pos..].find("<img "), lower[pos..].find("<video ")]
+            .into_iter()
+            .flatten()
+            .min();
+        let Some(idx) = next else {
+            out.push_str(&html[pos..]);
+            break;
+        };
         let abs = pos + idx;
         out.push_str(&html[pos..abs]);
         let tag_end = match lower[abs..].find('>') {
@@ -377,6 +416,10 @@ fn rewrite_img_src(html: &str, mapping: &HashMap<String, String>) -> String {
     }
     out.push_str(&html[pos..]);
     out
+}
+
+fn rewrite_img_src(html: &str, mapping: &HashMap<String, String>) -> String {
+    rewrite_media_src(html, mapping)
 }
 
 fn rewrite_one_tag(tag: &str, mapping: &HashMap<String, String>) -> String {
@@ -430,6 +473,25 @@ mod tests {
     fn content_type_overrides_url_ext() {
         let f = cached_filename("https://x.com/img", Some("image/png"));
         assert!(f.ends_with(".png"));
+    }
+
+    #[test]
+    fn video_filename_uses_video_extension() {
+        let f = cached_filename("https://x.com/video.mp4", Some("video/mp4"));
+        assert!(f.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn collect_media_urls_includes_video_src() {
+        let html = r#"<img src="https://a.com/a.jpg"><video src="https://a.com/a.mp4"></video>"#;
+        let urls = collect_media_urls(html);
+        assert_eq!(urls.len(), 2);
+        assert!(urls.iter().any(|url| url.ends_with("a.mp4")));
+    }
+
+    #[test]
+    fn mime_for_video_returns_video_type() {
+        assert_eq!(ImageCache::mime_for("video.mp4"), "video/mp4");
     }
 
     #[test]
