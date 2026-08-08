@@ -777,7 +777,7 @@ impl GleanService {
             let (url, etag, last_modified, use_proxy) = self.store.get_feed_fetch_meta(id)?;
             tasks.push(RefreshTask {
                 feed_id: id,
-                url,
+                url: clean_feed_url(&url),
                 etag,
                 last_modified,
                 use_proxy,
@@ -806,7 +806,7 @@ impl GleanService {
             let (url, etag, last_modified, use_proxy) = self.store.get_feed_fetch_meta(id)?;
             tasks.push(RefreshTask {
                 feed_id: id,
-                url,
+                url: clean_feed_url(&url),
                 etag,
                 last_modified,
                 use_proxy,
@@ -1702,5 +1702,13 @@ mod tests {
         let feeds = svc.store.list_feeds().unwrap();
         assert_eq!(feeds.len(), 1, "不应重复添加订阅");
         assert_eq!(feeds[0].feed_url, "https://www.pixiv.net/users/8252709");
+    }
+
+    #[test]
+    fn clean_feed_url_removes_markdown_backticks_and_whitespace() {
+        assert_eq!(
+            clean_feed_url(" `https://civitai.red/user/madlaxcb` "),
+            "https://civitai.red/user/madlaxcb"
+        );
     }
 }
