@@ -669,6 +669,7 @@ fn json_path_lookup(json: &Dynamic, path: &str) -> Option<Dynamic> {
 mod tests {
     use super::*;
     use crate::plugin::manifest::PluginMeta;
+    use crate::PluginManager;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -1106,6 +1107,151 @@ mod tests {
         rt.engine
             .compile(script)
             .expect("fanbox adapter.rhai compiles");
+    }
+
+    #[test]
+    fn official_civitai_script_compiles() {
+        let script = include_str!("../../../../plugins/civitai/adapter.rhai");
+        let mut m = empty_manifest(Tier::Script);
+        m.capabilities.feed_fetch = vec!["civitai.com".into(), "civitai.red".into()];
+        m.capabilities.credential_use = vec!["civitai_api_key".into()];
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        rt.engine
+            .compile(script)
+            .expect("civitai adapter.rhai compiles");
+    }
+
+    /// civitai 视频封面帧推导：把视频 URL 转成 CDN 生成的 jpeg 封面。
+    /// 与 adapter.rhai 中 `civitai_video_poster` 的逻辑保持一致。
+    #[test]
+    fn civitai_video_poster_derives_jpeg_frame() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            fn civitai_video_poster(url, width) {
+                let result = url;
+                result.replace("original=true", "anim=false,transcode=true,width=" + width + ",original=false,optimized=true");
+                result.replace(".mp4", ".jpeg");
+                result.replace(".MP4", ".jpeg");
+                result.replace(".webm", ".jpeg");
+                result.replace(".WEBM", ".jpeg");
+                return result;
+            }
+            set_field("title", civitai_video_poster("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/84f019eb-f099-456a-81a8-0cb5f4c0f845/original=true/84f019eb-f099-456a-81a8-0cb5f4c0f845.mp4", "450"));
+            add_entry();
+        "#;
+        let parsed = rt
+            .run_script(script, "https://civitai.red/user/madlaxcb", &[])
+            .expect("run_script");
+        assert_eq!(
+            parsed.entries[0].title,
+            "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/84f019eb-f099-456a-81a8-0cb5f4c0f845/anim=false,transcode=true,width=450,original=false,optimized=true/84f019eb-f099-456a-81a8-0cb5f4c0f845.jpeg"
+        );
+    }
+
+    /// Rhai 的 `replace` 是「原地修改、返回 ()」：必须写成
+    /// `result.replace(a, b);` 而不是 `result = result.replace(a, b);`（后者
+    /// 会把 result 变成 ()）。这是 civitai 适配器封面/缩略图曾经失效的根因。
+    #[test]
+    fn rhai_replace_is_in_place() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            fn f(url) {
+                let result = url;
+                result.replace("a", "b");
+                return result;
+            }
+            set_field("title", f("xax"));
+            add_entry();
+        "#;
+        let parsed = rt
+            .run_script(script, "https://example.com", &[])
+            .expect("run_script");
+        assert_eq!(parsed.entries[0].title, "xbx");
+    }
+
+    /// 端到端：用官方 civitai 插件跑真实 API，验证视频条目有 jpeg 封面帧
+    /// 缩略图、内容区 video 带 poster。默认用 madlaxcb（.red 含 NSFW）。
+    /// `GLEAN_CIVITAI_URL` 可指定任意创作者主页。
+    #[test]
+    #[ignore = "需联网访问 civitai API"]
+    fn civitai_end_to_end() {
+        let url = std::env::var("GLEAN_CIVITAI_URL")
+            .unwrap_or_else(|_| "https://civitai.red/user/madlaxcb".to_string());
+        let tmp = std::env::temp_dir().join(format!("glean-civitai-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugin_dir = tmp.join("civitai");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("manifest.toml"),
+            include_str!("../../../../plugins/civitai/manifest.toml"),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("adapter.rhai"),
+            include_str!("../../../../plugins/civitai/adapter.rhai"),
+        )
+        .unwrap();
+        let mgr = PluginManager::new(tmp.clone()).expect("open");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let http = Arc::new(HttpClient::default());
+        let parsed = mgr
+            .run_tier2_for_url(&url, http, None, None, &[], false)
+            .expect("run_tier2")
+            .expect("matched plugin");
+
+        let videos: Vec<_> = parsed
+            .entries
+            .iter()
+            .filter(|e| e.guid.starts_with("civitai-video-"))
+            .collect();
+        assert!(!videos.is_empty(), "应至少拿到 1 个视频");
+        let v = &videos[0];
+        assert!(
+            v.thumbnail
+                .as_deref()
+                .unwrap_or("")
+                .ends_with(".jpeg"),
+            "视频缩略图应是 jpeg 封面帧，got: {:?}",
+            v.thumbnail
+        );
+        assert!(
+            v.content_html.contains("poster="),
+            "视频内容区应带 poster 属性"
+        );
+        assert!(
+            v.content_html.contains("<video"),
+            "视频内容区应含 video 标签"
+        );
+
+        // 图片条目：civitai_image_url 同样依赖原地 replace，缩略图/正文 URL 必须有效。
+        let images: Vec<_> = parsed
+            .entries
+            .iter()
+            .filter(|e| e.guid.starts_with("civitai-image-"))
+            .collect();
+        assert!(!images.is_empty(), "应至少拿到 1 张图片");
+        let img = &images[0];
+        assert!(
+            img.thumbnail
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("https://"),
+            "图片缩略图应是有效 URL，got: {:?}",
+            img.thumbnail
+        );
+        assert!(
+            img.content_html.contains("src=\"https://"),
+            "图片内容区 src 应是有效 URL"
+        );
     }
 
     /// Fanbox 脚本的纯辅助函数行为验证（不发起网络请求）。

@@ -25,7 +25,7 @@
 // 匿名访问可用，但限速更低。
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const ADAPTER_VERSION = "20260808-1";
+const ADAPTER_VERSION = "20260808-2";
 
 // ---- 工具函数 ----
 
@@ -86,7 +86,21 @@ fn is_video_url(url) {
 
 fn civitai_image_url(url, width) {
     let result = url;
-    result = result.replace("original=true", "width=" + width);
+    // Rhai 的 replace 是原地修改、返回 ()，不能写成 result = result.replace(...)。
+    result.replace("original=true", "width=" + width);
+    return result;
+}
+
+/// 从视频 URL 推导封面帧（civitai CDN 支持把视频转成 jpeg 封面）。
+/// 例：.../{uuid}/original=true/{uuid}.mp4
+///   → .../{uuid}/anim=false,transcode=true,width=450,original=false,optimized=true/{uuid}.jpeg
+fn civitai_video_poster(url, width) {
+    let result = url;
+    result.replace("original=true", "anim=false,transcode=true,width=" + width + ",original=false,optimized=true");
+    result.replace(".mp4", ".jpeg");
+    result.replace(".MP4", ".jpeg");
+    result.replace(".webm", ".jpeg");
+    result.replace(".WEBM", ".jpeg");
     return result;
 }
 
@@ -262,7 +276,9 @@ if do_images || do_videos {
 
                     let html = "";
                     if video {
-                        html = "<p><video controls src=\"" + html_escape(content_url) + "\"></video></p>";
+                        // 内容区：video 带 poster（CDN 封面帧），未播放时也能看到首帧。
+                        let poster_url = civitai_video_poster(img_url, "1200");
+                        html = "<p><video controls preload=\"metadata\" poster=\"" + html_escape(poster_url) + "\" src=\"" + html_escape(content_url) + "\"></video></p>";
                     } else {
                         html = "<p><img src=\"" + html_escape(content_url) + "\"></p>";
                     }
@@ -276,14 +292,9 @@ if do_images || do_videos {
                     set_field("title", title);
                     set_field("url", base + "/images/" + id);
                     set_field("author", username);
-                    // 缩略图：图片直接用自身 URL，视频用 poster 帧或首帧。
+                    // 缩略图：图片直接用自身 URL，视频用 CDN 生成的封面帧（jpeg）。
                     if video {
-                        let poster = str_safe(json_path(item, "thumbnailUrl"));
-                        if len(poster) > 0 {
-                            set_field("thumbnail", poster);
-                        } else {
-                            set_field("thumbnail", thumbnail_url);
-                        }
+                        set_field("thumbnail", civitai_video_poster(img_url, "450"));
                     } else {
                         set_field("thumbnail", thumbnail_url);
                     }
