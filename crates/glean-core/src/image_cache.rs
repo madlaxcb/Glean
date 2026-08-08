@@ -287,10 +287,7 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &str) -> Result<(Vec<u8>
 }
 
 fn media_referer(url: &str) -> Option<&'static str> {
-    let host = url::Url::parse(url)
-        .ok()?
-        .host_str()?
-        .to_ascii_lowercase();
+    let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
     if host == "i.pximg.net" || host.ends_with(".pximg.net") {
         return Some("https://www.pixiv.net/");
     }
