@@ -181,7 +181,6 @@ if do_models {
                     let id = str_safe(json_path(item, "id"));
                     if len(id) == 0 { continue; }
                     let guid = "civitai-model-" + id;
-                    if len(existing) > 0 && existing.contains("," + guid + ",") { continue; }
 
                     let name = str_safe(json_path(item, "name"));
                     let desc = str_safe(json_path(item, "description"));
@@ -256,7 +255,6 @@ if do_images || do_videos {
                     if !video && !do_images { continue; }
 
                     let guid = if video { "civitai-video-" + id } else { "civitai-image-" + id };
-                    if len(existing) > 0 && existing.contains("," + guid + ",") { continue; }
 
                     let width = str_safe(json_path(item, "width"));
                     let height = str_safe(json_path(item, "height"));
@@ -324,7 +322,6 @@ if do_articles {
                     let id = str_safe(json_path(item, "id"));
                     if len(id) == 0 { continue; }
                     let guid = "civitai-article-" + id;
-                    if len(existing) > 0 && existing.contains("," + guid + ",") { continue; }
 
                     let title = str_safe(json_path(item, "title"));
                     let content = str_safe(json_path(item, "content"));
