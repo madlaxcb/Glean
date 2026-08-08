@@ -1446,18 +1446,19 @@ fn pick_client<'a>(
 /// 插件不做条件请求，命中即拉新；RSS 路径保留 etag/last_modified。
 pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> RefreshOutcome {
     let client = pick_client(task.use_proxy, &ctx.http, &ctx.http_proxy);
+    let task_url = clean_feed_url(&task.url);
     // 插件路由候选：先库中原始 URL，未命中再试规范化后的 URL
     // （如 OPML 导入的 pixiv 单数 `user/` → 复数 `users/`）。
-    let normalized = crate::feed::tier0::normalize(&task.url);
-    let candidates: Vec<String> = if normalized != task.url {
-        vec![task.url.clone(), normalized]
+    let normalized = crate::feed::tier0::normalize(&task_url);
+    let candidates: Vec<String> = if normalized != task_url {
+        vec![task_url.clone(), normalized]
     } else {
-        vec![task.url.clone()]
+        vec![task_url.clone()]
     };
     write_debug_log(&format!(
         "[refresh-worker] feed_id={} url={} proxy={} plugin_mgr={} candidates={:?}",
         task.feed_id.0,
-        task.url,
+        task_url,
         task.use_proxy,
         ctx.plugin_mgr.is_some(),
         candidates
@@ -1517,7 +1518,7 @@ pub fn run_refresh_task_with_ctx(task: RefreshTask, ctx: &RefreshCtx) -> Refresh
     // 默认 RSS 路径
     match fetch_feed_bytes(
         client,
-        &task.url,
+        &task_url,
         task.etag.as_deref(),
         task.last_modified.as_deref(),
     ) {
