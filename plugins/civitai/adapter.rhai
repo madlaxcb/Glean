@@ -339,8 +339,7 @@ if do_articles {
 
                     let title = str_safe(json_path(item, "title"));
                     let content = str_safe(json_path(item, "content"));
-                    let published = iso_to_unix(str_safe(json_path(item, "publishedAt")));
-                    let mut published_at = published;
+                    let published_at = iso_to_unix(str_safe(json_path(item, "publishedAt")));
                     if published_at == 0 {
                         published_at = iso_to_unix(str_safe(json_path(item, "createdAt")));
                     }

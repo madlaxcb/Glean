@@ -66,7 +66,10 @@ fn load_cjk_font() -> Option<(String, Vec<u8>)> {
 fn load_symbol_font() -> Option<(String, Vec<u8>)> {
     const CANDIDATES: &[(&str, &str)] = &[
         ("Segoe UI Symbol", r"C:\Windows\Fonts\seguisym.ttf"),
-        ("Noto Sans Symbols 2", r"C:\Windows\Fonts\NotoSansSymbols2-Regular.ttf"),
+        (
+            "Noto Sans Symbols 2",
+            r"C:\Windows\Fonts\NotoSansSymbols2-Regular.ttf",
+        ),
     ];
 
     for (name, path) in CANDIDATES {

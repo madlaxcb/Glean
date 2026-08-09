@@ -1592,7 +1592,12 @@ mod tests {
     fn today_does_not_use_fetch_time_when_publication_time_is_missing() {
         let mut store = Store::open_in_memory().unwrap();
         let feed_id = store
-            .add_feed("Civitai", "https://civitai.com/user/test", None, FeedCategory::Article)
+            .add_feed(
+                "Civitai",
+                "https://civitai.com/user/test",
+                None,
+                FeedCategory::Article,
+            )
             .unwrap();
         store
             .upsert_entry(

@@ -195,15 +195,28 @@ mod tests {
         assert!(synced2.is_empty());
 
         // 模拟旧版本：把 civitai 版本改成 0.1.0，应触发更新。
+        let current = BUNDLED_PLUGINS
+            .iter()
+            .find(|p| p.id == "civitai")
+            .expect("civitai bundled")
+            .version;
         let civitai_dir = plugins_dir.join("civitai");
         let manifest_path = civitai_dir.join("manifest.toml");
         let text = std::fs::read_to_string(&manifest_path).unwrap();
-        let updated = text.replace("version = \"0.2.0\"", "version = \"0.1.0\"");
+        let from = format!("version = \"{current}\"");
+        assert!(
+            text.contains(&from),
+            "civitai manifest 应含当前内置版本 {current}: {text}"
+        );
+        let updated = text.replace(&from, "version = \"0.1.0\"");
         std::fs::write(&manifest_path, updated).unwrap();
         let synced3 = sync_bundled_plugins(&plugins_dir);
         assert_eq!(synced3, vec!["civitai"]);
         let text = std::fs::read_to_string(&manifest_path).unwrap();
-        assert!(text.contains("version = \"0.2.0\""));
+        assert!(
+            text.contains(&from),
+            "更新后应恢复到内置版本 {current}: {text}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
