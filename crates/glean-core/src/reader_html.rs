@@ -13,6 +13,7 @@ use crate::sanitize::sanitize_html_with_policy;
 pub fn reader_document(
     title: &str,
     url: Option<&str>,
+    published_at: Option<i64>,
     author: Option<&str>,
     body_html: &str,
     dark: bool,
@@ -38,11 +39,19 @@ pub fn reader_document(
 
     let link_html = match url {
         Some(u) if !u.is_empty() => format!(
-            r#"<p class="orig"><a href="{href}">查看原文</a></p>"#,
+            r#"<p class="orig"><a href="{href}">查看原文</a><br/><span class="orig-url">{href}</span></p>"#,
             href = html_escape(u)
         ),
         _ => String::new(),
     };
+    let published_html = published_at
+        .map(|timestamp| {
+            format!(
+                r#"<div class="published">发布时间：{}</div>"#,
+                format_timestamp(timestamp)
+            )
+        })
+        .unwrap_or_default();
 
     let body = if body_html.trim().is_empty() {
         r#"<p class="empty">此条目没有缓存正文。需要联网刷新后才能阅读，或使用「查看原文」在浏览器中打开。</p>"#
@@ -82,6 +91,8 @@ pub fn reader_document(
   .meta {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 0.75rem; }}
   .orig {{ margin: 0 0 1.25rem; font-size: 0.92rem; }}
   .orig a {{ color: var(--link); }}
+  .orig-url {{ color: var(--muted); font-size: 0.82rem; overflow-wrap: anywhere; }}
+  .published {{ color: var(--muted); font-size: 0.82rem; margin-bottom: 0.75rem; }}
   .empty {{ color: var(--muted); }}
   p, li {{ font-size: inherit; }}
   a {{ color: var(--link); }}
@@ -102,6 +113,7 @@ pub fn reader_document(
 <main>
   <h1>{title}</h1>
   <div class="meta">{meta}</div>
+  {published_html}
   {link_html}
   <div class="body">{body}</div>
 </main>
@@ -112,6 +124,7 @@ pub fn reader_document(
         title = html_escape(title),
         meta = meta,
         link_html = link_html,
+        published_html = published_html,
         body = body,
         img_src = img_src,
         font_size_px = font_size_px,
@@ -126,6 +139,25 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn format_timestamp(timestamp: i64) -> String {
+    let days = timestamp.div_euclid(86_400);
+    let seconds = timestamp.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    let hour = seconds / 3_600;
+    let minute = seconds % 3_600 / 60;
+    let second = seconds % 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +167,7 @@ mod tests {
         let doc = reader_document(
             "Hello",
             Some("https://ex.com/a"),
+            Some(1_735_689_600),
             None,
             "<p>x</p>",
             false,
@@ -146,6 +179,8 @@ mod tests {
         assert!(doc.contains("<h1>Hello</h1>"));
         assert!(doc.contains("https://ex.com/a"));
         assert!(doc.contains("查看原文"));
+        assert!(doc.contains("https://ex.com/a"));
+        assert!(doc.contains("发布时间：2025-01-01 00:00:00 UTC"));
         assert!(!doc.to_lowercase().contains("<script"));
     }
 
@@ -153,6 +188,7 @@ mod tests {
     fn has_data_theme_dark() {
         let doc = reader_document(
             "t",
+            None,
             None,
             None,
             "<p>x</p>",
@@ -171,6 +207,7 @@ mod tests {
             "t",
             None,
             None,
+            None,
             "<p>x</p>",
             false,
             true,
@@ -185,6 +222,7 @@ mod tests {
     fn has_css_variables() {
         let doc = reader_document(
             "t",
+            None,
             None,
             None,
             "<p>x</p>",
@@ -206,6 +244,7 @@ mod tests {
         let body = r#"<p>正文</p><div class="ai-enhancement"><div class="ai-label">AI 摘要</div><div class="ai-content">第一句。<br>第二句。</div></div>"#;
         let doc = reader_document(
             "t",
+            None,
             None,
             None,
             body,

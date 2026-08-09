@@ -1421,6 +1421,7 @@ impl SpikeState {
                 "", // title not needed; we only care about the body rewrite
                 None,
                 None,
+                None,
                 &rewritten,
                 dark,
                 true,
@@ -2035,6 +2036,7 @@ fn render_entry(
     render_entry_body(
         &entry.summary.title,
         entry.summary.url.as_deref(),
+        entry.summary.published_at,
         entry.author.as_deref(),
         &body_with_enhancements,
         dark,
@@ -2065,6 +2067,7 @@ fn escape_html_text(s: &str) -> String {
 fn render_entry_body(
     title: &str,
     url: Option<&str>,
+    published_at: Option<i64>,
     author: Option<&str>,
     body: &str,
     dark: bool,
@@ -2076,6 +2079,7 @@ fn render_entry_body(
     glean_core::reader_document(
         title,
         url,
+        published_at,
         author,
         body,
         dark,

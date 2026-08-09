@@ -134,6 +134,7 @@ mod tests {
             "t",
             None,
             None,
+            None,
             "<p>hi</p>",
             false,
             true,

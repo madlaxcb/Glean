@@ -1245,6 +1245,29 @@ mod tests {
         assert_eq!(e.published_at, Some(1763812864));
     }
 
+    #[test]
+    fn civitai_media_parses_created_at() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            fn iso_to_unix(s) {
+                if type_of(s) != "string" || len(s) < 19 { return 0; }
+                return 1763812864;
+            }
+            let item = #{"id": 1, "createdAt": "2025-11-22T12:01:04.696Z"};
+            let published = iso_to_unix(json_path(item, "createdAt"));
+            set_field("guid", "civitai-image-1");
+            if published > 0 { set_field("published_at", published); }
+            add_entry();
+        "#;
+        let parsed = rt
+            .run_script(script, "https://civitai.com/user/test", &[])
+            .expect("run_script");
+        assert_eq!(parsed.entries[0].published_at, Some(1763812864));
+    }
+
     /// 端到端：用官方 civitai 插件跑真实 API，验证视频条目有 jpeg 封面帧
     /// 缩略图、内容区 video 带 poster。默认用 madlaxcb（.red 含 NSFW）。
     /// `GLEAN_CIVITAI_URL` 可指定任意创作者主页。

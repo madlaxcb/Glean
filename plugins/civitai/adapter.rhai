@@ -273,6 +273,7 @@ if do_images || do_videos {
 
                     let width = str_safe(json_path(item, "width"));
                     let height = str_safe(json_path(item, "height"));
+                    let published = iso_to_unix(str_safe(json_path(item, "createdAt")));
 
                     let html = "";
                     if video {
@@ -292,6 +293,7 @@ if do_images || do_videos {
                     set_field("title", title);
                     set_field("url", base + "/images/" + id);
                     set_field("author", username);
+                    if published > 0 { set_field("published_at", published); }
                     // 缩略图：图片直接用自身 URL，视频用 CDN 生成的封面帧（jpeg）。
                     if video {
                         set_field("thumbnail", civitai_video_poster(img_url, "450"));
