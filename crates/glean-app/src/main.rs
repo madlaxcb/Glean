@@ -1472,6 +1472,7 @@ impl SpikeState {
                 let html = render_entry_body(
                     &entry.summary.title,
                     entry.summary.url.as_deref(),
+                    entry.summary.published_at,
                     entry.author.as_deref(),
                     &body_with_enhancements,
                     dark,
