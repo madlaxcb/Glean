@@ -98,6 +98,27 @@ fn iso_to_unix(s) {
     return ts;
 }
 
+fn format_unix_utc(timestamp) {
+    let days = timestamp / 86400;
+    let seconds = timestamp % 86400;
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + (if mp < 10 { 3 } else { -9 });
+    let year = y + (if m <= 2 { 1 } else { 0 });
+    let hour = seconds / 3600;
+    let minute = (seconds % 3600) / 60;
+    return year + "-" + (if m < 10 { "0" } else { "" }) + m
+        + "-" + (if d < 10 { "0" } else { "" }) + d
+        + " " + (if hour < 10 { "0" } else { "" }) + hour
+        + ":" + (if minute < 10 { "0" } else { "" }) + minute + " UTC";
+}
+
 fn extract_user_id(url) {
     let parts = url.split("/");
     for p in parts {
@@ -284,7 +305,10 @@ while page_i < max_pages {
         // 收藏数 / 浏览量 / 标签
         let meta = "";
         let ct = str_safe(json_path(item, "create_date"));
-        if len(ct) >= 16 {
+        if published > 0 {
+            meta += "<span class=\"pixiv-meta-date\">🕒 "
+                + format_unix_utc(published) + "</span> ";
+        } else if len(ct) >= 16 {
             meta += "<span class=\"pixiv-meta-date\">🕒 "
                 + ct.substring(0, 10) + " " + ct.substring(11, 16) + "</span> ";
         }
