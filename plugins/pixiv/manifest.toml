@@ -12,7 +12,7 @@
 [plugin]
 id = "pixiv"
 name = "Pixiv 用户投稿"
-version = "0.1.0"
+version = "0.1.1"
 author = "Glean"
 min_glean_version = "0.5.0"
 tier = 2

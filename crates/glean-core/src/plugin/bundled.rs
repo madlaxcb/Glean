@@ -75,7 +75,7 @@ pub const BUNDLED_PLUGINS: &[BundledPlugin] = &[
     },
     BundledPlugin {
         id: "pixiv",
-        version: "0.1.0",
+        version: "0.1.1",
         files: &[
             (
                 "manifest.toml",
