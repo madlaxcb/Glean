@@ -33,7 +33,7 @@ pub const BUNDLED_PLUGINS: &[BundledPlugin] = &[
     },
     BundledPlugin {
         id: "civitai",
-        version: "0.2.0",
+        version: "0.3.1",
         files: &[
             (
                 "manifest.toml",

@@ -1177,6 +1177,74 @@ mod tests {
         assert_eq!(parsed.entries[0].title, "xbx");
     }
 
+    /// civitai 文章解析：publishedAt 应正确转成 unix 时间戳，content 应作为正文。
+    /// 复现「文章被归类为今日」：publishedAt 缺失/解析失败时 published_at 不设置，
+    /// 列表「今日」过滤会回退到 fetched_at。
+    #[test]
+    fn civitai_article_parses_published_at() {
+        let m = empty_manifest(Tier::Script);
+        let http = Arc::new(HttpClient::default());
+        let creds = Arc::new(CredentialStore::in_memory());
+        let rt = Runtime::build(m, http, creds);
+        let script = r#"
+            fn str_safe(v) {
+                let t = type_of(v);
+                if t == "string" { return v; }
+                if t == "i64" || t == "i32" || t == "int" || t == "f64" { return "" + v; }
+                return "";
+            }
+            fn parse_int_safe(v) {
+                if type_of(v) == "i64" || type_of(v) == "i32" || type_of(v) == "int" { return v; }
+                let s = str_safe(v);
+                if len(s) == 0 { return 0; }
+                try { return s.parse_int(); } catch { return 0; }
+            }
+            fn iso_to_unix(s) {
+                if type_of(s) != "string" || len(s) < 19 { return 0; }
+                let ymd = s.substring(0, 10).split("-");
+                let hms = s.substring(11, 19).split(":");
+                if len(ymd) != 3 || len(hms) != 3 { return 0; }
+                let y = parse_int_safe(ymd[0]);
+                let mo = parse_int_safe(ymd[1]);
+                let d = parse_int_safe(ymd[2]);
+                let h = parse_int_safe(hms[0]);
+                let mi = parse_int_safe(hms[1]);
+                let se = parse_int_safe(hms[2]);
+                if y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31 { return 0; }
+                let y2 = y - (if mo <= 2 { 1 } else { 0 });
+                let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400;
+                let yoe = y2 - era * 400;
+                let mp = mo + (if mo > 2 { -3 } else { 9 });
+                let doy = (153 * mp + 2) / 5 + d - 1;
+                let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                let days = era * 146097 + doe - 719468;
+                let ts = days * 86400 + h * 3600 + mi * 60 + se;
+                return ts;
+            }
+            let item = #{
+                "id": 33568,
+                "title": "测试文章",
+                "content": "<p>正文内容</p>",
+                "publishedAt": "2025-11-22T12:01:04.696Z"
+            };
+            let published = iso_to_unix(str_safe(json_path(item, "publishedAt")));
+            set_field("title", str_safe(json_path(item, "title")));
+            set_field("guid", "civitai-article-" + str_safe(json_path(item, "id")));
+            set_field("url", "https://civitai.red/articles/" + str_safe(json_path(item, "id")));
+            if published > 0 { set_field("published_at", published); }
+            set_field("content_html", str_safe(json_path(item, "content")));
+            add_entry();
+        "#;
+        let parsed = rt
+            .run_script(script, "https://civitai.red/user/madlaxcb", &[])
+            .expect("run_script");
+        let e = &parsed.entries[0];
+        assert_eq!(e.title, "测试文章");
+        assert_eq!(e.content_html, "<p>正文内容</p>");
+        // 2025-11-22T12:01:04Z 的 unix 时间。
+        assert_eq!(e.published_at, Some(1763812864));
+    }
+
     /// 端到端：用官方 civitai 插件跑真实 API，验证视频条目有 jpeg 封面帧
     /// 缩略图、内容区 video 带 poster。默认用 madlaxcb（.red 含 NSFW）。
     /// `GLEAN_CIVITAI_URL` 可指定任意创作者主页。

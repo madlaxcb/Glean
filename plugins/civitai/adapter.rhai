@@ -25,7 +25,7 @@
 // 匿名访问可用，但限速更低。
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const ADAPTER_VERSION = "20260808-2";
+const ADAPTER_VERSION = "20260809-2";
 
 // ---- 工具函数 ----
 
@@ -340,15 +340,22 @@ if do_articles {
                     let title = str_safe(json_path(item, "title"));
                     let content = str_safe(json_path(item, "content"));
                     let published = iso_to_unix(str_safe(json_path(item, "publishedAt")));
+                    let mut published_at = published;
+                    if published_at == 0 {
+                        published_at = iso_to_unix(str_safe(json_path(item, "createdAt")));
+                    }
+                    let article_url = base + "/articles/" + id;
 
                     if len(title) == 0 { title = "文章 #" + id; }
                     if len(content) == 0 { content = str_safe(json_path(item, "excerpt")); }
+                    content.replace("<p>" + article_url + "</p>", "");
+                    content.replace("<div>" + article_url + "</div>", "");
 
                     set_field("guid", guid);
                     set_field("title", title);
-                    set_field("url", base + "/articles/" + id);
+                    set_field("url", article_url);
                     set_field("author", username);
-                    if published > 0 { set_field("published_at", published); }
+                    if published_at > 0 { set_field("published_at", published_at); }
                     set_field("content_html", content);
                     add_entry();
                     art_count += 1;

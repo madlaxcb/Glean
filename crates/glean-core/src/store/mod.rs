@@ -799,13 +799,12 @@ impl Store {
                  FROM entries WHERE is_starred = 1
                  ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
             }
-            // Last 24h; fallback to fetched_at when published_at is missing.
             EntryFilter::Today => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
                         (content_html != '' OR content_extracted != '') AS has_content, thumbnail_url
                  FROM entries
-                 WHERE COALESCE(published_at, fetched_at) >= ?1
-                 ORDER BY COALESCE(published_at, fetched_at) DESC, id DESC"
+                 WHERE published_at >= ?1
+                 ORDER BY published_at DESC, id DESC"
             }
             EntryFilter::Feed(_) => {
                 "SELECT id, feed_id, title, url, published_at, is_read, is_starred,
@@ -1587,6 +1586,44 @@ mod tests {
         let cache_file = cache_dir.join(id.0.to_string()).join("body.html");
         assert_eq!(std::fs::read_to_string(&cache_file).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn today_does_not_use_fetch_time_when_publication_time_is_missing() {
+        let mut store = Store::open_in_memory().unwrap();
+        let feed_id = store
+            .add_feed("Civitai", "https://civitai.com/user/test", None, FeedCategory::Article)
+            .unwrap();
+        store
+            .upsert_entry(
+                feed_id,
+                "unknown-date",
+                "Unknown date",
+                Some("https://civitai.com/articles/1"),
+                None,
+                None,
+                None,
+                "<p>x</p>",
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_entry(
+                feed_id,
+                "published-today",
+                "Published today",
+                Some("https://civitai.com/articles/2"),
+                None,
+                Some(now_secs()),
+                None,
+                "<p>x</p>",
+                None,
+            )
+            .unwrap();
+
+        let today = store.list_entries(EntryFilter::Today).unwrap();
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].title, "Published today");
     }
 
     #[test]

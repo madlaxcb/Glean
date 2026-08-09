@@ -20,6 +20,16 @@ pub fn install(ctx: &egui::Context) {
             }
         }
 
+        if let Some((name, data)) = load_symbol_font() {
+            fonts
+                .font_data
+                .insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                if let Some(list) = fonts.families.get_mut(&family) {
+                    list.push(name.clone());
+                }
+            }
+        }
         ctx.set_fonts(fonts);
         eprintln!("glean-spike: loaded UI font `{name}`");
     } else {
@@ -42,6 +52,21 @@ fn load_cjk_font() -> Option<(String, Vec<u8>)> {
             r"C:\Windows\Fonts\NotoSansCJKsc-Regular.otf",
         ),
         ("Segoe UI", r"C:\Windows\Fonts\segoeui.ttf"),
+    ];
+
+    for (name, path) in CANDIDATES {
+        match std::fs::read(path) {
+            Ok(data) if data.len() > 1000 => return Some(((*name).to_string(), data)),
+            _ => continue,
+        }
+    }
+    None
+}
+
+fn load_symbol_font() -> Option<(String, Vec<u8>)> {
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("Segoe UI Symbol", r"C:\Windows\Fonts\seguisym.ttf"),
+        ("Noto Sans Symbols 2", r"C:\Windows\Fonts\NotoSansSymbols2-Regular.ttf"),
     ];
 
     for (name, path) in CANDIDATES {
