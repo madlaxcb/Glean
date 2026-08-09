@@ -1672,13 +1672,38 @@ impl SpikeState {
                                     let path = dir.join(format!("{}.png", eid.0));
                                     let _ = rgba.save(&path);
                                 }
+                                write_debug_log(&format!(
+                                    "[thumb-ok] entry={} bytes={} {}x{}",
+                                    eid.0,
+                                    bytes.len(),
+                                    w,
+                                    h
+                                ));
                                 tx.send((eid, rgba.into_raw(), w, h)).is_ok()
                             }
-                            Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                            Err(e) => {
+                                write_debug_log(&format!(
+                                    "[thumb-decode-err] entry={} url={} err={}",
+                                    eid.0, url, e
+                                ));
+                                tx.send((eid, Vec::new(), 0, 0)).is_ok()
+                            }
                         },
-                        Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                        Err(e) => {
+                            write_debug_log(&format!(
+                                "[thumb-bytes-err] entry={} url={} err={}",
+                                eid.0, url, e
+                            ));
+                            tx.send((eid, Vec::new(), 0, 0)).is_ok()
+                        }
                     },
-                    Err(_) => tx.send((eid, Vec::new(), 0, 0)).is_ok(),
+                    Err(e) => {
+                        write_debug_log(&format!(
+                            "[thumb-http-err] entry={} url={} err={}",
+                            eid.0, url, e
+                        ));
+                        tx.send((eid, Vec::new(), 0, 0)).is_ok()
+                    }
                 };
                 let _ = sent;
             });

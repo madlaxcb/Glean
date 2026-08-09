@@ -80,6 +80,14 @@ impl GleanService {
     pub fn open_path_with_proxy(path: &Path, proxy_url: Option<&str>) -> Result<Self> {
         // §11.5.8 / §11.5.9 加载插件目录 + 凭证存储。失败不阻塞核心功能：
         // 插件系统是扩展层，DB/HTTP/订阅主线必须能独立工作。
+        // 先同步内置官方插件（缺失或版本落后时自动安装/更新，如适配器修复），
+        // 再创建 manager，保证扫描到的是最新插件。
+        if let Some(dir) = paths::plugins_dir() {
+            let synced = crate::plugin::bundled::sync_bundled_plugins(&dir);
+            if !synced.is_empty() {
+                eprintln!("glean: 已同步内置插件: {synced:?}");
+            }
+        }
         let plugin_mgr = paths::plugins_dir()
             .and_then(|d| PluginManager::new(d).ok())
             .map(Arc::new);

@@ -17,6 +17,7 @@
 //! 4. **最小权限**：`Engine` 按插件动态构建，只注册声明过的 host 函数
 //! 5. **不阻塞主循环**：所有 hook 在 worker 线程，超时由 Host 强制
 
+pub mod bundled;
 pub mod credential;
 pub mod enhancer;
 pub mod manager;
