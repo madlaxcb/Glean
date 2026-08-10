@@ -25,7 +25,7 @@
 // 匿名访问可用，但限速更低。
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const ADAPTER_VERSION = "20260810-1";
+const ADAPTER_VERSION = "20260810-2";
 
 // ---- 工具函数 ----
 
@@ -204,17 +204,20 @@ if do_models {
                     // 封面图：第一个版本的第一个图片。
                     let thumb = "";
                     let published = 0;
+                    published = iso_to_unix(str_safe(json_path(item, "createdAt")));
                     let versions = json_path(item, "modelVersions");
                     if type_of(versions) == "array" && len(versions) > 0 {
                         let imgs = json_path(versions[0], "images");
                         if type_of(imgs) == "array" && len(imgs) > 0 {
                             thumb = str_safe(json_path(imgs[0], "url"));
                         }
-                        published = iso_to_unix(str_safe(json_path(versions[0], "createdAt")));
+                        if published == 0 {
+                            published = iso_to_unix(str_safe(json_path(versions[0], "createdAt")));
+                        }
                     }
 
                     let html = "";
-                    if len(desc) > 0 { html += "<p>" + html_escape(desc) + "</p>"; }
+                    if len(desc) > 0 { html += "<div>" + desc + "</div>"; }
                     if len(thumb) > 0 { html += "<p><img src=\"" + html_escape(thumb) + "\"></p>"; }
                     html += "<p>类型: " + html_escape(mtype);
                     if len(dl_count) > 0 && dl_count != "0" { html += " | 下载: " + dl_count; }
