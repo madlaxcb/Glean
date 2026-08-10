@@ -1259,6 +1259,16 @@ impl GleanService {
         Ok(ev)
     }
 
+    pub fn add_parsed_feed(
+        &mut self,
+        url: &str,
+        parsed: ParsedFeed,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    ) -> Result<Vec<AppEvent>> {
+        self.ingest_new_feed(url, parsed, etag, last_modified)
+    }
+
     /// Fetch the URL as HTML, discover feed links, and subscribe to the first one.
     fn try_discover_and_add(&mut self, url: &str) -> Result<Vec<AppEvent>> {
         let fetched = fetch_feed_bytes(&self.http, url, None, None)?;
@@ -1438,6 +1448,108 @@ pub struct RefreshCtx {
     pub plugin_settings: Option<PluginSettings>,
     /// 浅检模式（检查更新）：适配器遇到已有 GUID 时提前停止分页。
     pub shallow: bool,
+}
+
+pub struct AddFeedOutcome {
+    pub url: String,
+    pub parsed: Option<ParsedFeed>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub error: Option<String>,
+}
+
+pub fn run_add_feed_task(feed_url: String, ctx: &RefreshCtx) -> AddFeedOutcome {
+    let trimmed = clean_feed_url(&feed_url);
+    let url = crate::feed::tier0::normalize(&trimmed);
+    let client = &ctx.http;
+
+    if let Some(mgr) = ctx.plugin_mgr.as_deref() {
+        if let Some(result) = mgr.run_tier1_for_url(&url, client).transpose() {
+            return match result {
+                Ok(parsed) => AddFeedOutcome {
+                    url,
+                    parsed: Some(parsed),
+                    etag: None,
+                    last_modified: None,
+                    error: None,
+                },
+                Err(e) => AddFeedOutcome {
+                    url,
+                    parsed: None,
+                    etag: None,
+                    last_modified: None,
+                    error: Some(e.to_string()),
+                },
+            };
+        }
+        let creds = ctx.credentials.as_ref().map(|c| Arc::new(c.clone()));
+        if let Some(result) = mgr
+            .run_tier2_for_url(
+                &url,
+                Arc::clone(client),
+                creds,
+                ctx.plugin_settings.as_ref(),
+                &[],
+                false,
+            )
+            .transpose()
+        {
+            return match result {
+                Ok(parsed) => AddFeedOutcome {
+                    url,
+                    parsed: Some(parsed),
+                    etag: None,
+                    last_modified: None,
+                    error: None,
+                },
+                Err(e) => AddFeedOutcome {
+                    url,
+                    parsed: None,
+                    etag: None,
+                    last_modified: None,
+                    error: Some(e.to_string()),
+                },
+            };
+        }
+    }
+
+    match fetch_feed_bytes(client, &url, None, None) {
+        Ok(FetchResult::Body {
+            bytes,
+            etag,
+            last_modified,
+            ..
+        }) => match parse_feed(&bytes) {
+            Ok(parsed) => AddFeedOutcome {
+                url,
+                parsed: Some(parsed),
+                etag,
+                last_modified,
+                error: None,
+            },
+            Err(_) => AddFeedOutcome {
+                url,
+                parsed: None,
+                etag: None,
+                last_modified: None,
+                error: Some("不是有效的 RSS/Atom feed".into()),
+            },
+        },
+        Ok(FetchResult::NotModified) => AddFeedOutcome {
+            url,
+            parsed: None,
+            etag: None,
+            last_modified: None,
+            error: Some("首次抓取返回了 304".into()),
+        },
+        Err(e) => AddFeedOutcome {
+            url,
+            parsed: None,
+            etag: None,
+            last_modified: None,
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 /// 按订阅的 use_proxy 选择 HTTP 客户端；未配置代理时回退直连。

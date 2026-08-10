@@ -47,7 +47,9 @@ pub use plugin::{
 };
 pub use reader_html::reader_document;
 pub use sanitize::{sanitize_html, sanitize_html_with_policy};
-pub use service::{run_refresh_task_with_ctx, GleanService, RefreshCtx};
+pub use service::{
+    run_add_feed_task, run_refresh_task_with_ctx, AddFeedOutcome, GleanService, RefreshCtx,
+};
 pub use store::Store;
 
 /// Host mode for the WebView reader (spike / hybrid path).

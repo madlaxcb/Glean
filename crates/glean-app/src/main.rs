@@ -13,11 +13,11 @@ mod update;
 
 use eframe::egui;
 use glean_core::{
-    default_config_path, default_db_path, run_enhance_task, run_extract_task,
-    run_refresh_task_with_ctx, should_extract, AppCommand, AppConfig, AppEvent, EnhanceAction,
-    EnhanceOutcome, EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome, ExtractTask,
-    FaviconCache, Feed, FeedCategory, FeedId, Folder, FolderId, GleanService, ImagePolicy,
-    ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
+    default_config_path, default_db_path, run_add_feed_task, run_enhance_task, run_extract_task,
+    run_refresh_task_with_ctx, should_extract, AddFeedOutcome, AppCommand, AppConfig, AppEvent,
+    EnhanceAction, EnhanceOutcome, EntryDetail, EntryFilter, EntryId, EntrySummary, ExtractOutcome,
+    ExtractTask, FaviconCache, Feed, FeedCategory, FeedId, Folder, FolderId, GleanService,
+    ImagePolicy, ReaderHostMode, RefreshCtx, RefreshOutcome, RefreshTask,
 };
 use reader::ReaderHost;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -184,6 +184,7 @@ pub struct SpikeState {
     pub feed_add_new_folder: String,
     /// Background refresh state.
     refresh_rx: Option<mpsc::Receiver<RefreshOutcome>>,
+    add_feed_rx: Option<mpsc::Receiver<AddFeedOutcome>>,
     refresh_pending: usize,
     /// 「停止刷新」取消标志：每次启动刷新创建新的 Arc；停止时置 true，
     /// worker 线程在下一订阅前退出。
@@ -361,6 +362,7 @@ impl SpikeState {
             feed_add_folder: None,
             feed_add_new_folder: String::new(),
             refresh_rx: None,
+            add_feed_rx: None,
             refresh_pending: 0,
             refresh_cancel: Arc::new(AtomicBool::new(false)),
             pending_open_entry: None,
@@ -514,6 +516,40 @@ impl SpikeState {
             self.maybe_download_favicons();
         } else if got > 0 {
             self.status = format!("刷新中… 剩余 {} 个源", self.refresh_pending);
+        }
+    }
+
+    pub fn poll_add_feed(&mut self) {
+        let outcome = match self.add_feed_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            Some(outcome) => outcome,
+            None => return,
+        };
+        self.add_feed_rx = None;
+        let AddFeedOutcome {
+            url,
+            parsed,
+            etag,
+            last_modified,
+            error,
+        } = outcome;
+        match (parsed, error) {
+            (Some(parsed), None) => {
+                match self
+                    .service
+                    .add_parsed_feed(&url, parsed, etag, last_modified)
+                {
+                    Ok(events) => {
+                        for ev in events {
+                            self.apply_event(ev);
+                        }
+                        self.apply_add_options(&url);
+                        self.feed_url_input.clear();
+                    }
+                    Err(e) => self.status = format!("错误: {e}"),
+                }
+            }
+            (_, Some(error)) => self.status = format!("错误: {error}"),
+            _ => self.status = "错误: 添加订阅失败".into(),
         }
     }
 
@@ -812,16 +848,17 @@ impl SpikeState {
             self.status = "请输入 RSS/Atom URL".into();
             return;
         }
-        self.status = format!("正在抓取 {url} …");
-        self.dispatch(AppCommand::AddFeedFromUrl {
-            feed_url: url.clone(),
-        });
-        if self.status.starts_with("错误") {
+        if self.add_feed_rx.is_some() {
+            self.status = "正在添加订阅，请稍候…".into();
             return;
         }
-        self.feed_url_input.clear();
-        // 把订阅栏选择的分类 / 文件夹（含新建文件夹）应用到刚添加的订阅上。
-        self.apply_add_options(&url);
+        self.status = format!("正在后台抓取 {url} …");
+        let ctx = self.service.refresh_ctx();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(run_add_feed_task(url, &ctx));
+        });
+        self.add_feed_rx = Some(rx);
     }
 
     /// 把订阅栏选择的分类 / 文件夹（含新建文件夹）应用到刚添加的订阅上。

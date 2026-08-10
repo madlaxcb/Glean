@@ -149,6 +149,7 @@ impl eframe::App for SpikeApp {
 
         // Poll background refresh every frame.
         self.state.poll_refresh();
+        self.state.poll_add_feed();
 
         // Poll background full-text extraction.
         self.state.poll_extract();
