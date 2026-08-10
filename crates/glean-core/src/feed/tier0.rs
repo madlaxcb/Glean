@@ -8,10 +8,6 @@
 //!   - 只处理恰好两段 path（owner/repo）的形态；更深路径（如 `/releases/tag/x`）不动
 //! - YouTube `https://www.youtube.com/channel/UCxxxx` → `https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxx`
 //!   - 已是 `feeds/videos.xml` 的不再处理
-//! - X / Twitter `https://x.com/{username}` → `https://rsshub.app/twitter/user/{username}`
-//!   - 同时支持 `twitter.com`
-//!   - 只处理恰好一段 path（用户名）的形态；更深路径（如 `/status/123`）不动
-//!   - 依赖公共 RSSHub 实例，后续可配置自定义地址
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -39,7 +35,6 @@ pub fn normalize(raw: &str) -> String {
         "github.com" => normalize_github(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
         "pixiv.net" => normalize_pixiv(&mut url, raw),
-        "x.com" | "twitter.com" => normalize_x(&mut url, raw),
         _ => raw.to_string(),
     }
 }
@@ -88,45 +83,6 @@ fn normalize_pixiv(url: &mut Url, raw: &str) -> String {
         url.set_path(&format!("/users/{}", segments[1]));
         url.set_fragment(None);
         return url.to_string();
-    }
-    raw.to_string()
-}
-
-/// X / Twitter 用户主页 → RSSHub 用户时间线。
-///
-/// `https://x.com/{username}` → `https://rsshub.app/twitter/user/{username}`
-///
-/// 只处理恰好一段 path（用户名）的形态；状态页、搜索页等更深路径不动。
-fn normalize_x(url: &mut Url, raw: &str) -> String {
-    let segments: Vec<&str> = url
-        .path_segments()
-        .map(|p| p.filter(|s| !s.is_empty()).collect())
-        .unwrap_or_default();
-    if segments.len() == 1 {
-        let username = segments[0];
-        // 排除非用户主页路径
-        if matches!(
-            username.to_lowercase().as_str(),
-            "home"
-                | "explore"
-                | "search"
-                | "login"
-                | "i"
-                | "settings"
-                | "notifications"
-                | "messages"
-                | "bookmarks"
-                | "lists"
-                | "communities"
-                | "intent"
-        ) {
-            return raw.to_string();
-        }
-        let mut rsshub = Url::parse("https://rsshub.app/twitter/user").unwrap();
-        rsshub.path_segments_mut().unwrap().push(username);
-        rsshub.set_query(url.query());
-        rsshub.set_fragment(None);
-        return rsshub.to_string();
     }
     raw.to_string()
 }
@@ -262,81 +218,5 @@ mod tests {
             normalize("http://github.com/owner/repo"),
             "http://github.com/owner/repo/releases.atom"
         );
-    }
-
-    // --- X / Twitter ---
-
-    #[test]
-    fn x_user_normalizes_to_rsshub() {
-        assert_eq!(
-            normalize("https://x.com/madlaxcb"),
-            "https://rsshub.app/twitter/user/madlaxcb"
-        );
-    }
-
-    #[test]
-    fn twitter_user_normalizes_to_rsshub() {
-        assert_eq!(
-            normalize("https://twitter.com/madlaxcb"),
-            "https://rsshub.app/twitter/user/madlaxcb"
-        );
-    }
-
-    #[test]
-    fn x_user_with_www_normalizes() {
-        assert_eq!(
-            normalize("https://www.x.com/madlaxcb"),
-            "https://rsshub.app/twitter/user/madlaxcb"
-        );
-    }
-
-    #[test]
-    fn x_user_trailing_slash_normalizes() {
-        assert_eq!(
-            normalize("https://x.com/madlaxcb/"),
-            "https://rsshub.app/twitter/user/madlaxcb"
-        );
-    }
-
-    #[test]
-    fn x_status_page_untouched() {
-        let u = "https://x.com/madlaxcb/status/1234567890";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_explore_untouched() {
-        let u = "https://x.com/explore";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_search_untouched() {
-        let u = "https://x.com/search?q=test";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_home_untouched() {
-        let u = "https://x.com/home";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_login_untouched() {
-        let u = "https://x.com/login";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_intent_untouched() {
-        let u = "https://x.com/intent/post";
-        assert_eq!(normalize(u), u);
-    }
-
-    #[test]
-    fn x_root_untouched() {
-        let u = "https://x.com/";
-        assert_eq!(normalize(u), u);
     }
 }
