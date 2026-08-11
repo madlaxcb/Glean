@@ -18,6 +18,9 @@
 //! - GitLab `https://gitlab.com/{group}/{project}` → `https://gitlab.com/{group}/{project}/-/releases.atom`
 //!   - 支持嵌套命名空间（group/subgroup/project）
 //!   - 已含 `/-/` 分隔符的路径（issues、merge requests 等）不动
+//! - Mastodon / 联邦宇宙 `https://{instance}/@user` → `https://{instance}/@user.rss`
+//!   - 作为兜底规则，仅在已知 host 未命中时生效
+//!   - 已带 `.rss` 后缀或更深路径（具体嘟文）不动
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -47,7 +50,7 @@ pub fn normalize(raw: &str) -> String {
         "medium.com" => normalize_medium(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
         "pixiv.net" => normalize_pixiv(&mut url, raw),
-        _ => raw.to_string(),
+        _ => normalize_fediverse(&mut url, raw),
     }
 }
 
@@ -180,6 +183,25 @@ fn normalize_gitlab(url: &mut Url, raw: &str) -> String {
     // ≥2 段（group/project 或 group/subgroup/project）→ releases.atom
     if segments.len() >= 2 {
         url.set_path(&format!("{}/-/releases.atom", segments.join("/")));
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    raw.to_string()
+}
+
+/// 联邦宇宙（Mastodon 等）：`/@username` → `/@username.rss`
+/// 作为兜底规则，仅在已知 host 未命中时生效。
+fn normalize_fediverse(url: &mut Url, raw: &str) -> String {
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    // 单段 `@username` 且未已是 .rss → 追加 .rss
+    if segments.len() == 1 && segments[0].starts_with('@') && !segments[0].ends_with(".rss") {
+        url.set_path(&format!("/{}.rss", segments[0]));
         url.set_query(None);
         url.set_fragment(None);
         return url.to_string();
@@ -416,5 +438,35 @@ mod tests {
             normalize("http://github.com/owner/repo"),
             "http://github.com/owner/repo/releases.atom"
         );
+    }
+
+    // --- Mastodon / 联邦宇宙 ---
+
+    #[test]
+    fn mastodon_social_profile_normalizes_to_rss() {
+        assert_eq!(
+            normalize("https://mastodon.social/@user"),
+            "https://mastodon.social/@user.rss"
+        );
+    }
+
+    #[test]
+    fn mastodon_other_instance_profile_normalizes_to_rss() {
+        assert_eq!(
+            normalize("https://infosec.exchange/@user"),
+            "https://infosec.exchange/@user.rss"
+        );
+    }
+
+    #[test]
+    fn mastodon_already_rss_untouched() {
+        let u = "https://mastodon.social/@user.rss";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn mastodon_specific_post_untouched() {
+        let u = "https://mastodon.social/@user/123456789";
+        assert_eq!(normalize(u), u);
     }
 }
