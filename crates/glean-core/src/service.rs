@@ -1139,7 +1139,7 @@ impl GleanService {
         }
         // §11.5.2 Tier 0: 对 GitHub releases / YouTube channel 做 URL 规范化。
         // 规范化后的 URL 才是真正入库的订阅地址。
-        let url = crate::feed::tier0::normalize(&trimmed);
+        let url = self.resolve_youtube_handle(&crate::feed::tier0::normalize(&trimmed))?;
         if let Some(existing) = self.store.find_feed_by_url(&url)? {
             let mut ev = vec![AppEvent::Status {
                 message: format!("源已存在，已刷新 id={}", existing.0),
@@ -1168,6 +1168,33 @@ impl GleanService {
 
         // Try 2: fetch as HTML and discover feed links.
         self.try_discover_and_add(&url)
+    }
+
+    fn resolve_youtube_handle(&self, url: &str) -> Result<String> {
+        if !crate::feed::tier0::is_youtube_handle_url(url) {
+            return Ok(url.to_string());
+        }
+        let response = self
+            .http
+            .inner
+            .get(url)
+            .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+            .send()
+            .map_err(|e| CoreError::Http(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(CoreError::Http(format!(
+                "YouTube 页面请求失败: {}",
+                response.status()
+            )));
+        }
+        let html = response
+            .text()
+            .map_err(|e| CoreError::Http(e.to_string()))?;
+        let channel_id = crate::feed::tier0::extract_youtube_channel_id(&html)
+            .ok_or_else(|| CoreError::Message("无法从 YouTube 页面解析 channel_id".into()))?;
+        Ok(format!(
+            "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        ))
     }
 
     /// Try to add the URL as a feed. Returns Ok(None) if it's not a feed.
@@ -1461,6 +1488,18 @@ pub struct AddFeedOutcome {
 pub fn run_add_feed_task(feed_url: String, ctx: &RefreshCtx) -> AddFeedOutcome {
     let trimmed = clean_feed_url(&feed_url);
     let url = crate::feed::tier0::normalize(&trimmed);
+    let url = match resolve_youtube_handle_url(&url, &ctx.http) {
+        Ok(url) => url,
+        Err(error) => {
+            return AddFeedOutcome {
+                url,
+                parsed: None,
+                etag: None,
+                last_modified: None,
+                error: Some(error),
+            };
+        }
+    };
     let client = &ctx.http;
 
     if let Some(mgr) = ctx.plugin_mgr.as_deref() {
@@ -1550,6 +1589,30 @@ pub fn run_add_feed_task(feed_url: String, ctx: &RefreshCtx) -> AddFeedOutcome {
             error: Some(e.to_string()),
         },
     }
+}
+
+fn resolve_youtube_handle_url(
+    url: &str,
+    client: &HttpClient,
+) -> std::result::Result<String, String> {
+    if !crate::feed::tier0::is_youtube_handle_url(url) {
+        return Ok(url.to_string());
+    }
+    let response = client
+        .inner
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .send()
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("YouTube 页面请求失败: {}", response.status()));
+    }
+    let html = response.text().map_err(|e| e.to_string())?;
+    let channel_id = crate::feed::tier0::extract_youtube_channel_id(&html)
+        .ok_or_else(|| "无法从 YouTube 页面解析 channel_id".to_string())?;
+    Ok(format!(
+        "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    ))
 }
 
 /// 按订阅的 use_proxy 选择 HTTP 客户端；未配置代理时回退直连。

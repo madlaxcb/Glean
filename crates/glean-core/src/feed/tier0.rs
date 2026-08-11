@@ -6,7 +6,10 @@
 //! - GitHub `https://github.com/{owner}/{repo}` → `https://github.com/{owner}/{repo}/releases.atom`
 //!   - 已带 `.atom` 后缀的不再处理
 //!   - 只处理恰好两段 path（owner/repo）的形态；更深路径（如 `/releases/tag/x`）不动
-//! - YouTube `https://www.youtube.com/channel/UCxxxx` → `https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxx`
+//! - YouTube
+//!   - `https://www.youtube.com/channel/UCxxxx` → `https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxx`
+//!   - YouTube playlist URL 保留原地址，交由后续解析流程处理
+//!   - `https://www.youtube.com/@handle` → 需网络请求解析 channel_id（见 `resolve_youtube_handle`）
 //!   - 已是 `feeds/videos.xml` 的不再处理
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
@@ -37,6 +40,40 @@ pub fn normalize(raw: &str) -> String {
         "pixiv.net" => normalize_pixiv(&mut url, raw),
         _ => raw.to_string(),
     }
+}
+
+pub fn is_youtube_handle_url(raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw.trim()) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or("").trim_start_matches("www.");
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    matches!(host, "youtube.com" | "m.youtube.com")
+        && segments.len() == 1
+        && segments[0].starts_with('@')
+        && segments[0].len() > 1
+}
+
+pub fn extract_youtube_channel_id(html: &str) -> Option<String> {
+    let markers = ["\"channelId\":\"", "\"externalId\":\"", "\"browseId\":\""];
+    markers.iter().find_map(|marker| {
+        let start = html.find(marker)? + marker.len();
+        let end = html[start..].find('"')?;
+        let channel_id = &html[start..start + end];
+        if channel_id.starts_with("UC")
+            && channel_id.len() > 2
+            && channel_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            Some(channel_id.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn normalize_github(url: &mut Url, raw: &str) -> String {
@@ -171,6 +208,47 @@ mod tests {
     fn youtube_handle_untouched() {
         // @handle 不在 Tier 0 规则内（无法静态解析为 channel_id）
         let u = "https://www.youtube.com/@somehandle";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn recognizes_youtube_handle_url() {
+        assert!(is_youtube_handle_url("https://www.youtube.com/@somehandle"));
+        assert!(!is_youtube_handle_url(
+            "https://www.youtube.com/channel/UCxxx"
+        ));
+    }
+
+    #[test]
+    fn extracts_youtube_channel_id_from_page_data() {
+        let html = r#"<script>{"browseId":"UC1234567890abcdefghij"}</script>"#;
+        assert_eq!(
+            extract_youtube_channel_id(html).as_deref(),
+            Some("UC1234567890abcdefghij")
+        );
+    }
+
+    #[test]
+    fn youtube_playlist_is_untouched() {
+        let u = "https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxxxxxxxxxx";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn youtube_playlist_with_www_is_untouched() {
+        let u = "https://m.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxxxxxxxxxx";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn youtube_playlist_without_list_param_untouched() {
+        let u = "https://www.youtube.com/playlist";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn youtube_playlist_invalid_prefix_untouched() {
+        let u = "https://www.youtube.com/playlist?list=ABxxxx";
         assert_eq!(normalize(u), u);
     }
 
