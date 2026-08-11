@@ -11,6 +11,13 @@
 //!   - YouTube playlist URL 保留原地址，交由后续解析流程处理
 //!   - `https://www.youtube.com/@handle` → 需网络请求解析 channel_id（见 `resolve_youtube_handle`）
 //!   - 已是 `feeds/videos.xml` 的不再处理
+//! - Medium `https://medium.com/{path}` → `https://medium.com/feed/{path}`
+//!   - 支持用户 `@handle`、出版物名称、`tag/{topic}`
+//!   - 已带 `/feed/` 前缀的不再处理
+//!   - 文章路径（2 段且非 tag）不动
+//! - GitLab `https://gitlab.com/{group}/{project}` → `https://gitlab.com/{group}/{project}/-/releases.atom`
+//!   - 支持嵌套命名空间（group/subgroup/project）
+//!   - 已含 `/-/` 分隔符的路径（issues、merge requests 等）不动
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -36,6 +43,8 @@ pub fn normalize(raw: &str) -> String {
 
     match normalized_host {
         "github.com" => normalize_github(&mut url, raw),
+        "gitlab.com" => normalize_gitlab(&mut url, raw),
+        "medium.com" => normalize_medium(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
         "pixiv.net" => normalize_pixiv(&mut url, raw),
         _ => raw.to_string(),
@@ -124,6 +133,61 @@ fn normalize_pixiv(url: &mut Url, raw: &str) -> String {
     raw.to_string()
 }
 
+/// Medium 官方 RSS 格式：`medium.com/feed/{path}`。
+/// 支持 `@handle`（用户）、出版物名称、`tag/{topic}`。
+fn normalize_medium(url: &mut Url, raw: &str) -> String {
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    // 已是 feed URL
+    if segments.first() == Some(&"feed") {
+        return raw.to_string();
+    }
+
+    // 1 段（@user 或出版物名）→ feed
+    // 2 段且首段是 tag → feed
+    let should_normalize = match segments.len() {
+        1 => true,
+        2 => segments[0] == "tag",
+        _ => false,
+    };
+
+    if should_normalize {
+        url.set_path(&format!("/feed/{}", segments.join("/")));
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    raw.to_string()
+}
+
+/// GitLab Releases Atom feed：`{project}/-/releases.atom`。
+/// 支持嵌套命名空间（group/subgroup/project）。
+fn normalize_gitlab(url: &mut Url, raw: &str) -> String {
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    // 已含 GitLab `/-/` 分隔符（issues、merge requests、releases 等）→ 不动
+    if segments.iter().any(|s| *s == "-") {
+        return raw.to_string();
+    }
+
+    // ≥2 段（group/project 或 group/subgroup/project）→ releases.atom
+    if segments.len() >= 2 {
+        url.set_path(&format!("{}/-/releases.atom", segments.join("/")));
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    raw.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +241,62 @@ mod tests {
             normalize("https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxxxx"),
             "https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxxxxxxxxxxxxxxxxxxxxx"
         );
+    }
+
+    #[test]
+    fn medium_profile_normalizes_to_feed() {
+        assert_eq!(
+            normalize("https://medium.com/@user"),
+            "https://medium.com/feed/@user"
+        );
+    }
+
+    #[test]
+    fn medium_publication_normalizes_to_feed() {
+        assert_eq!(
+            normalize("https://medium.com/publication"),
+            "https://medium.com/feed/publication"
+        );
+    }
+
+    #[test]
+    fn medium_topic_normalizes_to_feed() {
+        assert_eq!(
+            normalize("https://medium.com/tag/rust"),
+            "https://medium.com/feed/tag/rust"
+        );
+    }
+
+    #[test]
+    fn medium_feed_and_story_urls_are_untouched() {
+        let feed = "https://medium.com/feed/@user";
+        let story = "https://medium.com/publication/story-title-abc123";
+        assert_eq!(normalize(feed), feed);
+        assert_eq!(normalize(story), story);
+    }
+
+    #[test]
+    fn gitlab_project_normalizes_to_releases_atom() {
+        assert_eq!(
+            normalize("https://gitlab.com/group/project"),
+            "https://gitlab.com/group/project/-/releases.atom"
+        );
+    }
+
+    #[test]
+    fn gitlab_nested_project_normalizes_to_releases_atom() {
+        assert_eq!(
+            normalize("https://gitlab.com/group/subgroup/project"),
+            "https://gitlab.com/group/subgroup/project/-/releases.atom"
+        );
+    }
+
+    #[test]
+    fn gitlab_releases_and_deeper_paths_are_untouched() {
+        let feed = "https://gitlab.com/group/project/-/releases.atom";
+        let issue = "https://gitlab.com/group/project/-/issues/1";
+        assert_eq!(normalize(feed), feed);
+        assert_eq!(normalize(issue), issue);
     }
 
     #[test]
