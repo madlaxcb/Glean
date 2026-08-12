@@ -21,6 +21,8 @@
 //! - Mastodon / 联邦宇宙 `https://{instance}/@user` → `https://{instance}/@user.rss`
 //!   - 作为兜底规则，仅在已知 host 未命中时生效
 //!   - 已带 `.rss` 后缀或更深路径（具体嘟文）不动
+//! - Substack `https://{pub}.substack.com` → `https://{pub}.substack.com/feed`
+//!   - 仅处理根路径（无路径或单段），文章路径（`/p/...`）不动
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -50,7 +52,13 @@ pub fn normalize(raw: &str) -> String {
         "medium.com" => normalize_medium(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
         "pixiv.net" => normalize_pixiv(&mut url, raw),
-        _ => normalize_fediverse(&mut url, raw),
+        _ => {
+            if normalized_host.ends_with(".substack.com") {
+                normalize_substack(&mut url, raw)
+            } else {
+                normalize_fediverse(&mut url, raw)
+            }
+        }
     }
 }
 
@@ -183,6 +191,25 @@ fn normalize_gitlab(url: &mut Url, raw: &str) -> String {
     // ≥2 段（group/project 或 group/subgroup/project）→ releases.atom
     if segments.len() >= 2 {
         url.set_path(&format!("{}/-/releases.atom", segments.join("/")));
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    raw.to_string()
+}
+
+/// Substack：`https://{pub}.substack.com` → `https://{pub}.substack.com/feed`
+/// 仅处理根路径（无路径或单段），文章路径（`/p/...`）不动。
+fn normalize_substack(url: &mut Url, raw: &str) -> String {
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|p| p.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    // 根路径（无路径或单段）且未已是 /feed → 追加 /feed
+    if segments.len() <= 1 && segments.first() != Some(&"feed") {
+        url.set_path("/feed");
         url.set_query(None);
         url.set_fragment(None);
         return url.to_string();
@@ -467,6 +494,36 @@ mod tests {
     #[test]
     fn mastodon_specific_post_untouched() {
         let u = "https://mastodon.social/@user/123456789";
+        assert_eq!(normalize(u), u);
+    }
+
+    // --- Substack ---
+
+    #[test]
+    fn substack_root_normalizes_to_feed() {
+        assert_eq!(
+            normalize("https://newsletter.substack.com"),
+            "https://newsletter.substack.com/feed"
+        );
+    }
+
+    #[test]
+    fn substack_with_trailing_slash_normalizes_to_feed() {
+        assert_eq!(
+            normalize("https://newsletter.substack.com/"),
+            "https://newsletter.substack.com/feed"
+        );
+    }
+
+    #[test]
+    fn substack_already_feed_untouched() {
+        let u = "https://newsletter.substack.com/feed";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn substack_article_untouched() {
+        let u = "https://newsletter.substack.com/p/some-article";
         assert_eq!(normalize(u), u);
     }
 }
