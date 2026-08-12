@@ -29,6 +29,15 @@
 //! - Steam `https://store.steampowered.com/app/{id}` → `https://store.steampowered.com/feeds/news/app/{id}/`
 //!   - 支持 `/app/{id}/{name}` 形式
 //!   - 已是 feeds 路径或非 app 页面不动
+//! - 国内站点（根路径 → 固定 feed 路径，仅根路径改写，子路径不动）
+//!   - 知乎 `zhihu.com` → `zhihu.com/rss`
+//!   - IT之家 `ithome.com` → `ithome.com/rss/`
+//!   - 爱范儿 `ifanr.com` → `ifanr.com/feed`
+//!   - 机核 `gcores.com` → `gcores.com/rss`
+//!   - V2EX `v2ex.com` → `v2ex.com/index.xml`
+//!   - LinuxDo `linux.do` → `linux.do/latest.rss`
+//!   - 美团技术 `tech.meituan.com` → `tech.meituan.com/feed`
+//!   - 酷壳 `coolshell.cn` → `coolshell.cn/feed`
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -60,6 +69,15 @@ pub fn normalize(raw: &str) -> String {
         "store.steampowered.com" => normalize_steam(&mut url, raw),
         "youtube.com" | "m.youtube.com" => normalize_youtube(&mut url, raw),
         "pixiv.net" => normalize_pixiv(&mut url, raw),
+        // 国内站点：根路径 → 固定 feed 路径
+        "zhihu.com" => normalize_root_to_feed(&mut url, raw, "/rss"),
+        "ithome.com" => normalize_root_to_feed(&mut url, raw, "/rss/"),
+        "ifanr.com" => normalize_root_to_feed(&mut url, raw, "/feed"),
+        "gcores.com" => normalize_root_to_feed(&mut url, raw, "/rss"),
+        "v2ex.com" => normalize_root_to_feed(&mut url, raw, "/index.xml"),
+        "linux.do" => normalize_root_to_feed(&mut url, raw, "/latest.rss"),
+        "tech.meituan.com" => normalize_root_to_feed(&mut url, raw, "/feed"),
+        "coolshell.cn" => normalize_root_to_feed(&mut url, raw, "/feed"),
         _ => {
             if normalized_host.ends_with(".substack.com") {
                 normalize_substack(&mut url, raw)
@@ -270,6 +288,24 @@ fn normalize_substack(url: &mut Url, raw: &str) -> String {
         return url.to_string();
     }
 
+    raw.to_string()
+}
+
+/// 通用根路径 → 固定 feed 路径映射。
+/// 仅当路径为空或 `/` 时才改写；已有路径（如知乎问题页、IT之家文章页）不动。
+fn normalize_root_to_feed(url: &mut Url, raw: &str, feed_path: &str) -> String {
+    let path = url.path();
+    // 仅处理根路径（空或 /）
+    if path == "/" || path.is_empty() {
+        url.set_path(feed_path);
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    // 已是 feed 路径
+    if path == feed_path {
+        return raw.to_string();
+    }
     raw.to_string()
 }
 
@@ -639,6 +675,123 @@ mod tests {
     #[test]
     fn steam_non_app_page_untouched() {
         let u = "https://store.steampowered.com/genre/Action";
+        assert_eq!(normalize(u), u);
+    }
+
+    // --- 国内站点 ---
+
+    #[test]
+    fn zhihu_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.zhihu.com"),
+            "https://www.zhihu.com/rss"
+        );
+    }
+
+    #[test]
+    fn zhihu_already_rss_untouched() {
+        let u = "https://www.zhihu.com/rss";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn zhihu_deep_path_untouched() {
+        let u = "https://www.zhihu.com/question/123456";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn ithome_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.ithome.com"),
+            "https://www.ithome.com/rss/"
+        );
+    }
+
+    #[test]
+    fn ithome_already_rss_untouched() {
+        let u = "https://www.ithome.com/rss/";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn ifanr_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.ifanr.com"),
+            "https://www.ifanr.com/feed"
+        );
+    }
+
+    #[test]
+    fn ifanr_already_feed_untouched() {
+        let u = "https://www.ifanr.com/feed";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn gcores_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.gcores.com"),
+            "https://www.gcores.com/rss"
+        );
+    }
+
+    #[test]
+    fn gcores_already_rss_untouched() {
+        let u = "https://www.gcores.com/rss";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn v2ex_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.v2ex.com"),
+            "https://www.v2ex.com/index.xml"
+        );
+    }
+
+    #[test]
+    fn v2ex_already_xml_untouched() {
+        let u = "https://www.v2ex.com/index.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn linuxdo_root_normalizes() {
+        assert_eq!(normalize("https://linux.do"), "https://linux.do/latest.rss");
+    }
+
+    #[test]
+    fn linuxdo_already_rss_untouched() {
+        let u = "https://linux.do/latest.rss";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn meituan_tech_root_normalizes() {
+        assert_eq!(
+            normalize("https://tech.meituan.com"),
+            "https://tech.meituan.com/feed"
+        );
+    }
+
+    #[test]
+    fn meituan_tech_already_feed_untouched() {
+        let u = "https://tech.meituan.com/feed";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn coolshell_root_normalizes() {
+        assert_eq!(
+            normalize("https://coolshell.cn"),
+            "https://coolshell.cn/feed"
+        );
+    }
+
+    #[test]
+    fn coolshell_already_feed_untouched() {
+        let u = "https://coolshell.cn/feed";
         assert_eq!(normalize(u), u);
     }
 }
