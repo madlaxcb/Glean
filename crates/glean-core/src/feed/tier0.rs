@@ -45,6 +45,25 @@
 //!   - 云风的 BLOG `blog.codingnow.com` → `blog.codingnow.com/atom.xml`
 //!   - I'm TualatriX `imtx.me` → `imtx.me/feed/latest/`
 //!   - MacTalk `macshuo.com` → `macshuo.com/?feed=rss2`
+//! - 海外科技媒体（根路径 → 固定 feed 路径）
+//!   - TechCrunch `techcrunch.com` → `techcrunch.com/feed/`
+//!   - WIRED `wired.com` → `wired.com/feed/rss`
+//!   - The Verge `theverge.com` → `theverge.com/rss/index.xml`
+//!   - CSS-Tricks `css-tricks.com` → `css-tricks.com/feed/`
+//!   - Smashing Magazine `smashingmagazine.com` → `smashingmagazine.com/feed/`
+//!   - The New Stack `thenewstack.io` → `thenewstack.io/feed/`
+//!   - InfoQ `infoq.com` → `infoq.com/feed`
+//!   - DEV Community `dev.to` → `dev.to/feed`
+//!   - GitHub Blog `github.blog` → `github.blog/feed/`
+//!   - Stack Overflow Blog `stackoverflow.blog` → `stackoverflow.blog/feed/`
+//! - AI 机构 / 开发者博客
+//!   - OpenAI `openai.com/blog` → `openai.com/blog/rss.xml`（仅 /blog 路径改写）
+//!   - Google DeepMind `deepmind.google/blog` → `deepmind.google/blog/rss.xml`
+//!   - NVIDIA Developer `developer.nvidia.com/blog` → `developer.nvidia.com/blog/feed/`
+//!   - Apple ML `machinelearning.apple.com` → `machinelearning.apple.com/rss.xml`
+//!   - Karpathy `karpathy.github.io` → `karpathy.github.io/feed.xml`
+//!   - Simon Willison `simonwillison.net` → `simonwillison.net/atom/everything/`
+//!   - freeCodeCamp `freecodecamp.org/news` → `freecodecamp.org/news/rss/`
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -93,6 +112,25 @@ pub fn normalize(raw: &str) -> String {
         "blog.codingnow.com" => normalize_root_to_feed(&mut url, raw, "/atom.xml"),
         "imtx.me" => normalize_root_to_feed(&mut url, raw, "/feed/latest/"),
         "macshuo.com" => normalize_macshuo(&mut url, raw),
+        // 海外科技媒体 / AI 机构 / 开发者博客
+        "techcrunch.com" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "wired.com" => normalize_wired(&mut url, raw),
+        "theverge.com" => normalize_root_to_feed(&mut url, raw, "/rss/index.xml"),
+        "css-tricks.com" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "smashingmagazine.com" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "thenewstack.io" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "infoq.com" => normalize_root_to_feed(&mut url, raw, "/feed"),
+        "dev.to" => normalize_root_to_feed(&mut url, raw, "/feed"),
+        "github.blog" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "stackoverflow.blog" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "machinelearning.apple.com" => normalize_root_to_feed(&mut url, raw, "/rss.xml"),
+        "karpathy.github.io" => normalize_root_to_feed(&mut url, raw, "/feed.xml"),
+        "simonwillison.net" => normalize_root_to_feed(&mut url, raw, "/atom/everything/"),
+        "freecodecamp.org" => normalize_freecodecamp(&mut url, raw),
+        // AI 机构：/blog → /blog/rss.xml 或 /blog/feed/
+        "openai.com" => normalize_path_to_feed(&mut url, raw, "/blog", "/blog/rss.xml"),
+        "deepmind.google" => normalize_path_to_feed(&mut url, raw, "/blog", "/blog/rss.xml"),
+        "developer.nvidia.com" => normalize_path_to_feed(&mut url, raw, "/blog", "/blog/feed/"),
         _ => {
             if normalized_host.ends_with(".substack.com") {
                 normalize_substack(&mut url, raw)
@@ -336,6 +374,54 @@ fn normalize_macshuo(url: &mut Url, raw: &str) -> String {
     if path == "/" || path.is_empty() {
         url.set_path("/");
         url.set_query(Some("feed=rss2"));
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    raw.to_string()
+}
+
+/// 特定路径 → feed 路径（如 `/blog` → `/blog/rss.xml`）。
+/// 仅当路径精确匹配 `target_path` 时改写，否则原样返回。
+fn normalize_path_to_feed(url: &mut Url, raw: &str, target_path: &str, feed_path: &str) -> String {
+    let path = url.path();
+    // 已是 feed 路径
+    if path == feed_path {
+        return raw.to_string();
+    }
+    // 精确匹配目标路径（含尾部斜杠变体）
+    if path == target_path || path == format!("{target_path}/") {
+        url.set_path(feed_path);
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    raw.to_string()
+}
+
+/// WIRED：根路径 → `/feed/rss`。
+fn normalize_wired(url: &mut Url, raw: &str) -> String {
+    let path = url.path();
+    if path == "/feed/rss" || path == "/feed/rss/" {
+        return raw.to_string();
+    }
+    if path == "/" || path.is_empty() {
+        url.set_path("/feed/rss");
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    raw.to_string()
+}
+
+/// freeCodeCamp：`/news` → `/news/rss/`，根路径不动。
+fn normalize_freecodecamp(url: &mut Url, raw: &str) -> String {
+    let path = url.path();
+    if path == "/news/rss/" || path == "/news/rss" {
+        return raw.to_string();
+    }
+    if path == "/news" || path == "/news/" {
+        url.set_path("/news/rss/");
+        url.set_query(None);
         url.set_fragment(None);
         return url.to_string();
     }
@@ -920,5 +1006,184 @@ mod tests {
     fn macshuo_already_feed_untouched() {
         let u = "https://macshuo.com/?feed=rss2";
         assert_eq!(normalize(u), u);
+    }
+
+    // --- 海外科技媒体 / AI 机构 / 开发者博客 ---
+
+    #[test]
+    fn techcrunch_root_normalizes() {
+        assert_eq!(
+            normalize("https://techcrunch.com"),
+            "https://techcrunch.com/feed/"
+        );
+    }
+
+    #[test]
+    fn techcrunch_already_feed_untouched() {
+        let u = "https://techcrunch.com/feed/";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn wired_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.wired.com"),
+            "https://www.wired.com/feed/rss"
+        );
+    }
+
+    #[test]
+    fn wired_already_feed_untouched() {
+        let u = "https://www.wired.com/feed/rss";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn theverge_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.theverge.com"),
+            "https://www.theverge.com/rss/index.xml"
+        );
+    }
+
+    #[test]
+    fn theverge_already_feed_untouched() {
+        let u = "https://www.theverge.com/rss/index.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn css_tricks_root_normalizes() {
+        assert_eq!(
+            normalize("https://css-tricks.com"),
+            "https://css-tricks.com/feed/"
+        );
+    }
+
+    #[test]
+    fn smashingmagazine_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.smashingmagazine.com"),
+            "https://www.smashingmagazine.com/feed/"
+        );
+    }
+
+    #[test]
+    fn thenewstack_root_normalizes() {
+        assert_eq!(
+            normalize("https://thenewstack.io"),
+            "https://thenewstack.io/feed/"
+        );
+    }
+
+    #[test]
+    fn infoq_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.infoq.com"),
+            "https://www.infoq.com/feed"
+        );
+    }
+
+    #[test]
+    fn devto_root_normalizes() {
+        assert_eq!(normalize("https://dev.to"), "https://dev.to/feed");
+    }
+
+    #[test]
+    fn github_blog_root_normalizes() {
+        assert_eq!(
+            normalize("https://github.blog"),
+            "https://github.blog/feed/"
+        );
+    }
+
+    #[test]
+    fn stackoverflow_blog_root_normalizes() {
+        assert_eq!(
+            normalize("https://stackoverflow.blog"),
+            "https://stackoverflow.blog/feed/"
+        );
+    }
+
+    #[test]
+    fn apple_ml_root_normalizes() {
+        assert_eq!(
+            normalize("https://machinelearning.apple.com"),
+            "https://machinelearning.apple.com/rss.xml"
+        );
+    }
+
+    #[test]
+    fn karpathy_root_normalizes() {
+        assert_eq!(
+            normalize("https://karpathy.github.io"),
+            "https://karpathy.github.io/feed.xml"
+        );
+    }
+
+    #[test]
+    fn simonwillison_root_normalizes() {
+        assert_eq!(
+            normalize("https://simonwillison.net"),
+            "https://simonwillison.net/atom/everything/"
+        );
+    }
+
+    #[test]
+    fn freecodecamp_news_normalizes() {
+        assert_eq!(
+            normalize("https://freecodecamp.org/news"),
+            "https://freecodecamp.org/news/rss/"
+        );
+    }
+
+    #[test]
+    fn freecodecamp_root_untouched() {
+        let u = "https://freecodecamp.org";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn openai_blog_normalizes() {
+        assert_eq!(
+            normalize("https://openai.com/blog"),
+            "https://openai.com/blog/rss.xml"
+        );
+    }
+
+    #[test]
+    fn openai_blog_trailing_slash_normalizes() {
+        assert_eq!(
+            normalize("https://openai.com/blog/"),
+            "https://openai.com/blog/rss.xml"
+        );
+    }
+
+    #[test]
+    fn openai_already_feed_untouched() {
+        let u = "https://openai.com/blog/rss.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn openai_root_untouched() {
+        let u = "https://openai.com";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn deepmind_blog_normalizes() {
+        assert_eq!(
+            normalize("https://deepmind.google/blog"),
+            "https://deepmind.google/blog/rss.xml"
+        );
+    }
+
+    #[test]
+    fn nvidia_dev_blog_normalizes() {
+        assert_eq!(
+            normalize("https://developer.nvidia.com/blog"),
+            "https://developer.nvidia.com/blog/feed/"
+        );
     }
 }
