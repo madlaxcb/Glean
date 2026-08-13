@@ -38,6 +38,13 @@
 //!   - LinuxDo `linux.do` → `linux.do/latest.rss`
 //!   - 美团技术 `tech.meituan.com` → `tech.meituan.com/feed`
 //!   - 酷壳 `coolshell.cn` → `coolshell.cn/feed`
+//!   - 小众软件 `appinn.com` → `appinn.com/feed/`
+//!   - 月光博客 `williamlong.info` → `williamlong.info/rss.xml`
+//!   - 宝玉的分享 `baoyu.io` → `baoyu.io/feed.xml`
+//!   - 唐巧的博客 `blog.devtang.com` → `blog.devtang.com/atom.xml`
+//!   - 云风的 BLOG `blog.codingnow.com` → `blog.codingnow.com/atom.xml`
+//!   - I'm TualatriX `imtx.me` → `imtx.me/feed/latest/`
+//!   - MacTalk `macshuo.com` → `macshuo.com/?feed=rss2`
 //!
 //! 输入未通过 scheme/host 校验时原样返回（不报错），让上层流程继续走通用发现逻辑。
 
@@ -78,6 +85,14 @@ pub fn normalize(raw: &str) -> String {
         "linux.do" => normalize_root_to_feed(&mut url, raw, "/latest.rss"),
         "tech.meituan.com" => normalize_root_to_feed(&mut url, raw, "/feed"),
         "coolshell.cn" => normalize_root_to_feed(&mut url, raw, "/feed"),
+        // 新增国内站点
+        "appinn.com" => normalize_root_to_feed(&mut url, raw, "/feed/"),
+        "williamlong.info" => normalize_root_to_feed(&mut url, raw, "/rss.xml"),
+        "baoyu.io" => normalize_root_to_feed(&mut url, raw, "/feed.xml"),
+        "blog.devtang.com" => normalize_root_to_feed(&mut url, raw, "/atom.xml"),
+        "blog.codingnow.com" => normalize_root_to_feed(&mut url, raw, "/atom.xml"),
+        "imtx.me" => normalize_root_to_feed(&mut url, raw, "/feed/latest/"),
+        "macshuo.com" => normalize_macshuo(&mut url, raw),
         _ => {
             if normalized_host.ends_with(".substack.com") {
                 normalize_substack(&mut url, raw)
@@ -305,6 +320,24 @@ fn normalize_root_to_feed(url: &mut Url, raw: &str, feed_path: &str) -> String {
     // 已是 feed 路径
     if path == feed_path {
         return raw.to_string();
+    }
+    raw.to_string()
+}
+
+/// MacTalk：根路径 → `?feed=rss2`（WordPress 查询参数形式）。
+fn normalize_macshuo(url: &mut Url, raw: &str) -> String {
+    let path = url.path();
+    let query = url.query().unwrap_or("");
+    // 已是 feed
+    if query == "feed=rss2" {
+        return raw.to_string();
+    }
+    // 仅处理根路径
+    if path == "/" || path.is_empty() {
+        url.set_path("/");
+        url.set_query(Some("feed=rss2"));
+        url.set_fragment(None);
+        return url.to_string();
     }
     raw.to_string()
 }
@@ -792,6 +825,100 @@ mod tests {
     #[test]
     fn coolshell_already_feed_untouched() {
         let u = "https://coolshell.cn/feed";
+        assert_eq!(normalize(u), u);
+    }
+
+    // --- 新增国内站点 ---
+
+    #[test]
+    fn appinn_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.appinn.com"),
+            "https://www.appinn.com/feed/"
+        );
+    }
+
+    #[test]
+    fn appinn_already_feed_untouched() {
+        let u = "https://www.appinn.com/feed/";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn williamlong_root_normalizes() {
+        assert_eq!(
+            normalize("https://www.williamlong.info"),
+            "https://www.williamlong.info/rss.xml"
+        );
+    }
+
+    #[test]
+    fn williamlong_already_rss_untouched() {
+        let u = "https://www.williamlong.info/rss.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn baoyu_root_normalizes() {
+        assert_eq!(normalize("https://baoyu.io"), "https://baoyu.io/feed.xml");
+    }
+
+    #[test]
+    fn baoyu_already_feed_untouched() {
+        let u = "https://baoyu.io/feed.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn devtang_root_normalizes() {
+        assert_eq!(
+            normalize("https://blog.devtang.com"),
+            "https://blog.devtang.com/atom.xml"
+        );
+    }
+
+    #[test]
+    fn devtang_already_atom_untouched() {
+        let u = "https://blog.devtang.com/atom.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn codingnow_root_normalizes() {
+        assert_eq!(
+            normalize("https://blog.codingnow.com"),
+            "https://blog.codingnow.com/atom.xml"
+        );
+    }
+
+    #[test]
+    fn codingnow_already_atom_untouched() {
+        let u = "https://blog.codingnow.com/atom.xml";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn imtx_root_normalizes() {
+        assert_eq!(normalize("https://imtx.me"), "https://imtx.me/feed/latest/");
+    }
+
+    #[test]
+    fn imtx_already_feed_untouched() {
+        let u = "https://imtx.me/feed/latest/";
+        assert_eq!(normalize(u), u);
+    }
+
+    #[test]
+    fn macshuo_root_normalizes() {
+        assert_eq!(
+            normalize("https://macshuo.com"),
+            "https://macshuo.com/?feed=rss2"
+        );
+    }
+
+    #[test]
+    fn macshuo_already_feed_untouched() {
+        let u = "https://macshuo.com/?feed=rss2";
         assert_eq!(normalize(u), u);
     }
 }
